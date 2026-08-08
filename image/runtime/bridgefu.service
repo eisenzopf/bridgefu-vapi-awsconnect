@@ -1,0 +1,32 @@
+[Unit]
+Description=Bridgefu recipe media gateway
+Documentation=https://github.com/eisenzopf/bridgefu
+After=network-online.target haproxy.service
+Requires=haproxy.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/bridgefu/runtime.conf
+ExecStartPre=/usr/bin/test -r /etc/bridgefu/bridgefu.yaml
+ExecStart=/usr/local/sbin/bridgefu-run
+User=bridgefu
+Group=bridgefu
+RuntimeDirectory=bridgefu
+RuntimeDirectoryMode=0700
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=180
+TimeoutStopSec=75
+KillMode=process
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run/bridgefu /var/lib/bridgefu
+
+[Install]
+WantedBy=multi-user.target

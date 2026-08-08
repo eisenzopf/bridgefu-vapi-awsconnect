@@ -1,0 +1,75 @@
+{
+  "Version": "2019-10-30",
+  "StartAction": "show-context",
+  "Actions": [
+    {
+      "Identifier": "show-context",
+      "Type": "ShowView",
+      "Parameters": {
+        "ViewResource": {
+          "Id": "detail",
+          "Version": "Latest"
+        },
+        "InvocationTimeLimitSeconds": "3600",
+        "ViewData": {
+          "Heading": "Bridgefu caller context",
+          "Description": "Information collected before this handoff. Confirm it with the caller when appropriate.",
+          "Sections": [
+            {
+              "TemplateString": "${AgentGuideTemplateString}"
+            },
+            {
+              "TemplateString": "<p><strong>Context available:</strong> $.Attributes.context_available</p><p><strong>Voice AI call reference:</strong> $.Attributes.vapi_call_reference</p>"
+            }
+          ],
+          "AttributeBar": [
+            {
+              "Label": "$.Attributes.screen_pop_label_1",
+              "Value": "$.Attributes.screen_pop_value_1"
+            },
+            {
+              "Label": "$.Attributes.screen_pop_label_2",
+              "Value": "$.Attributes.screen_pop_value_2"
+            }
+          ],
+          "Actions": [],
+          "Back": {
+            "Label": "Close"
+          }
+        }
+      },
+      "Transitions": {
+        "NextAction": "end-guide",
+        "Conditions": [
+          {
+            "NextAction": "end-guide",
+            "Condition": {
+              "Operator": "Equals",
+              "Operands": ["Back"]
+            }
+          }
+        ],
+        "Errors": [
+          {
+            "NextAction": "end-guide",
+            "ErrorType": "NoMatchingCondition"
+          },
+          {
+            "NextAction": "end-guide",
+            "ErrorType": "NoMatchingError"
+          },
+          {
+            "NextAction": "end-guide",
+            "ErrorType": "TimeLimitExceeded"
+          }
+        ]
+      }
+    },
+    {
+      "Identifier": "end-guide",
+      "Type": "DisconnectParticipant",
+      "Parameters": {},
+      "Transitions": {}
+    }
+  ]
+}

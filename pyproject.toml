@@ -1,0 +1,22 @@
+[project]
+name = "bridgefu-vapi-awsconnect"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "S", "UP"]
+ignore = [
+  "E402",  # tests intentionally add Lambda common modules before importing handlers
+  "E501",  # Ruff's formatter cannot wrap URLs, policy strings, or fixture payloads
+  "S310",
+  "S603",  # subprocess arguments are fixed local tooling, never customer input
+  "S607",  # PATH-resolved developer tools are intentional in release validation
+  "UP038", # tuple form remains compatible with supported Lambda Python runtimes
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

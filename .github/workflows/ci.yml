@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: hashicorp/setup-packer@main
+        with: {version: '1.12.0'}
+      - name: Install validation tools
+        run: pip install 'cfn-lint>=1.30,<2' 'ruff>=0.12,<1'
+      - name: Unit tests and static checks
+        run: |
+          python -m unittest discover -s tests/unit -v
+          ruff check .
+          shellcheck image/install.sh image/runtime/bootstrap.sh \
+            image/runtime/bridgefu-load-secrets image/runtime/bridgefu-cert-refresh \
+            image/runtime/bridgefu-cert-reload image/runtime/bridgefu-run
+      - name: Deterministic packaging
+        run: |
+          python release/build_release.py --version 0.1.0-dev --output target/release-a
+          python release/build_release.py --version 0.1.0-dev --output target/release-b
+          diff -r target/release-a target/release-b
+      - name: CloudFormation validation
+        run: >-
+          cfn-lint
+          target/release-a/cloudformation/template.yaml
+          target/release-a/cloudformation/nested/*.yaml
+          publisher/*.yaml
+      - name: Packer validation
+        run: |
+          bridgefu_commit="$(jq -r .commit bridgefu.lock.json)"
+          bridgefu_lock="$(jq -r .cargo_lock_sha256 bridgefu.lock.json)"
+          packer init image/bridgefu.pkr.hcl
+          packer validate \
+            -var bridgefu_commit="$bridgefu_commit" \
+            -var bridgefu_cargo_lock_sha256="$bridgefu_lock" \
+            -var release_version=0.1.0-dev \
+            image/bridgefu.pkr.hcl

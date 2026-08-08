@@ -1,0 +1,145 @@
+name: Publish release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: bridgefu-vapi-awsconnect-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04-arm
+    environment: production-release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: hashicorp/setup-packer@main
+        with: {version: '1.12.0'}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PUBLISH_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Resolve release inputs
+        id: release
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          test "$version" != "$TAG"
+          test "$(jq -r .release_ready bridgefu.lock.json)" = true
+          commit="$(jq -r .commit bridgefu.lock.json)"
+          test "$commit" != 0000000000000000000000000000000000000000
+          {
+            echo "version=$version"
+            echo "bridgefu_commit=$commit"
+            echo "bridgefu_lock=$(jq -r .cargo_lock_sha256 bridgefu.lock.json)"
+          } >> "$GITHUB_OUTPUT"
+      - name: Build private AMIs
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          packer init image/bridgefu.pkr.hcl
+          packer build \
+            -var bridgefu_commit=${{ steps.release.outputs.bridgefu_commit }} \
+            -var bridgefu_cargo_lock_sha256=${{ steps.release.outputs.bridgefu_lock }} \
+            -var release_version="$VERSION" \
+            image/bridgefu.pkr.hcl
+          east_ami="$(aws ec2 describe-images --owners self --region us-east-1 \
+            --filters "Name=tag:BridgefuRelease,Values=$VERSION" \
+            --query 'reverse(sort_by(Images,&CreationDate))[0].ImageId' --output text)"
+          west_ami="$(aws ec2 copy-image --region us-west-2 --source-region us-east-1 \
+            --source-image-id "$east_ami" --name "bridgefu-vapi-awsconnect-$VERSION" \
+            --copy-image-tags --query ImageId --output text)"
+          aws ec2 wait image-available --region us-east-1 --image-ids "$east_ami"
+          aws ec2 wait image-available --region us-west-2 --image-ids "$west_ami"
+          echo "EAST_AMI=$east_ami" >> "$GITHUB_ENV"
+          echo "WEST_AMI=$west_ami" >> "$GITHUB_ENV"
+      - name: Build and upload immutable artifacts
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          EAST_BUCKET: ${{ vars.ARTIFACT_BUCKET_US_EAST_1 }}
+          WEST_BUCKET: ${{ vars.ARTIFACT_BUCKET_US_WEST_2 }}
+        run: |
+          python release/build_release.py \
+            --version "$VERSION" \
+            --ami-us-east-1 "$EAST_AMI" \
+            --ami-us-west-2 "$WEST_AMI" \
+            --bucket-us-east-1 "$EAST_BUCKET" \
+            --bucket-us-west-2 "$WEST_BUCKET" \
+            --public-base-url "https://$EAST_BUCKET.s3.us-east-1.amazonaws.com" \
+            --output target/release
+          aws s3 cp target/release "s3://$EAST_BUCKET/releases/$VERSION" \
+            --recursive --region us-east-1 --only-show-errors
+          aws s3 cp target/release/artifacts/lambda \
+            "s3://$WEST_BUCKET/releases/$VERSION/artifacts/lambda" \
+            --recursive --region us-west-2 --only-show-errors
+      - name: Validate both regional templates
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          EAST_BUCKET: ${{ vars.ARTIFACT_BUCKET_US_EAST_1 }}
+        run: |
+          template_url="https://$EAST_BUCKET.s3.us-east-1.amazonaws.com/releases/$VERSION/cloudformation/template.yaml"
+          aws cloudformation validate-template --region us-east-1 --template-url "$template_url"
+          aws cloudformation validate-template --region us-west-2 --template-url "$template_url"
+      - name: Sign release manifest
+        env:
+          SIGNING_KEY_ARN: ${{ vars.RELEASE_SIGNING_KEY_ARN }}
+        run: |
+          openssl dgst -sha256 -binary target/release/manifest.json > target/manifest.digest
+          aws kms sign --key-id "$SIGNING_KEY_ARN" --signing-algorithm ECDSA_SHA_256 \
+            --message-type DIGEST --message fileb://target/manifest.digest \
+            --query Signature --output text | base64 --decode > target/release/manifest.sig
+          aws s3 cp target/release/manifest.sig \
+            "s3://${{ vars.ARTIFACT_BUCKET_US_EAST_1 }}/releases/${{ steps.release.outputs.version }}/manifest.sig" \
+            --region us-east-1 --only-show-errors
+      - name: Publish public launch permission last
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          EAST_BUCKET: ${{ vars.ARTIFACT_BUCKET_US_EAST_1 }}
+        run: |
+          east_snapshots="$(aws ec2 describe-images --region us-east-1 \
+            --image-ids "$EAST_AMI" \
+            --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' --output text)"
+          west_snapshots="$(aws ec2 describe-images --region us-west-2 \
+            --image-ids "$WEST_AMI" \
+            --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' --output text)"
+          for snapshot in $east_snapshots; do
+            encrypted="$(aws ec2 describe-snapshots --region us-east-1 \
+              --snapshot-ids "$snapshot" --query 'Snapshots[0].Encrypted' --output text)"
+            test "$encrypted" = False
+            aws ec2 modify-snapshot-attribute --region us-east-1 \
+              --snapshot-id "$snapshot" --attribute createVolumePermission \
+              --operation-type add --group-names all
+          done
+          for snapshot in $west_snapshots; do
+            encrypted="$(aws ec2 describe-snapshots --region us-west-2 \
+              --snapshot-ids "$snapshot" --query 'Snapshots[0].Encrypted' --output text)"
+            test "$encrypted" = False
+            aws ec2 modify-snapshot-attribute --region us-west-2 \
+              --snapshot-id "$snapshot" --attribute createVolumePermission \
+              --operation-type add --group-names all
+          done
+          aws ec2 modify-image-attribute --region us-east-1 --image-id "$EAST_AMI" \
+            --launch-permission 'Add=[{Group=all}]'
+          aws ec2 modify-image-attribute --region us-west-2 --image-id "$WEST_AMI" \
+            --launch-permission 'Add=[{Group=all}]'
+          aws s3 cp target/release/cloudformation/template.yaml \
+            "s3://$EAST_BUCKET/latest/cloudformation/template.yaml" \
+            --region us-east-1 --only-show-errors
+          aws s3 cp target/release/manifest.json \
+            "s3://$EAST_BUCKET/latest/manifest.json" \
+            --region us-east-1 --only-show-errors
+          aws s3 cp target/release/manifest.sig \
+            "s3://$EAST_BUCKET/latest/manifest.sig" \
+            --region us-east-1 --only-show-errors
+          aws s3 cp target/release/quick-create-links.json \
+            "s3://$EAST_BUCKET/latest/quick-create-links.json" \
+            --region us-east-1 --only-show-errors

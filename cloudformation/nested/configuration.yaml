@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Validate customer selections and render bounded Connect configuration.
+
+Parameters:
+  DeploymentId: {Type: String}
+  ArtifactBucket: {Type: String}
+  ConfigurationArtifactKey: {Type: String}
+  ConnectInstanceArn: {Type: String}
+  TargetContactFlowArn: {Type: String}
+  PublicHostedZoneId: {Type: String}
+  SipHostname: {Type: String}
+  ScreenPopFieldsJson: {Type: String, MaxLength: 4096}
+  RoutingJson: {Type: String, Default: '{}', MaxLength: 4096}
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365]
+
+Resources:
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/bridgefu-${DeploymentId}-configuration'
+      RetentionInDays: !Ref LogRetentionDays
+
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ValidateOnlySelectedResources
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [connect:DescribeInstance, connect:DescribeContactFlow]
+                Resource:
+                  - !Ref ConnectInstanceArn
+                  - !Sub '${ConnectInstanceArn}/contact-flow/*'
+              - Effect: Allow
+                Action: route53:GetHostedZone
+                Resource: !Sub 'arn:${AWS::Partition}:route53:::hostedzone/${PublicHostedZoneId}'
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub '${LogGroup.Arn}:*'
+
+  Function:
+    Type: AWS::Lambda::Function
+    DependsOn: LogGroup
+    Properties:
+      FunctionName: !Sub 'bridgefu-${DeploymentId}-configuration'
+      Runtime: python3.13
+      Architectures: [arm64]
+      Handler: handler.lambda_handler
+      MemorySize: 192
+      Timeout: 60
+      Role: !GetAtt Role.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref ConfigurationArtifactKey
+
+  Configuration:
+    Type: Custom::BridgefuConfiguration
+    Properties:
+      ServiceToken: !GetAtt Function.Arn
+      AccountId: !Ref 'AWS::AccountId'
+      ConnectInstanceArn: !Ref ConnectInstanceArn
+      TargetContactFlowArn: !Ref TargetContactFlowArn
+      PublicHostedZoneId: !Ref PublicHostedZoneId
+      SipHostname: !Ref SipHostname
+      ScreenPopFieldsJson: !Ref ScreenPopFieldsJson
+      RoutingJson: !Ref RoutingJson
+
+Outputs:
+  AgentGuideTemplateString: {Value: !GetAtt Configuration.AgentGuideTemplateString}
+  RoutingFieldKey: {Value: !GetAtt Configuration.RoutingFieldKey}
+  RoutingConditionsJson: {Value: !GetAtt Configuration.RoutingConditionsJson}
+  RoutingTransferActionsJson: {Value: !GetAtt Configuration.RoutingTransferActionsJson}
+  SchemaHash: {Value: !GetAtt Configuration.SchemaHash}
+  FunctionName: {Value: !Ref Function}
+

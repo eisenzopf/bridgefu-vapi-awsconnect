@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+/usr/local/sbin/bridgefu-load-secrets
+set -a
+# shellcheck source=/dev/null
+source /run/bridgefu/runtime.env
+set +a
+exec /usr/local/bin/bridgefu --config /etc/bridgefu/bridgefu.yaml

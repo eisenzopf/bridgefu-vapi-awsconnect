@@ -1,0 +1,24 @@
+.PHONY: test lint package validate packer-validate
+
+test:
+	python3 -m unittest discover -s tests/unit -v
+
+lint:
+	python3 -m compileall -q lambda release tests
+	@if command -v ruff >/dev/null 2>&1; then ruff check .; fi
+	@if command -v shellcheck >/dev/null 2>&1; then shellcheck image/install.sh image/runtime/bootstrap.sh image/runtime/bridgefu-load-secrets image/runtime/bridgefu-cert-refresh image/runtime/bridgefu-cert-reload image/runtime/bridgefu-run; fi
+
+package:
+	python3 release/build_lambdas.py --output target/lambda
+	python3 release/build_release.py --version 0.1.0-dev --output target/release
+
+validate:
+	python3 release/validate.py
+
+packer-validate:
+	packer init image/bridgefu.pkr.hcl
+	packer validate \
+		-var bridgefu_commit="$$(jq -r .commit bridgefu.lock.json)" \
+		-var bridgefu_cargo_lock_sha256="$$(jq -r .cargo_lock_sha256 bridgefu.lock.json)" \
+		-var release_version=0.1.0-dev \
+		image/bridgefu.pkr.hcl
