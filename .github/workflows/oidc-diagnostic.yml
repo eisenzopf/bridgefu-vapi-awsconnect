@@ -1,0 +1,68 @@
+name: OIDC trust diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  production-release-claims:
+    runs-on: ubuntu-latest
+    environment: production-release
+    steps:
+      - name: Print non-secret OIDC trust claims
+        shell: bash
+        env:
+          EXPECTED_AUDIENCE: sts.amazonaws.com
+          EXPECTED_ENVIRONMENT: production-release
+          EXPECTED_ISSUER: https://token.actions.githubusercontent.com
+          EXPECTED_REPOSITORY: eisenzopf/bridgefu-vapi-awsconnect
+        run: |
+          set -euo pipefail
+
+          response="$(curl --fail --silent --show-error --retry 2 \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${EXPECTED_AUDIENCE}")"
+          token="$(jq -er '.value' <<<"$response")"
+          payload="${token#*.}"
+          payload="${payload%%.*}"
+
+          case $((${#payload} % 4)) in
+            0) ;;
+            2) payload="${payload}==" ;;
+            3) payload="${payload}=" ;;
+            *) echo 'Invalid JWT payload encoding' >&2; exit 1 ;;
+          esac
+
+          claims="$(printf '%s' "$payload" | tr '_-' '/+' | openssl base64 -d -A)"
+          unset response token payload
+
+          jq -e \
+            --arg audience "$EXPECTED_AUDIENCE" \
+            --arg environment "$EXPECTED_ENVIRONMENT" \
+            --arg issuer "$EXPECTED_ISSUER" \
+            --arg repository "$EXPECTED_REPOSITORY" \
+            'if .aud != $audience
+                or .environment != $environment
+                or .iss != $issuer
+                or .repository != $repository
+             then error("OIDC identity claims do not match the protected release context")
+             else {
+               iss,
+               aud,
+               sub,
+               repository,
+               repository_id,
+               repository_owner,
+               repository_owner_id,
+               environment,
+               ref,
+               ref_type,
+               workflow_ref,
+               job_workflow_ref,
+               actor,
+               actor_id
+             }
+             end' <<<"$claims"
