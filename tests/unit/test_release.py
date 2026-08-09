@@ -161,6 +161,21 @@ class ReleaseContractTests(unittest.TestCase):
             nested,
         )
 
+    def test_github_roles_bind_the_immutable_repository_subject(self):
+        subject = (
+            "repo:${GitHubRepositoryOwner}@${GitHubRepositoryOwnerId}/"
+            "${GitHubRepositoryName}@${GitHubRepositoryId}:"
+            "environment:${GitHubEnvironment}"
+        )
+        for template_name in ("oidc-role.yaml", "qualification-role.yaml"):
+            text = (ROOT / "publisher" / template_name).read_text()
+            self.assertIn("GitHubRepositoryOwnerId:", text)
+            self.assertIn("GitHubRepositoryId:", text)
+            self.assertIn(subject, text)
+            self.assertNotIn(
+                "repo:${GitHubRepository}:environment:${GitHubEnvironment}", text
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
