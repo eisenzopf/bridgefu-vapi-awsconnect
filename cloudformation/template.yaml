@@ -148,6 +148,30 @@ Mappings:
       SignalingCidr2: 63.182.83.170/32
       MediaSourceCidr: 63.182.83.170/32
   RegionRelease:
+    af-south-1:
+      AmiId: __AMI_AF_SOUTH_1__
+      ArtifactBucket: __ARTIFACT_BUCKET_AF_SOUTH_1__
+    ap-northeast-1:
+      AmiId: __AMI_AP_NORTHEAST_1__
+      ArtifactBucket: __ARTIFACT_BUCKET_AP_NORTHEAST_1__
+    ap-northeast-2:
+      AmiId: __AMI_AP_NORTHEAST_2__
+      ArtifactBucket: __ARTIFACT_BUCKET_AP_NORTHEAST_2__
+    ap-southeast-1:
+      AmiId: __AMI_AP_SOUTHEAST_1__
+      ArtifactBucket: __ARTIFACT_BUCKET_AP_SOUTHEAST_1__
+    ap-southeast-2:
+      AmiId: __AMI_AP_SOUTHEAST_2__
+      ArtifactBucket: __ARTIFACT_BUCKET_AP_SOUTHEAST_2__
+    ca-central-1:
+      AmiId: __AMI_CA_CENTRAL_1__
+      ArtifactBucket: __ARTIFACT_BUCKET_CA_CENTRAL_1__
+    eu-central-1:
+      AmiId: __AMI_EU_CENTRAL_1__
+      ArtifactBucket: __ARTIFACT_BUCKET_EU_CENTRAL_1__
+    eu-west-2:
+      AmiId: __AMI_EU_WEST_2__
+      ArtifactBucket: __ARTIFACT_BUCKET_EU_WEST_2__
     us-east-1:
       AmiId: __AMI_US_EAST_1__
       ArtifactBucket: __ARTIFACT_BUCKET_US_EAST_1__
@@ -158,8 +182,12 @@ Mappings:
 Rules:
   SupportedRegion:
     Assertions:
-      - Assert: !Contains [[us-east-1, us-west-2], !Ref 'AWS::Region']
-        AssertDescription: Release __RELEASE_VERSION__ supports us-east-1 and us-west-2 only.
+      - Assert: !Contains
+          - [af-south-1, ap-northeast-1, ap-northeast-2, ap-southeast-1, ap-southeast-2, ca-central-1, eu-central-1, eu-west-2, us-east-1, us-west-2]
+          - !Ref 'AWS::Region'
+        AssertDescription: >-
+          Release __RELEASE_VERSION__ supports every commercial AWS region
+          where Amazon Connect is available. GovCloud requires a separate release.
 
 Conditions:
   RetainCustomerData: !Equals [!Ref DataRetentionMode, ProductionRetain]

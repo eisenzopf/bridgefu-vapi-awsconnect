@@ -3,9 +3,36 @@
 This is a CloudFormation-only deployment. It creates a new Vapi template
 assistant and leaves every existing assistant and customer contact flow alone.
 
-## 1. Collect four AWS values
+## 1. Choose the AWS region
 
-Use the same region for every resource: `us-east-1` or `us-west-2`.
+The first release supports every commercial AWS region where Amazon Connect is
+available:
+
+- US West (Oregon), `us-west-2`
+- US East (N. Virginia), `us-east-1`
+- Africa (Cape Town), `af-south-1`
+- Asia Pacific (Seoul), `ap-northeast-2`
+- Asia Pacific (Singapore), `ap-southeast-1`
+- Asia Pacific (Sydney), `ap-southeast-2`
+- Asia Pacific (Tokyo), `ap-northeast-1`
+- Canada (Central), `ca-central-1`
+- Europe (Frankfurt), `eu-central-1`
+- Europe (London), `eu-west-2`
+
+Choose the region containing your existing Amazon Connect instance. Bridgefu,
+Lambda, DynamoDB, and the stack are all created there. If you are creating a
+new Connect instance for a Vapi US organization, prefer **US West (Oregon)**.
+Vapi's published US SIP signaling addresses are in AWS's Oregon region, so that
+choice avoids an additional cross-region network leg.
+
+GovCloud is not part of the public commercial release. It requires separate
+GovCloud AMIs, artifact buckets, signing, and qualification.
+
+This integration uses Vapi's public SIP service. The template does not create
+VPC peering to Vapi. If Vapi offers private connectivity for your organization,
+review that separately with Vapi before changing the generated network design.
+
+## 2. Collect four AWS values
 
 1. In **Amazon Connect → Instances**, copy the instance ARN.
 2. Open **Routing → Flows**, choose the published destination flow, and copy
@@ -17,7 +44,7 @@ Use the same region for every resource: `us-east-1` or `us-west-2`.
 The stack verifies that the instance and flow belong to its account and region,
 that the flow is active, and that the hostname belongs to the public zone.
 
-## 2. Store the Vapi private key
+## 3. Store the Vapi private key
 
 In the same AWS region:
 
@@ -30,12 +57,16 @@ In the same AWS region:
 CloudFormation receives only this ARN. Only the deployment-time Vapi Lambda
 can read the key, and no stack output or log contains it.
 
-## 3. Launch CloudFormation
+## 4. Launch CloudFormation
 
 The public release link will be enabled after the first signed release:
 
-- [Launch in us-east-1](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?stackName=bridgefu-vapi-connect&templateURL=https%3A%2F%2Fbridgefu-vapi-awsconnect-us-east-1.s3.us-east-1.amazonaws.com%2Flatest%2Fcloudformation%2Ftemplate.yaml)
-- [Launch in us-west-2](https://us-west-2.console.aws.amazon.com/cloudformation/home?region=us-west-2#/stacks/create/review?stackName=bridgefu-vapi-connect&templateURL=https%3A%2F%2Fbridgefu-vapi-awsconnect-us-east-1.s3.us-east-1.amazonaws.com%2Flatest%2Fcloudformation%2Ftemplate.yaml)
+- **[Launch Bridgefu with CloudFormation](https://console.aws.amazon.com/cloudformation/home#/stacks/create/review?stackName=bridgefu-vapi-connect&templateURL=https%3A%2F%2Fbridgefu-vapi-awsconnect-us-east-1.s3.us-east-1.amazonaws.com%2Flatest%2Fcloudformation%2Ftemplate.yaml)**
+
+Use the normal AWS region selector to choose the region containing your Connect
+instance before creating the stack. The template reads that selection through
+`AWS::Region`, uses the matching regional AMI and Lambda artifact bucket, and
+rejects unsupported regions before creating resources.
 
 Enter:
 
@@ -54,6 +85,7 @@ endpoint, and its SIPS certificate are ready.
 
 | Group | Required choices | Defaults you can usually keep |
 |---|---|---|
+| AWS console | Region containing your Connect instance | Oregon preferred for a new Vapi US deployment |
 | Deployment | Deployment name | `t4g.large` EC2 |
 | Amazon Connect | Instance ARN, published flow ARN | — |
 | Public SIP DNS | Hosted-zone ID, new hostname | — |
@@ -68,7 +100,7 @@ The EC2 choices are `t4g.medium`, `t4g.large`, `t4g.xlarge`,
 `TestDelete` retention only for disposable qualification stacks; it removes the
 Vapi template resources and retained AWS data during cleanup.
 
-## 4. Customize the new Vapi assistant
+## 5. Customize the new Vapi assistant
 
 Open the stack **Outputs** and copy `VapiAssistantId`. Find that assistant in
 Vapi and replace its placeholder business instructions.
@@ -85,7 +117,7 @@ The preparation tool and destination-less transfer tool are already attached.
 Do not add a telephone or SIP destination to the transfer tool; the authenticated
 AWS transfer endpoint supplies a one-time destination.
 
-## 5. Verify the deployment
+## 6. Verify the deployment
 
 1. Place a test call to the new Vapi assistant.
 2. Ask for a person and provide the four default fields.

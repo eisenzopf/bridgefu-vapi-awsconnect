@@ -2,18 +2,18 @@
 
 ## Prerequisites
 
-Deploy `publisher/bucket.yaml` in `us-east-1` and `us-west-2`. Deploy
-`publisher/oidc-role.yaml` once with the GitHub OIDC provider and both bucket
-ARNs. Configure the GitHub `production-release` environment variables:
+Deploy `publisher/bucket.yaml` once in every region listed in
+`release/regions.json`. Use the bucket name
+`bridgefu-vapi-awsconnect-ACCOUNT_ID-REGION`. Deploy
+`publisher/oidc-role.yaml` once with the GitHub OIDC provider. Configure the
+GitHub `production-release` environment variables:
 
 - `AWS_PUBLISH_ROLE_ARN`
-- `ARTIFACT_BUCKET_US_EAST_1`
-- `ARTIFACT_BUCKET_US_WEST_2`
 - `RELEASE_SIGNING_KEY_ARN`
 
 Build in a dedicated publisher account with EBS encryption-by-default disabled.
 AWS does not allow an encrypted EBS snapshot to back a public AMI. The release
-workflow verifies that both regional snapshots are unencrypted and grants public
+workflow verifies that every regional snapshot is unencrypted and grants public
 snapshot permission before it grants public AMI launch permission.
 
 Before any AMI can be built, `bridgefu.lock.json` must name a remotely reachable
@@ -24,19 +24,20 @@ digest, and `release_ready: true`.
 
 1. Run `make test validate package`.
 2. Run Packer against a private AMI and complete the AMI smoke checks.
-3. Run remote CloudFormation and live-call qualification in both supported
-   regions with fresh execution IDs.
+3. Run remote CloudFormation qualification in every supported region and
+   live-call qualification in representative US and EU regions with fresh
+   execution IDs.
 4. Record the signed qualification evidence.
 5. Tag `vMAJOR.MINOR.PATCH`.
 6. Approve the protected `production-release` GitHub environment.
 
 The workflow builds from the pinned Bridgefu commit, produces private AMIs,
-copies them to both regions, packages deterministic Lambda ZIPs, uploads
+copies them to every supported region, packages deterministic Lambda ZIPs, uploads
 versioned artifacts, remotely validates CloudFormation, signs the manifest,
 and makes AMIs public last.
 
-The AWS account-level S3 Block Public Access policy must permit the two release
-buckets' read-only public bucket policies. Versioning remains enabled, uploads
+The AWS account-level S3 Block Public Access policy must permit the regional
+release buckets' read-only public bucket policies. Versioning remains enabled, uploads
 require TLS, and only `releases/*` and `latest/*` objects are public.
 
 Never reuse a versioned path or AMI name. To withdraw a release, remove its

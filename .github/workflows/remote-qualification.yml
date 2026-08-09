@@ -4,7 +4,22 @@ on:
   workflow_dispatch:
     inputs:
       release_version: {description: Immutable release version, required: true}
-      region: {description: us-east-1 or us-west-2, required: true, default: us-west-2}
+      region:
+        description: Amazon Connect deployment region
+        required: true
+        default: us-west-2
+        type: choice
+        options:
+          - us-west-2
+          - us-east-1
+          - af-south-1
+          - ap-northeast-1
+          - ap-northeast-2
+          - ap-southeast-1
+          - ap-southeast-2
+          - ca-central-1
+          - eu-central-1
+          - eu-west-2
       parameters_file: {description: Repository environment parameter JSON path, required: true}
 
 permissions:
@@ -26,12 +41,13 @@ jobs:
           VERSION: ${{ inputs.release_version }}
           REGION: ${{ inputs.region }}
           PARAMS: ${{ inputs.parameters_file }}
-          BUCKET: ${{ vars.ARTIFACT_BUCKET_US_EAST_1 }}
         run: |
           execution_id="qual-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           stack_name="bridgefu-$execution_id"
           echo "QUALIFICATION_STACK=$stack_name" >> "$GITHUB_ENV"
-          template_url="https://$BUCKET.s3.us-east-1.amazonaws.com/releases/$VERSION/cloudformation/template.yaml"
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
+          template_url="https://$bucket.s3.us-east-1.amazonaws.com/releases/$VERSION/cloudformation/template.yaml"
           mkdir -p target
           aws cloudformation validate-template --region "$REGION" \
             --template-url "$template_url" > target/validate-template.json

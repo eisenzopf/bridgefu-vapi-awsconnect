@@ -27,11 +27,16 @@ You need:
 - An active Amazon Connect instance and a published destination contact flow.
 - A public Route53 hosted zone.
 - A Vapi private API key stored in AWS Secrets Manager.
-- `us-east-1` or `us-west-2` for the first release.
+- An Amazon Connect instance in any supported commercial Connect region.
 
 CloudFormation creates the VPC, one Bridgefu EC2 gateway, DynamoDB, Lambdas,
 Connect wrapper flows, alarms, and the Vapi template assistant. There is no
 setup CLI, local web server, or desktop application.
+
+Bridgefu is always deployed in the same region as the selected Connect
+instance. If you are creating a new Connect instance for a Vapi US organization,
+prefer **US West (Oregon)**: Vapi's published US SIP signaling addresses are in
+AWS's Oregon region, avoiding an unnecessary cross-region leg.
 
 ## How the handoff stays bounded
 
@@ -43,4 +48,3 @@ never sees credentials, the correlation ID, or the one-time SIP route.
 
 See [operations](docs/operations.md) for monitoring, updates, retention, and
 removal. Maintainers should begin with [the release guide](docs/maintainers/release.md).
-
