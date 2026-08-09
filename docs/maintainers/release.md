@@ -24,9 +24,8 @@ digest, and `release_ready: true`.
 
 1. Run `make test validate package`.
 2. Run Packer against a private AMI and complete the AMI smoke checks.
-3. Run remote CloudFormation qualification in every supported region and
-   live-call qualification in representative US and EU regions with fresh
-   execution IDs.
+3. Run remote CloudFormation and live-call qualification in both US regions
+   with fresh execution IDs.
 4. Record the signed qualification evidence.
 5. Tag `vMAJOR.MINOR.PATCH`.
 6. Approve the protected `production-release` GitHub environment.

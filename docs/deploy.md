@@ -5,28 +5,16 @@ assistant and leaves every existing assistant and customer contact flow alone.
 
 ## 1. Choose the AWS region
 
-The first release supports every commercial AWS region where Amazon Connect is
-available:
+The first release supports the two US Amazon Connect regions:
 
 - US West (Oregon), `us-west-2`
 - US East (N. Virginia), `us-east-1`
-- Africa (Cape Town), `af-south-1`
-- Asia Pacific (Seoul), `ap-northeast-2`
-- Asia Pacific (Singapore), `ap-southeast-1`
-- Asia Pacific (Sydney), `ap-southeast-2`
-- Asia Pacific (Tokyo), `ap-northeast-1`
-- Canada (Central), `ca-central-1`
-- Europe (Frankfurt), `eu-central-1`
-- Europe (London), `eu-west-2`
 
 Choose the region containing your existing Amazon Connect instance. Bridgefu,
 Lambda, DynamoDB, and the stack are all created there. If you are creating a
 new Connect instance for a Vapi US organization, prefer **US West (Oregon)**.
 Vapi's published US SIP signaling addresses are in AWS's Oregon region, so that
 choice avoids an additional cross-region network leg.
-
-GovCloud is not part of the public commercial release. It requires separate
-GovCloud AMIs, artifact buckets, signing, and qualification.
 
 This integration uses Vapi's public SIP service. The template does not create
 VPC peering to Vapi. If Vapi offers private connectivity for your organization,

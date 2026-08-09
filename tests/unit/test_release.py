@@ -86,7 +86,7 @@ class ReleaseContractTests(unittest.TestCase):
             self.assertEqual(query["param_InstanceType"], ["t4g.large"])
             self.assertIn("/releases/1.2.3-test/", query["templateURL"][0])
 
-    def test_deployment_region_uses_aws_console_for_all_commercial_connect_regions(self):
+    def test_deployment_region_uses_aws_console_for_both_us_connect_regions(self):
         text = (ROOT / "cloudformation" / "template.yaml").read_text()
         mapping = text.split("  RegionRelease:\n", 1)[1].split("\nRules:\n", 1)[0]
         mapped_regions = set(re.findall(r"^    ([a-z0-9-]+):$", mapping, re.M))
@@ -95,7 +95,7 @@ class ReleaseContractTests(unittest.TestCase):
         for region in self.supported_regions():
             self.assertIn(region, rule)
         self.assertNotIn("DeploymentRegion:", text)
-        self.assertNotIn("us-gov-west-1:", text)
+        self.assertEqual(self.supported_regions(), {"us-west-2", "us-east-1"})
 
     def test_region_release_file_must_be_complete(self):
         with tempfile.TemporaryDirectory() as directory:

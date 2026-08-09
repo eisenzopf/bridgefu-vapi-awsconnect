@@ -27,7 +27,7 @@ You need:
 - An active Amazon Connect instance and a published destination contact flow.
 - A public Route53 hosted zone.
 - A Vapi private API key stored in AWS Secrets Manager.
-- An Amazon Connect instance in any supported commercial Connect region.
+- An Amazon Connect instance in `us-west-2` or `us-east-1`.
 
 CloudFormation creates the VPC, one Bridgefu EC2 gateway, DynamoDB, Lambdas,
 Connect wrapper flows, alarms, and the Vapi template assistant. There is no
