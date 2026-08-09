@@ -25,15 +25,18 @@ if grep -E 'source = "git\+|path = ' "$build_root/bridgefu/Cargo.lock" | \
   echo "rvoip must come only from crates.io" >&2
   exit 1
 fi
-python3 - "$build_root/bridgefu/Cargo.lock" <<'PY'
-import pathlib, sys, tomllib
-lock = tomllib.loads(pathlib.Path(sys.argv[1]).read_text())
-packages = [p for p in lock["package"] if p["name"].startswith("rvoip")]
-if not packages or any(p["version"] != "0.3.7" for p in packages):
-    raise SystemExit("every rvoip package must be exactly 0.3.7")
-if any("crates.io-index" not in p.get("source", "") for p in packages):
-    raise SystemExit("every rvoip package must come from crates.io")
-PY
+if ! cargo metadata --locked --format-version 1 \
+  --manifest-path "$build_root/bridgefu/Cargo.toml" | jq -e '
+    [.packages[] | select(.name | startswith("rvoip"))] as $rvoip |
+    ($rvoip | length > 0) and
+    ([$rvoip[] | select(
+      .version != "0.3.7" or
+      (.source // "") != "registry+https://github.com/rust-lang/crates.io-index"
+    )] | length == 0)
+  ' >/dev/null; then
+  echo "every rvoip package must be crates.io version 0.3.7" >&2
+  exit 1
+fi
 
 rustc --version
 cargo --version
