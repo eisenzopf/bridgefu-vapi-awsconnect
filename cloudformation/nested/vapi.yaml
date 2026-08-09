@@ -27,6 +27,10 @@ Parameters:
       ARN of an existing Secrets Manager secret whose SecretString is the Vapi
       private API key. The stack never returns or logs the key.
     AllowedPattern: '^arn:aws[-a-z0-9]*:secretsmanager:[-a-z0-9]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$'
+  VapiApiBaseUrl:
+    Type: String
+    Default: https://api.vapi.ai
+    AllowedValues: [https://api.vapi.ai, https://api.eu.vapi.ai]
   VapiWebhookSecretArn:
     Type: String
     Description: ARN of the generated recipe webhook bearer secret.
@@ -169,6 +173,7 @@ Resources:
       ServiceTimeout: '300'
       DeploymentId: !Ref DeploymentId
       VapiApiKeySecretArn: !Ref VapiApiKeySecretArn
+      VapiApiBaseUrl: !Ref VapiApiBaseUrl
       WebhookSecretArn: !Ref VapiWebhookSecretArn
       VapiIdentityBindingArn: !Ref VapiIdentityBindingArn
       PrepareUrl: !Ref PrepareUrl

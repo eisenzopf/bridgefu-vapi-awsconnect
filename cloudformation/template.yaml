@@ -14,7 +14,7 @@ Metadata:
       - Label: {default: Public SIP DNS}
         Parameters: [PublicHostedZoneId, SipHostname]
       - Label: {default: Vapi template assistant}
-        Parameters: [VapiApiKeySecretArn, VapiModel, VapiVoiceId]
+        Parameters: [VapiRegion, VapiApiKeySecretArn, VapiModel, VapiVoiceId]
       - Label: {default: Agent screen pop}
         Parameters: [ScreenPopFieldsJson, RoutingJson, ContextTtlSeconds]
       - Label: {default: Capacity and operations}
@@ -22,11 +22,12 @@ Metadata:
       - Label: {default: Retention}
         Parameters: [DataRetentionMode]
       - Label: {default: Advanced network controls}
-        Parameters: [VpcCidr, VapiSignalingCidr1, VapiSignalingCidr2, VapiSignalingCidr3, VapiSignalingCidr4, MediaSourceCidr]
+        Parameters: [VpcCidr]
     ParameterLabels:
       DeploymentId: {default: Deployment name}
       InstanceType: {default: Bridgefu EC2 size}
       VapiApiKeySecretArn: {default: Vapi private-key secret ARN}
+      VapiRegion: {default: Vapi organization region}
       VapiModel: {default: Initial Vapi model}
       VapiVoiceId: {default: Initial Vapi voice}
       ConnectInstanceArn: {default: Existing Amazon Connect instance ARN}
@@ -40,11 +41,6 @@ Metadata:
       LogRetentionDays: {default: CloudWatch log retention in days}
       AlarmEmail: {default: Optional alarm email}
       VpcCidr: {default: Dedicated Bridgefu VPC CIDR}
-      VapiSignalingCidr1: {default: Vapi signaling CIDR 1}
-      VapiSignalingCidr2: {default: Vapi signaling CIDR 2}
-      VapiSignalingCidr3: {default: Optional Vapi signaling CIDR 3}
-      VapiSignalingCidr4: {default: Optional Vapi signaling CIDR 4}
-      MediaSourceCidr: {default: Encrypted media source CIDR}
       DataRetentionMode: {default: Deletion behavior}
 
 Parameters:
@@ -82,6 +78,11 @@ Parameters:
     Description: >-
       ARN of an existing Secrets Manager secret whose SecretString is the Vapi
       private API key. The key itself is never a CloudFormation parameter.
+  VapiRegion:
+    Type: String
+    Default: US
+    AllowedValues: [US, EU]
+    Description: Region where the Vapi organization is hosted; controls API and SIP networking.
   VapiModel:
     Type: String
     Default: gpt-4.1-mini
@@ -128,14 +129,6 @@ Parameters:
     Default: 10.42.0.0/16
     AllowedPattern: '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.).+$'
     Description: Private CIDR for the new dedicated two-subnet Bridgefu VPC.
-  VapiSignalingCidr1: {Type: String, Default: 44.229.228.186/32}
-  VapiSignalingCidr2: {Type: String, Default: 44.238.177.138/32}
-  VapiSignalingCidr3: {Type: String, Default: ''}
-  VapiSignalingCidr4: {Type: String, Default: ''}
-  MediaSourceCidr:
-    Type: String
-    Default: 0.0.0.0/0
-    Description: Vapi media addresses are dynamic; only the SRTP port range is opened.
   DataRetentionMode:
     Type: String
     Default: ProductionRetain
@@ -143,6 +136,17 @@ Parameters:
     Description: ProductionRetain protects context, audit data, and the Vapi template on stack deletion.
 
 Mappings:
+  VapiRegionConfiguration:
+    US:
+      ApiBaseUrl: https://api.vapi.ai
+      SignalingCidr1: 44.229.228.186/32
+      SignalingCidr2: 44.238.177.138/32
+      MediaSourceCidr: 0.0.0.0/0
+    EU:
+      ApiBaseUrl: https://api.eu.vapi.ai
+      SignalingCidr1: 63.182.83.170/32
+      SignalingCidr2: 63.182.83.170/32
+      MediaSourceCidr: 63.182.83.170/32
   RegionRelease:
     us-east-1:
       AmiId: __AMI_US_EAST_1__
@@ -246,11 +250,11 @@ Resources:
         SipHostname: !Ref SipHostname
         ControlHostname: !Sub 'control.${SipHostname}'
         SipSecurity: sips_srtp
-        VapiSignalingCidr1: !Ref VapiSignalingCidr1
-        VapiSignalingCidr2: !Ref VapiSignalingCidr2
-        VapiSignalingCidr3: !Ref VapiSignalingCidr3
-        VapiSignalingCidr4: !Ref VapiSignalingCidr4
-        MediaSourceCidr: !Ref MediaSourceCidr
+        VapiSignalingCidr1: !FindInMap [VapiRegionConfiguration, !Ref VapiRegion, SignalingCidr1]
+        VapiSignalingCidr2: !FindInMap [VapiRegionConfiguration, !Ref VapiRegion, SignalingCidr2]
+        VapiSignalingCidr3: ''
+        VapiSignalingCidr4: ''
+        MediaSourceCidr: !FindInMap [VapiRegionConfiguration, !Ref VapiRegion, MediaSourceCidr]
         ConnectInstanceArn: !Ref ConnectInstanceArn
         ConnectEntryFlowArn: !GetAtt ConnectIntegration.Outputs.WrapperFlowArn
         ConnectEntryFlowId: !GetAtt ConnectIntegration.Outputs.WrapperFlowId
@@ -276,6 +280,7 @@ Resources:
         ArtifactBucket: !FindInMap [RegionRelease, !Ref 'AWS::Region', ArtifactBucket]
         ProvisionerArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/vapi_provisioner.zip
         VapiApiKeySecretArn: !Ref VapiApiKeySecretArn
+        VapiApiBaseUrl: !FindInMap [VapiRegionConfiguration, !Ref VapiRegion, ApiBaseUrl]
         VapiWebhookSecretArn: !GetAtt HandoffService.Outputs.VapiWebhookSecretArn
         VapiIdentityBindingArn: !GetAtt HandoffService.Outputs.VapiIdentityBindingArn
         PrepareUrl: !GetAtt HandoffService.Outputs.PrepareUrl

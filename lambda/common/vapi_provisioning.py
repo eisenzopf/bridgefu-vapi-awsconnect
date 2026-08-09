@@ -23,6 +23,7 @@ ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 VALUE_PATTERN = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
 MAX_REQUEST_TIMEOUT_SECONDS = 15.0
 MAX_READ_RETRIES = 1
+VAPI_API_BASE_URLS = frozenset({"https://api.vapi.ai", "https://api.eu.vapi.ai"})
 RETRIABLE_HTTP_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 
@@ -72,6 +73,7 @@ class VapiHttpClient:
             or parsed.password
             or parsed.query
             or parsed.fragment
+            or base_url.rstrip("/") not in VAPI_API_BASE_URLS
         ):
             raise VapiProvisioningError("vapi_base_url_invalid")
         self._api_key = api_key

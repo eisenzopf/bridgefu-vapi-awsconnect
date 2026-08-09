@@ -60,7 +60,7 @@ endpoint, and its SIPS certificate are ready.
 | Vapi | Private-key secret ARN | Model `gpt-4.1-mini`, voice `Elliot` |
 | Screen pop | — | Four fields, no alternate routing, one-hour TTL |
 | Operations | — | 100 calls, 30-day logs, no alarm email |
-| Network | — | Dedicated `10.42.0.0/16` VPC and release signaling CIDRs |
+| Network | — | Dedicated `10.42.0.0/16` VPC and region-matched Vapi firewall rules |
 | Retention | — | Retain DynamoDB, audit data, and Vapi resources on deletion |
 
 The EC2 choices are `t4g.medium`, `t4g.large`, `t4g.xlarge`,
