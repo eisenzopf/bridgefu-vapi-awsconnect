@@ -16,6 +16,6 @@ input described by `bridgefu.lock.json`.
 The original Bridgefu recipe is intentionally left untouched until this
 standalone distribution passes remote AWS and live-call qualification.
 
-The base commit still contains rvoip 0.3.5. `bridgefu.lock.json` therefore
-marks public AMI publication as blocked until the current crates.io 0.3.7 core
-work is committed and reachable from the Bridgefu remote.
+The AMI source lock now pins reachable Bridgefu commit
+`180ca1fe1099872a2e3ddabb116f757566dc3683`, which uses the exact crates.io
+rvoip 0.3.7 graph recorded by the locked Cargo dependency tree.
