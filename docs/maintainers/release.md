@@ -5,7 +5,9 @@
 Deploy `publisher/bucket.yaml` once in every region listed in
 `release/regions.json`. Use the bucket name
 `bridgefu-vapi-awsconnect-ACCOUNT_ID-REGION`. Deploy
-`publisher/oidc-role.yaml` once with the GitHub OIDC provider. Configure the
+`publisher/oidc-role.yaml` once with the GitHub OIDC provider and the immutable
+GitHub owner/repository IDs shown by the protected OIDC diagnostic. Do not use
+the mutable repository name as the IAM subject. Configure the
 GitHub `production-release` environment variables:
 
 - `AWS_PUBLISH_ROLE_ARN`
