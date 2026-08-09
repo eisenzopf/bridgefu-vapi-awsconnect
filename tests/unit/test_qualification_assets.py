@@ -50,6 +50,12 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn(upload, packer)
         self.assertLess(packer.index(create), packer.index(upload))
 
+    def test_image_uses_and_verifies_al2023_preinstalled_aws_cli_v2(self):
+        install = (ROOT / "image" / "install.sh").read_text()
+        package_block = install.split("sudo dnf install -y", 1)[1].split("\n\n", 1)[0]
+        self.assertNotIn("awscli2", package_block)
+        self.assertIn("aws --version 2>&1 | grep -Eq '^aws-cli/2\\.'", install)
+
     def test_disposable_connect_template_cannot_target_an_existing_instance(self):
         text = (
             QUALIFICATION / "cloudformation" / "disposable-connect.yaml"
