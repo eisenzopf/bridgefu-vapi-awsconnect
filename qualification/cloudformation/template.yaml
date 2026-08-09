@@ -47,7 +47,6 @@ Resources:
 
   Candidate:
     Type: AWS::CloudFormation::Stack
-    DependsOn: DisposableConnect
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
     Properties:
