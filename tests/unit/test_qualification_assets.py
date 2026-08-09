@@ -60,6 +60,16 @@ class QualificationAssetTests(unittest.TestCase):
             "curl --version 2>&1 | grep -Eq '^Protocols:.* https( |$)'", install
         )
 
+    def test_image_audits_rvoip_without_python_tomllib(self):
+        install = (ROOT / "image" / "install.sh").read_text()
+        self.assertNotIn("tomllib", install)
+        self.assertIn("cargo metadata --locked --format-version 1", install)
+        self.assertIn('select(.name | startswith("rvoip"))', install)
+        self.assertIn(
+            '(.source // "") != "registry+https://github.com/rust-lang/crates.io-index"',
+            install,
+        )
+
     def test_disposable_connect_template_cannot_target_an_existing_instance(self):
         text = (
             QUALIFICATION / "cloudformation" / "disposable-connect.yaml"
