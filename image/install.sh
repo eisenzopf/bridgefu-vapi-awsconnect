@@ -3,12 +3,14 @@ set -euo pipefail
 umask 022
 
 sudo dnf install -y \
-  cargo clang cmake curl gcc gcc-c++ git haproxy jq openssl-devel \
+  cargo clang cmake gcc gcc-c++ git haproxy jq openssl-devel \
   pkgconf-pkg-config protobuf-compiler rust xfsprogs
 
-# The standard Amazon Linux 2023 AMI ships with AWS CLI v2. Keep this explicit
-# because the runtime uses it to read Secrets Manager and publish metrics.
+# The standard Amazon Linux 2023 AMI ships with AWS CLI v2 and curl-minimal.
+# Keep both dependencies explicit because the runtime uses them for AWS APIs,
+# Secrets Manager, metrics, metadata, and HTTPS downloads.
 aws --version 2>&1 | grep -Eq '^aws-cli/2\.'
+curl --version 2>&1 | grep -Eq '^Protocols:.* https( |$)'
 
 build_root="$(mktemp -d)"
 trap 'sudo rm -rf "$build_root"' EXIT

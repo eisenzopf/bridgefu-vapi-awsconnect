@@ -50,11 +50,15 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn(upload, packer)
         self.assertLess(packer.index(create), packer.index(upload))
 
-    def test_image_uses_and_verifies_al2023_preinstalled_aws_cli_v2(self):
+    def test_image_verifies_al2023_preinstalled_aws_cli_and_curl(self):
         install = (ROOT / "image" / "install.sh").read_text()
         package_block = install.split("sudo dnf install -y", 1)[1].split("\n\n", 1)[0]
         self.assertNotIn("awscli2", package_block)
+        self.assertNotRegex(package_block, r"(?:^|\s)curl(?:\s|$)")
         self.assertIn("aws --version 2>&1 | grep -Eq '^aws-cli/2\\.'", install)
+        self.assertIn(
+            "curl --version 2>&1 | grep -Eq '^Protocols:.* https( |$)'", install
+        )
 
     def test_disposable_connect_template_cannot_target_an_existing_instance(self):
         text = (
