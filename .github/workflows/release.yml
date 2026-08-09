@@ -1,4 +1,4 @@
-name: Publish release
+name: Qualify and publish release
 
 on:
   push:
@@ -14,9 +14,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  build-candidate:
     runs-on: ubuntu-24.04-arm
     environment: production-release
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      bridgefu_commit: ${{ steps.release.outputs.bridgefu_commit }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,14 +29,15 @@ jobs:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_PUBLISH_ROLE_ARN }}
-          aws-region: us-east-1
-      - name: Resolve release inputs
+          aws-region: us-west-2
+      - name: Resolve immutable release inputs
         id: release
         env:
           TAG: ${{ github.ref_name }}
         run: |
           version="${TAG#v}"
           test "$version" != "$TAG"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]
           test "$(jq -r .release_ready bridgefu.lock.json)" = true
           commit="$(jq -r .commit bridgefu.lock.json)"
           test "$commit" != 0000000000000000000000000000000000000000
@@ -42,104 +46,285 @@ jobs:
             echo "bridgefu_commit=$commit"
             echo "bridgefu_lock=$(jq -r .cargo_lock_sha256 bridgefu.lock.json)"
           } >> "$GITHUB_OUTPUT"
-      - name: Build private AMIs
+      - name: Prove the candidate version has no prior AWS state
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          while read -r region; do
+            count="$(aws ec2 describe-images --owners self --region "$region" \
+              --filters "Name=tag:BridgefuRelease,Values=$VERSION" \
+              --query 'length(Images)' --output text)"
+            test "$count" = 0
+            bucket="bridgefu-vapi-awsconnect-$account_id-$region"
+            key_count="$(aws s3api list-objects-v2 --region "$region" --bucket "$bucket" \
+              --prefix "releases/$VERSION/" --max-keys 1 --query KeyCount --output text)"
+            test "$key_count" = 0
+          done < <(jq -r '.regions[].code' release/regions.json)
+          echo 'CANDIDATE_PRECHECK_PASSED=true' >> "$GITHUB_ENV"
+      - name: Build and copy private candidate AMIs
         env:
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           packer init image/bridgefu.pkr.hcl
           packer build \
+            -var aws_region=us-west-2 \
             -var bridgefu_commit=${{ steps.release.outputs.bridgefu_commit }} \
             -var bridgefu_cargo_lock_sha256=${{ steps.release.outputs.bridgefu_lock }} \
             -var release_version="$VERSION" \
             image/bridgefu.pkr.hcl
-          east_ami="$(aws ec2 describe-images --owners self --region us-east-1 \
+          source_ami="$(aws ec2 describe-images --owners self --region us-west-2 \
             --filters "Name=tag:BridgefuRelease,Values=$VERSION" \
             --query 'reverse(sort_by(Images,&CreationDate))[0].ImageId' --output text)"
-          west_ami="$(aws ec2 copy-image --region us-west-2 --source-region us-east-1 \
-            --source-image-id "$east_ami" --name "bridgefu-vapi-awsconnect-$VERSION" \
-            --copy-image-tags --query ImageId --output text)"
-          aws ec2 wait image-available --region us-east-1 --image-ids "$east_ami"
-          aws ec2 wait image-available --region us-west-2 --image-ids "$west_ami"
-          echo "EAST_AMI=$east_ami" >> "$GITHUB_ENV"
-          echo "WEST_AMI=$west_ami" >> "$GITHUB_ENV"
-      - name: Build and upload immutable artifacts
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          mkdir -p target/candidate
+          echo '{}' > target/candidate/region-release.json
+          while read -r region; do
+            if [[ "$region" = us-west-2 ]]; then
+              ami="$source_ami"
+            else
+              ami="$(aws ec2 copy-image --region "$region" \
+                --source-region us-west-2 --source-image-id "$source_ami" \
+                --name "bridgefu-vapi-awsconnect-$VERSION" --copy-image-tags \
+                --query ImageId --output text)"
+            fi
+            aws ec2 wait image-available --region "$region" --image-ids "$ami"
+            bucket="bridgefu-vapi-awsconnect-$account_id-$region"
+            jq --arg region "$region" --arg ami "$ami" --arg bucket "$bucket" \
+              '. + {($region): {"ami_id": $ami, "bucket": $bucket}}' \
+              target/candidate/region-release.json > target/candidate/region-release.next.json
+            mv target/candidate/region-release.next.json target/candidate/region-release.json
+          done < <(jq -r '.regions[].code' release/regions.json)
+      - name: Build and upload immutable candidate artifacts
         env:
           VERSION: ${{ steps.release.outputs.version }}
-          EAST_BUCKET: ${{ vars.ARTIFACT_BUCKET_US_EAST_1 }}
-          WEST_BUCKET: ${{ vars.ARTIFACT_BUCKET_US_WEST_2 }}
         run: |
+          east_bucket="$(jq -r '.["us-east-1"].bucket' target/candidate/region-release.json)"
           python release/build_release.py \
             --version "$VERSION" \
-            --ami-us-east-1 "$EAST_AMI" \
-            --ami-us-west-2 "$WEST_AMI" \
-            --bucket-us-east-1 "$EAST_BUCKET" \
-            --bucket-us-west-2 "$WEST_BUCKET" \
-            --public-base-url "https://$EAST_BUCKET.s3.us-east-1.amazonaws.com" \
-            --output target/release
-          aws s3 cp target/release "s3://$EAST_BUCKET/releases/$VERSION" \
+            --regions-file target/candidate/region-release.json \
+            --public-base-url "https://$east_bucket.s3.us-east-1.amazonaws.com" \
+            --output target/candidate/release
+          aws s3 cp target/candidate/release "s3://$east_bucket/releases/$VERSION" \
             --recursive --region us-east-1 --only-show-errors
-          aws s3 cp target/release/artifacts/lambda \
-            "s3://$WEST_BUCKET/releases/$VERSION/artifacts/lambda" \
-            --recursive --region us-west-2 --only-show-errors
-      - name: Validate both regional templates
+          while read -r region; do
+            [[ "$region" = us-east-1 ]] && continue
+            bucket="$(jq -r --arg region "$region" '.[$region].bucket' target/candidate/region-release.json)"
+            aws s3 cp target/candidate/release/artifacts/lambda \
+              "s3://$bucket/releases/$VERSION/artifacts/lambda" \
+              --recursive --region "$region" --only-show-errors
+          done < <(jq -r '.regions[].code' release/regions.json)
+      - name: Validate templates and build the real SIP source
         env:
           VERSION: ${{ steps.release.outputs.version }}
-          EAST_BUCKET: ${{ vars.ARTIFACT_BUCKET_US_EAST_1 }}
         run: |
-          template_url="https://$EAST_BUCKET.s3.us-east-1.amazonaws.com/releases/$VERSION/cloudformation/template.yaml"
-          aws cloudformation validate-template --region us-east-1 --template-url "$template_url"
-          aws cloudformation validate-template --region us-west-2 --template-url "$template_url"
-      - name: Sign release manifest
+          east_bucket="$(jq -r '.["us-east-1"].bucket' target/candidate/region-release.json)"
+          template_url="https://$east_bucket.s3.us-east-1.amazonaws.com/releases/$VERSION/cloudformation/template.yaml"
+          while read -r region; do
+            aws cloudformation validate-template --region "$region" --template-url "$template_url"
+          done < <(jq -r '.regions[].code' release/regions.json)
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add aarch64-unknown-linux-musl
+          cargo build --release --locked --target aarch64-unknown-linux-musl \
+            --manifest-path qualification/sip-client/Cargo.toml
+          file qualification/sip-client/target/aarch64-unknown-linux-musl/release/bridgefu-vapi-sip-smoke \
+            | grep -F 'statically linked'
+          cp qualification/sip-client/target/aarch64-unknown-linux-musl/release/bridgefu-vapi-sip-smoke \
+            target/candidate/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-candidate
+          path: target/candidate
+          if-no-files-found: error
+      - name: Remove partial private candidate state after a build failure
+        if: ${{ failure() && env.CANDIDATE_PRECHECK_PASSED == 'true' }}
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          while read -r region; do
+            bucket="bridgefu-vapi-awsconnect-$account_id-$region"
+            aws s3 rm "s3://$bucket/releases/$VERSION/" --recursive --region "$region" \
+              --only-show-errors || true
+            while read -r ami; do
+              [[ -z "$ami" ]] && continue
+              public="$(aws ec2 describe-image-attribute --region "$region" --image-id "$ami" \
+                --attribute launchPermission --query 'LaunchPermissions[?Group==`all`]' --output text)"
+              test -z "$public"
+              snapshots="$(aws ec2 describe-images --region "$region" --image-ids "$ami" \
+                --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' --output text)"
+              aws ec2 deregister-image --region "$region" --image-id "$ami"
+              for snapshot in $snapshots; do
+                aws ec2 delete-snapshot --region "$region" --snapshot-id "$snapshot"
+              done
+            done < <(aws ec2 describe-images --owners self --region "$region" \
+              --filters "Name=tag:BridgefuRelease,Values=$VERSION" \
+              --query 'Images[].ImageId' --output text | tr '\t' '\n')
+          done < <(jq -r '.regions[].code' release/regions.json)
+
+  live-qualification:
+    needs: build-candidate
+    runs-on: ubuntu-latest
+    environment: live-qualification
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: actions/setup-node@v4
+        with: {node-version: '22', cache: npm, cache-dependency-path: qualification/package-lock.json}
+      - uses: actions/download-artifact@v4
+        with: {name: release-candidate, path: target/candidate}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_QUALIFICATION_ROLE_ARN }}
+          aws-region: us-west-2
+      - name: Install pinned qualification dependencies
+        run: |
+          python -m pip install -r qualification/requirements-runner.txt
+          npm --prefix qualification ci --ignore-scripts
+          PLAYWRIGHT_BROWSERS_PATH=0 npm --prefix qualification exec playwright install --with-deps chromium
+      - name: Checkout the exact Bridgefu source used by the AMI
+        run: |
+          repository="$(jq -r .repository bridgefu.lock.json)"
+          commit="$(jq -r .commit bridgefu.lock.json)"
+          git clone --filter=blob:none --no-checkout "$repository" target/pinned-bridgefu
+          git -C target/pinned-bridgefu checkout --detach "$commit"
+          test "$(shasum -a 256 target/pinned-bridgefu/Cargo.lock | awk '{print $1}')" = \
+            "$(jq -r .cargo_lock_sha256 bridgefu.lock.json)"
+      - name: Qualify Vapi SIP and Bridgefu Web SDK call paths
+        env:
+          VERSION: ${{ needs.build-candidate.outputs.version }}
+          VAPI_PUBLIC_KEY: ${{ secrets.VAPI_PUBLIC_KEY }}
+        run: |
+          chmod 0700 target/candidate/bridgefu-vapi-sip-smoke
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
+          execution_id="bfq-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python qualification/controller.py run \
+            --execution-id "$execution_id" \
+            --release "$VERSION" \
+            --region us-west-2 \
+            --template-url "https://$bucket.s3.us-east-1.amazonaws.com/releases/$VERSION/qualification/cloudformation/template.yaml" \
+            --vapi-secret-arn "${{ vars.VAPI_API_KEY_SECRET_ARN }}" \
+            --hosted-zone-id "${{ vars.PUBLIC_HOSTED_ZONE_ID }}" \
+            --hosted-zone-name "${{ vars.PUBLIC_HOSTED_ZONE_NAME }}" \
+            --cloudformation-role-arn "${{ vars.AWS_QUALIFICATION_CLOUDFORMATION_ROLE_ARN }}" \
+            --bridgefu-checkout target/pinned-bridgefu \
+            --sip-client target/candidate/bridgefu-vapi-sip-smoke \
+            --output target/live-qualification
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-live-qualification
+          path: target/live-qualification
+          if-no-files-found: warn
+
+  publish:
+    needs: [build-candidate, live-qualification]
+    runs-on: ubuntu-latest
+    environment: production-release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: release-candidate, path: target/candidate}
+      - uses: actions/download-artifact@v4
+        with: {name: release-live-qualification, path: target/live-qualification}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PUBLISH_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Sign manifest and live evidence
         env:
           SIGNING_KEY_ARN: ${{ vars.RELEASE_SIGNING_KEY_ARN }}
+          VERSION: ${{ needs.build-candidate.outputs.version }}
         run: |
-          openssl dgst -sha256 -binary target/release/manifest.json > target/manifest.digest
-          aws kms sign --key-id "$SIGNING_KEY_ARN" --signing-algorithm ECDSA_SHA_256 \
-            --message-type DIGEST --message fileb://target/manifest.digest \
-            --query Signature --output text | base64 --decode > target/release/manifest.sig
-          aws s3 cp target/release/manifest.sig \
-            "s3://${{ vars.ARTIFACT_BUCKET_US_EAST_1 }}/releases/${{ steps.release.outputs.version }}/manifest.sig" \
-            --region us-east-1 --only-show-errors
-      - name: Publish public launch permission last
+          for name in manifest evidence; do
+            if [[ "$name" = manifest ]]; then
+              source=target/candidate/release/manifest.json
+              signature=target/candidate/release/manifest.sig
+            else
+              source=target/live-qualification/evidence.json
+              signature=target/live-qualification/evidence.sig
+            fi
+            openssl dgst -sha256 -binary "$source" > "target/$name.digest"
+            aws kms sign --key-id "$SIGNING_KEY_ARN" --signing-algorithm ECDSA_SHA_256 \
+              --message-type DIGEST --message "fileb://target/$name.digest" \
+              --query Signature --output text | base64 --decode > "$signature"
+          done
+          east_bucket="$(jq -r '.["us-east-1"].bucket' target/candidate/region-release.json)"
+          aws s3 cp target/candidate/release/manifest.sig \
+            "s3://$east_bucket/releases/$VERSION/manifest.sig" --only-show-errors
+          aws s3 cp target/live-qualification/evidence.json \
+            "s3://$east_bucket/releases/$VERSION/qualification/evidence.json" --only-show-errors
+          aws s3 cp target/live-qualification/evidence.sig \
+            "s3://$east_bucket/releases/$VERSION/qualification/evidence.sig" --only-show-errors
+      - name: Publish public AMI launch permission and latest pointers last
         env:
-          VERSION: ${{ steps.release.outputs.version }}
-          EAST_BUCKET: ${{ vars.ARTIFACT_BUCKET_US_EAST_1 }}
+          VERSION: ${{ needs.build-candidate.outputs.version }}
         run: |
-          east_snapshots="$(aws ec2 describe-images --region us-east-1 \
-            --image-ids "$EAST_AMI" \
-            --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' --output text)"
-          west_snapshots="$(aws ec2 describe-images --region us-west-2 \
-            --image-ids "$WEST_AMI" \
-            --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' --output text)"
-          for snapshot in $east_snapshots; do
-            encrypted="$(aws ec2 describe-snapshots --region us-east-1 \
-              --snapshot-ids "$snapshot" --query 'Snapshots[0].Encrypted' --output text)"
-            test "$encrypted" = False
-            aws ec2 modify-snapshot-attribute --region us-east-1 \
-              --snapshot-id "$snapshot" --attribute createVolumePermission \
-              --operation-type add --group-names all
+          while read -r region; do
+            ami="$(jq -r --arg region "$region" '.[$region].ami_id' target/candidate/region-release.json)"
+            snapshots="$(aws ec2 describe-images --region "$region" --image-ids "$ami" \
+              --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' --output text)"
+            for snapshot in $snapshots; do
+              encrypted="$(aws ec2 describe-snapshots --region "$region" \
+                --snapshot-ids "$snapshot" --query 'Snapshots[0].Encrypted' --output text)"
+              test "$encrypted" = False
+              aws ec2 modify-snapshot-attribute --region "$region" \
+                --snapshot-id "$snapshot" --attribute createVolumePermission \
+                --operation-type add --group-names all
+            done
+            aws ec2 modify-image-attribute --region "$region" --image-id "$ami" \
+              --launch-permission 'Add=[{Group=all}]'
+          done < <(jq -r '.regions[].code' release/regions.json)
+          east_bucket="$(jq -r '.["us-east-1"].bucket' target/candidate/region-release.json)"
+          for path in cloudformation/template.yaml manifest.json manifest.sig quick-create-links.json; do
+            aws s3 cp "target/candidate/release/$path" "s3://$east_bucket/latest/$path" \
+              --only-show-errors
           done
-          for snapshot in $west_snapshots; do
-            encrypted="$(aws ec2 describe-snapshots --region us-west-2 \
-              --snapshot-ids "$snapshot" --query 'Snapshots[0].Encrypted' --output text)"
-            test "$encrypted" = False
-            aws ec2 modify-snapshot-attribute --region us-west-2 \
-              --snapshot-id "$snapshot" --attribute createVolumePermission \
-              --operation-type add --group-names all
-          done
-          aws ec2 modify-image-attribute --region us-east-1 --image-id "$EAST_AMI" \
-            --launch-permission 'Add=[{Group=all}]'
-          aws ec2 modify-image-attribute --region us-west-2 --image-id "$WEST_AMI" \
-            --launch-permission 'Add=[{Group=all}]'
-          aws s3 cp target/release/cloudformation/template.yaml \
-            "s3://$EAST_BUCKET/latest/cloudformation/template.yaml" \
-            --region us-east-1 --only-show-errors
-          aws s3 cp target/release/manifest.json \
-            "s3://$EAST_BUCKET/latest/manifest.json" \
-            --region us-east-1 --only-show-errors
-          aws s3 cp target/release/manifest.sig \
-            "s3://$EAST_BUCKET/latest/manifest.sig" \
-            --region us-east-1 --only-show-errors
-          aws s3 cp target/release/quick-create-links.json \
-            "s3://$EAST_BUCKET/latest/quick-create-links.json" \
-            --region us-east-1 --only-show-errors
+          aws s3 cp target/live-qualification/evidence.json \
+            "s3://$east_bucket/latest/qualification/evidence.json" --only-show-errors
+          aws s3 cp target/live-qualification/evidence.sig \
+            "s3://$east_bucket/latest/qualification/evidence.sig" --only-show-errors
+
+  clean-failed-release:
+    needs: [build-candidate, live-qualification, publish]
+    if: ${{ always() && needs.build-candidate.result == 'success' && needs.publish.result != 'success' }}
+    runs-on: ubuntu-latest
+    environment: production-release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: release-candidate, path: target/candidate}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PUBLISH_ROLE_ARN }}
+          aws-region: us-west-2
+      - name: Revoke and remove only the failed release candidate
+        env:
+          VERSION: ${{ needs.build-candidate.outputs.version }}
+        run: |
+          while read -r region; do
+            ami="$(jq -r --arg region "$region" '.[$region].ami_id' target/candidate/region-release.json)"
+            public="$(aws ec2 describe-image-attribute --region "$region" --image-id "$ami" \
+              --attribute launchPermission --query 'LaunchPermissions[?Group==`all`]' --output text)"
+            if [[ -n "$public" ]]; then
+              aws ec2 modify-image-attribute --region "$region" --image-id "$ami" \
+                --launch-permission 'Remove=[{Group=all}]'
+            fi
+            snapshots="$(aws ec2 describe-images --region "$region" --image-ids "$ami" \
+              --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' --output text)"
+            aws ec2 deregister-image --region "$region" --image-id "$ami"
+            for snapshot in $snapshots; do
+              aws ec2 modify-snapshot-attribute --region "$region" --snapshot-id "$snapshot" \
+                --attribute createVolumePermission --operation-type remove --group-names all || true
+              aws ec2 delete-snapshot --region "$region" --snapshot-id "$snapshot"
+            done
+          done < <(jq -r '.regions[].code' release/regions.json)
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          while read -r region; do
+            bucket="bridgefu-vapi-awsconnect-$account_id-$region"
+            aws s3 rm "s3://$bucket/releases/$VERSION/" --recursive --region "$region" \
+              --only-show-errors
+          done < <(jq -r '.regions[].code' release/regions.json)

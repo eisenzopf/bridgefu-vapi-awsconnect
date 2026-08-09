@@ -1,7 +1,13 @@
-.PHONY: test lint package validate packer-validate
+.PHONY: test qualification-test lint package validate packer-validate
 
 test:
 	python3 -m unittest discover -s tests/unit -v
+
+qualification-test:
+	cargo test --locked --manifest-path qualification/sip-client/Cargo.toml
+	npm --prefix qualification ci --ignore-scripts
+	node --check qualification/browser/agent-workspace-playwright.mjs
+	node --check qualification/browser/vapi-web-playwright.mjs
 
 lint:
 	python3 -m compileall -q lambda release tests

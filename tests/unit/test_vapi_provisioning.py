@@ -129,6 +129,12 @@ class VapiProvisioningTests(unittest.TestCase):
             VapiHttpClient("v" * 32, request_timeout=lambda: 16)._timeout_seconds()
         with self.assertRaisesRegex(VapiProvisioningError, "vapi_retry_budget_invalid"):
             VapiHttpClient("v" * 32, read_retries=2)
+        self.assertEqual(
+            VapiHttpClient("v" * 32, "https://api.eu.vapi.ai")._base_url,
+            "https://api.eu.vapi.ai",
+        )
+        with self.assertRaisesRegex(VapiProvisioningError, "vapi_base_url_invalid"):
+            VapiHttpClient("v" * 32, "https://customer.example.com")
 
     def test_create_retry_is_idempotent_and_server_owned(self):
         client = FakeVapi()

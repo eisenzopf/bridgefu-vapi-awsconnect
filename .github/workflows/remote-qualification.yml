@@ -1,90 +1,100 @@
-name: Remote CloudFormation qualification
+name: Remote live qualification
 
 on:
   workflow_dispatch:
     inputs:
-      release_version: {description: Immutable release version, required: true}
-      region: {description: us-east-1 or us-west-2, required: true, default: us-west-2}
-      parameters_file: {description: Repository environment parameter JSON path, required: true}
+      release_version:
+        description: Immutable uploaded release version
+        required: true
+      region:
+        description: Disposable Amazon Connect qualification region
+        required: true
+        default: us-west-2
+        type: choice
+        options: [us-west-2, us-east-1]
 
 permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: bridgefu-vapi-awsconnect-live-qualification
+  cancel-in-progress: false
+
 jobs:
+  sip-client:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build exact crates.io rvoip SIP source
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add aarch64-unknown-linux-musl
+          cargo build --release --locked --target aarch64-unknown-linux-musl \
+            --manifest-path qualification/sip-client/Cargo.toml
+          file qualification/sip-client/target/aarch64-unknown-linux-musl/release/bridgefu-vapi-sip-smoke \
+            | grep -F 'statically linked'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qualification-sip-client
+          path: qualification/sip-client/target/aarch64-unknown-linux-musl/release/bridgefu-vapi-sip-smoke
+          if-no-files-found: error
+
   qualify:
+    needs: sip-client
     runs-on: ubuntu-latest
     environment: live-qualification
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: actions/setup-node@v4
+        with: {node-version: '22', cache: npm, cache-dependency-path: qualification/package-lock.json}
+      - uses: actions/download-artifact@v4
+        with: {name: qualification-sip-client, path: target/qualification-client}
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_QUALIFICATION_ROLE_ARN }}
           aws-region: ${{ inputs.region }}
-      - name: Deploy fresh qualification stack
+      - name: Install pinned qualification dependencies
+        run: |
+          python -m pip install -r qualification/requirements-runner.txt
+          npm --prefix qualification ci --ignore-scripts
+          PLAYWRIGHT_BROWSERS_PATH=0 npm --prefix qualification exec playwright install --with-deps chromium
+      - name: Checkout the exact Bridgefu source used by the AMI
+        run: |
+          repository="$(jq -r .repository bridgefu.lock.json)"
+          commit="$(jq -r .commit bridgefu.lock.json)"
+          git clone --filter=blob:none --no-checkout "$repository" target/pinned-bridgefu
+          git -C target/pinned-bridgefu checkout --detach "$commit"
+          test "$(shasum -a 256 target/pinned-bridgefu/Cargo.lock | awk '{print $1}')" = \
+            "$(jq -r .cargo_lock_sha256 bridgefu.lock.json)"
+      - name: Run both live smoke paths and prove teardown
         env:
           VERSION: ${{ inputs.release_version }}
           REGION: ${{ inputs.region }}
-          PARAMS: ${{ inputs.parameters_file }}
-          BUCKET: ${{ vars.ARTIFACT_BUCKET_US_EAST_1 }}
+          VAPI_PUBLIC_KEY: ${{ secrets.VAPI_PUBLIC_KEY }}
         run: |
-          execution_id="qual-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          stack_name="bridgefu-$execution_id"
-          echo "QUALIFICATION_STACK=$stack_name" >> "$GITHUB_ENV"
-          template_url="https://$BUCKET.s3.us-east-1.amazonaws.com/releases/$VERSION/cloudformation/template.yaml"
-          mkdir -p target
-          aws cloudformation validate-template --region "$REGION" \
-            --template-url "$template_url" > target/validate-template.json
-          jq --arg id "$execution_id" \
-            'map(select(.ParameterKey != "DeploymentId" and .ParameterKey != "DataRetentionMode")) + [{"ParameterKey":"DeploymentId","ParameterValue":$id},{"ParameterKey":"DataRetentionMode","ParameterValue":"TestDelete"}]' \
-            "$PARAMS" > target/qualification-parameters.json
-          aws cloudformation create-stack --region "$REGION" \
-            --stack-name "$stack_name" --template-url "$template_url" \
-            --parameters file://target/qualification-parameters.json \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --on-failure DELETE
-          aws cloudformation wait stack-create-complete --region "$REGION" \
-            --stack-name "$stack_name"
-          aws cloudformation describe-stacks --region "$REGION" \
-            --stack-name "$stack_name" > target/qualification-stack.json
-      - name: Verify deployed Bridgefu service through SSM
-        env:
-          REGION: ${{ inputs.region }}
-        run: |
-          instance_id="$(jq -r '.Stacks[0].Outputs[] | select(.OutputKey == "BridgefuInstanceId") | .OutputValue' target/qualification-stack.json)"
-          test "$instance_id" != null
-          command_id="$(aws ssm send-command --region "$REGION" \
-            --instance-ids "$instance_id" \
-            --document-name AWS-RunShellScript \
-            --parameters 'commands=["systemctl is-active bridgefu.service","curl --fail --silent --show-error --max-time 5 http://127.0.0.1:9090/readyz"]' \
-            --query Command.CommandId --output text)"
-          aws ssm wait command-executed --region "$REGION" \
-            --command-id "$command_id" --instance-id "$instance_id"
-          aws ssm get-command-invocation --region "$REGION" \
-            --command-id "$command_id" --instance-id "$instance_id" \
-            > target/qualification-health.json
-      - name: Delete qualification stack and prove zero stack state
-        if: always()
-        env:
-          REGION: ${{ inputs.region }}
-        run: |
-          mkdir -p target
-          if [[ -n "${QUALIFICATION_STACK:-}" ]] && aws cloudformation describe-stacks \
-            --region "$REGION" --stack-name "$QUALIFICATION_STACK" >/dev/null 2>&1; then
-            aws cloudformation delete-stack --region "$REGION" \
-              --stack-name "$QUALIFICATION_STACK"
-            aws cloudformation wait stack-delete-complete --region "$REGION" \
-              --stack-name "$QUALIFICATION_STACK"
-          fi
-          if [[ -n "${QUALIFICATION_STACK:-}" ]] && aws cloudformation describe-stacks \
-            --region "$REGION" --stack-name "$QUALIFICATION_STACK" >/dev/null 2>&1; then
-            echo '{"stack_absent":false}' > target/qualification-zero-state.json
-            exit 1
-          fi
-          echo '{"stack_absent":true}' > target/qualification-zero-state.json
+          chmod 0700 target/qualification-client/bridgefu-vapi-sip-smoke
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
+          execution_id="bfq-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python qualification/controller.py run \
+            --execution-id "$execution_id" \
+            --release "$VERSION" \
+            --region "$REGION" \
+            --template-url "https://$bucket.s3.us-east-1.amazonaws.com/releases/$VERSION/qualification/cloudformation/template.yaml" \
+            --vapi-secret-arn "${{ vars.VAPI_API_KEY_SECRET_ARN }}" \
+            --hosted-zone-id "${{ vars.PUBLIC_HOSTED_ZONE_ID }}" \
+            --hosted-zone-name "${{ vars.PUBLIC_HOSTED_ZONE_NAME }}" \
+            --cloudformation-role-arn "${{ vars.AWS_QUALIFICATION_CLOUDFORMATION_ROLE_ARN }}" \
+            --bridgefu-checkout target/pinned-bridgefu \
+            --sip-client target/qualification-client/bridgefu-vapi-sip-smoke \
+            --output target/live-qualification
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: qualification-stack
-          path: target/qualification-*.json
+          name: live-qualification-${{ inputs.release_version }}-${{ inputs.region }}
+          path: target/live-qualification
           if-no-files-found: warn

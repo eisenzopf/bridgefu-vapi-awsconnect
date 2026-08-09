@@ -9,8 +9,10 @@ Parameters:
   GitHubEnvironment:
     Type: String
     Default: production-release
-  EastBucketArn: {Type: String}
-  WestBucketArn: {Type: String}
+  ArtifactBucketPrefix:
+    Type: String
+    Default: bridgefu-vapi-awsconnect
+    AllowedPattern: '^[a-z0-9][a-z0-9-]+$'
 
 Resources:
   SigningKey:
@@ -43,13 +45,12 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: [s3:ListBucket, s3:GetBucketVersioning]
-                Resource: [!Ref EastBucketArn, !Ref WestBucketArn]
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*'
               - Effect: Allow
-                Action: [s3:GetObject, s3:PutObject]
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
                 Resource:
-                  - !Sub '${EastBucketArn}/releases/*'
-                  - !Sub '${WestBucketArn}/releases/*'
-                  - !Sub '${EastBucketArn}/latest/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/latest/*'
               - Effect: Allow
                 Action: kms:Sign
                 Resource: !GetAtt SigningKey.Arn

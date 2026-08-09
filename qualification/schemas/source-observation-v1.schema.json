@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bridgefu.dev/vapi-awsconnect/qualification/source-observation-v1.schema.json",
+  "title": "Vapi SIP smoke source observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "producer", "producer_revision_sha256", "execution_id", "scenario_id", "observed_at", "signaling", "media", "hangup", "redacted"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "producer": {"const": "bridgefu-vapi-sip-smoke@1"},
+    "producer_revision_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "execution_id": {"type": "string", "pattern": "^bfq-[a-z0-9-]{4,28}$"},
+    "scenario_id": {"const": "vapi-sip-transfer"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "signaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "target", "invite_sent", "answered", "transport"],
+      "properties": {
+        "source": {"const": "rvoip-sip-0.3.7"},
+        "target": {"const": "sip.vapi.ai"},
+        "invite_sent": {"const": true},
+        "answered": {"const": true},
+        "transport": {"const": "udp"}
+      }
+    },
+    "media": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["codec", "prompt_frames_sent", "source_marker_sent_at_ms", "source_to_agent_marker_frames_sent", "agent_marker_observed_at_ms", "agent_to_source_marker_frames"],
+      "properties": {
+        "codec": {"const": "pcmu-or-pcma"},
+        "prompt_frames_sent": {"type": "integer", "minimum": 1},
+        "source_marker_sent_at_ms": {"type": "array", "minItems": 1, "maxItems": 90, "items": {"type": "integer", "minimum": 1}},
+        "source_to_agent_marker_frames_sent": {"type": "integer", "minimum": 5},
+        "agent_marker_observed_at_ms": {"type": "array", "minItems": 5, "maxItems": 5, "items": {"type": "integer", "minimum": 1}},
+        "agent_to_source_marker_frames": {"type": "integer", "minimum": 5}
+      }
+    },
+    "hangup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["local_bye_completed", "cleanup_observed"],
+      "properties": {
+        "local_bye_completed": {"const": true},
+        "cleanup_observed": {"const": true}
+      }
+    },
+    "redacted": {"const": true}
+  }
+}

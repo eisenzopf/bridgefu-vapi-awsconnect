@@ -20,6 +20,34 @@ AMI = re.compile(r"^ami-[0-9a-f]{17}$")
 OUTPUT_MARKER = ".bridgefu-vapi-awsconnect-release"
 
 
+def token_for(region: str) -> str:
+    return region.upper().replace("-", "_")
+
+
+def load_region_release(root: Path, path: Path | None) -> dict[str, dict[str, str]]:
+    catalog = json.loads((root / "release" / "regions.json").read_text())
+    supported = [item["code"] for item in catalog["regions"]]
+    if path is None:
+        return {
+            region: {
+                "ami_id": "ami-00000000000000000",
+                "bucket": f"bridgefu-vapi-awsconnect-{region}",
+            }
+            for region in supported
+        }
+    supplied = json.loads(path.read_text())
+    if set(supplied) != set(supported):
+        raise SystemExit(
+            "--regions-file must contain exactly the regions in release/regions.json"
+        )
+    for region, release in supplied.items():
+        if not AMI.fullmatch(release.get("ami_id", "")):
+            raise SystemExit(f"invalid immutable AMI ID for {region}")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", release.get("bucket", "")):
+            raise SystemExit(f"invalid artifact bucket for {region}")
+    return supplied
+
+
 def digest(path: Path) -> str:
     value = hashlib.sha256()
     with path.open("rb") as handle:
@@ -43,14 +71,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True)
     parser.add_argument("--output", type=Path, default=Path("target/release"))
-    parser.add_argument("--ami-us-east-1", default="ami-00000000000000000")
-    parser.add_argument("--ami-us-west-2", default="ami-00000000000000000")
-    parser.add_argument(
-        "--bucket-us-east-1", default="bridgefu-vapi-awsconnect-us-east-1"
-    )
-    parser.add_argument(
-        "--bucket-us-west-2", default="bridgefu-vapi-awsconnect-us-west-2"
-    )
+    parser.add_argument("--regions-file", type=Path)
     parser.add_argument(
         "--public-base-url",
         default="https://bridgefu-vapi-awsconnect.s3.amazonaws.com",
@@ -58,11 +79,9 @@ def main() -> int:
     args = parser.parse_args()
     if not VERSION.fullmatch(args.version):
         raise SystemExit("invalid --version")
-    for value in (args.ami_us_east_1, args.ami_us_west_2):
-        if not AMI.fullmatch(value):
-            raise SystemExit("AMI IDs must be immutable ami- plus 17 lowercase hex")
 
     root = Path(__file__).resolve().parents[1]
+    region_release = load_region_release(root, args.regions_file)
     output = args.output if args.output.is_absolute() else root / args.output
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
@@ -71,14 +90,22 @@ def main() -> int:
         build_lambdas(root, lambda_output)
         replacements = {
             "RELEASE_VERSION": args.version,
-            "AMI_US_EAST_1": args.ami_us_east_1,
-            "AMI_US_WEST_2": args.ami_us_west_2,
-            "ARTIFACT_BUCKET_US_EAST_1": args.bucket_us_east_1,
-            "ARTIFACT_BUCKET_US_WEST_2": args.bucket_us_west_2,
             "NESTED_TEMPLATE_BASE_URL": (
                 f"{args.public_base_url.rstrip('/')}/releases/{args.version}/cloudformation"
             ),
+            "QUALIFICATION_TEMPLATE_BASE_URL": (
+                f"{args.public_base_url.rstrip('/')}/releases/{args.version}/"
+                "qualification/cloudformation"
+            ),
+            "PRODUCT_TEMPLATE_URL": (
+                f"{args.public_base_url.rstrip('/')}/releases/{args.version}/"
+                "cloudformation/template.yaml"
+            ),
         }
+        for region, release in region_release.items():
+            token = token_for(region)
+            replacements[f"AMI_{token}"] = release["ami_id"]
+            replacements[f"ARTIFACT_BUCKET_{token}"] = release["bucket"]
         render(
             root / "cloudformation" / "template.yaml",
             staging / "cloudformation" / "template.yaml",
@@ -90,26 +117,33 @@ def main() -> int:
                 staging / "cloudformation" / "nested" / source.name,
                 replacements,
             )
+        for source in sorted(
+            (root / "qualification" / "cloudformation").glob("*.yaml")
+        ):
+            render(
+                source,
+                staging / "qualification" / "cloudformation" / source.name,
+                replacements,
+            )
         shutil.copyfile(root / "bridgefu.lock.json", staging / "bridgefu.lock.json")
         template_url = (
             f"{args.public_base_url.rstrip('/')}/releases/{args.version}/"
             "cloudformation/template.yaml"
         )
-        quick_create = {}
-        for region in ("us-east-1", "us-west-2"):
-            query = urllib.parse.urlencode(
-                {
-                    "templateURL": template_url,
-                    "stackName": "bridgefu-vapi-connect",
-                    "param_DeploymentId": "support",
-                    "param_InstanceType": "t4g.large",
-                }
-            )
-            quick_create[region] = (
-                f"https://{region}.console.aws.amazon.com/"
-                f"cloudformation/home?region={region}"
+        query = urllib.parse.urlencode(
+            {
+                "templateURL": template_url,
+                "stackName": "bridgefu-vapi-connect",
+                "param_DeploymentId": "support",
+                "param_InstanceType": "t4g.large",
+            }
+        )
+        quick_create = {
+            "launch": (
+                "https://console.aws.amazon.com/cloudformation/home"
                 f"#/stacks/create/review?{query}"
             )
+        }
         (staging / "quick-create-links.json").write_text(
             json.dumps(quick_create, indent=2, sort_keys=True) + "\n"
         )
@@ -127,16 +161,7 @@ def main() -> int:
         manifest = {
             "schema": "bridgefu-vapi-awsconnect-release/v1",
             "version": args.version,
-            "supported_regions": {
-                "us-east-1": {
-                    "ami_id": args.ami_us_east_1,
-                    "bucket": args.bucket_us_east_1,
-                },
-                "us-west-2": {
-                    "ami_id": args.ami_us_west_2,
-                    "bucket": args.bucket_us_west_2,
-                },
-            },
+            "supported_regions": region_release,
             "bridgefu": lock,
             "artifacts": inventory,
             "contains_secrets": False,

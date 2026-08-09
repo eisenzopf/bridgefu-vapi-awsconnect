@@ -6,9 +6,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 target/
+node_modules/
 dist/
 release-out/
 packer_cache/
 *.pem
 *.key
-

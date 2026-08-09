@@ -1,0 +1,8 @@
+{
+  "schema": "bridgefu-vapi-awsconnect-regions/v1",
+  "source_region": "us-west-2",
+  "regions": [
+    {"code": "us-west-2", "name": "US West (Oregon)", "vapi_us_preferred": true},
+    {"code": "us-east-1", "name": "US East (N. Virginia)", "vapi_us_preferred": false}
+  ]
+}

@@ -1,0 +1,142 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  GitHub OIDC runner and CloudFormation service roles for disposable Bridgefu
+  live qualification. GitHub cannot assume the deployment service role.
+
+Parameters:
+  GitHubOidcProviderArn: {Type: String}
+  GitHubRepository:
+    Type: String
+    Default: eisenzopf/bridgefu-vapi-awsconnect
+  GitHubEnvironment:
+    Type: String
+    Default: live-qualification
+  VapiApiKeySecretArn:
+    Type: String
+    AllowedPattern: '^arn:aws[-a-z0-9]*:secretsmanager:[-a-z0-9]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$'
+  ArtifactBucketPrefix:
+    Type: String
+    Default: bridgefu-vapi-awsconnect
+    AllowedPattern: '^[a-z0-9][a-z0-9-]+$'
+
+Resources:
+  QualificationCloudFormationServiceRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RoleName: bridgefu-vapi-awsconnect-qualification-cloudformation
+      Description: >-
+        Service role used only by CloudFormation for disposable bfq-* stacks.
+        GitHub cannot assume this role; the runner can only pass this exact ARN.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: cloudformation.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  QualificationRunnerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: bridgefu-vapi-awsconnect-qualification-runner
+      Description: Orchestrates only protected disposable Bridgefu release qualifications.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Federated: !Ref GitHubOidcProviderArn}
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubRepository}:environment:${GitHubEnvironment}'
+      Policies:
+        - PolicyName: DisposableQualificationOrchestration
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ExactCloudFormationServiceRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt QualificationCloudFormationServiceRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: cloudformation.amazonaws.com
+              - Sid: DisposableStackLifecycle
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:DescribeStacks
+                  - cloudformation:GetTemplate
+                  - cloudformation:ListStackResources
+                Resource: !Sub 'arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/bridgefu-bfq-*/*'
+              - Sid: PreflightStackAbsence
+                Effect: Allow
+                Action: cloudformation:DescribeStacks
+                Resource: '*'
+              - Sid: ReadReleaseAndManageQualificationObjects
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*'
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - releases/*
+                      - qualification/bfq-*/*
+              - Sid: ReadReleaseObjects
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*'
+              - Sid: ManageQualificationObjects
+                Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/*'
+              - Sid: ReadExactVapiKey
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref VapiApiKeySecretArn
+              - Sid: InspectGeneratedQualificationSecrets
+                Effect: Allow
+                Action:
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:bridgefu-bfq-*'
+              - Sid: ObserveDisposableConnect
+                Effect: Allow
+                Action:
+                  - connect:DescribeInstance
+                  - connect:ListInstances
+                Resource: '*'
+              - Sid: ObserveCandidateRuntime
+                Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ssm:CancelCommand
+                  - ssm:GetCommandInvocation
+                  - ssm:SendCommand
+                Resource: '*'
+              - Sid: ReadQualificationEvidence
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - logs:FilterLogEvents
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:*:${AWS::AccountId}:table/bridgefu-bfq-*'
+                  - !Sub 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/bridgefu/bfq-*:*'
+                  - !Sub 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/aws/lambda/bridgefu-bfq-*:*'
+              - Sid: GenerateSyntheticSpeech
+                Effect: Allow
+                Action: polly:SynthesizeSpeech
+                Resource: '*'
+
+Outputs:
+  QualificationRunnerRoleArn:
+    Value: !GetAtt QualificationRunnerRole.Arn
+  QualificationCloudFormationServiceRoleArn:
+    Value: !GetAtt QualificationCloudFormationServiceRole.Arn

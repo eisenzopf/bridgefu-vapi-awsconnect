@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bridgefu.dev/vapi-awsconnect/qualification/evidence-v1.schema.json",
+  "title": "Bridgefu Vapi to Amazon Connect release smoke evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "release", "execution_id", "region", "started_at", "ended_at", "bridgefu_commit", "scenarios", "teardown", "redacted"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "release": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$"},
+    "execution_id": {"type": "string", "pattern": "^bfq-[a-z0-9-]{4,28}$"},
+    "region": {"enum": ["us-west-2", "us-east-1"]},
+    "started_at": {"type": "string", "format": "date-time"},
+    "ended_at": {"type": "string", "format": "date-time"},
+    "bridgefu_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "scenarios": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "source_observation_sha256", "agent_observation_sha256", "checks", "passed"],
+        "properties": {
+          "id": {"enum": ["vapi-sip-transfer", "vapi-web-transfer"]},
+          "source_observation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "agent_observation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "checks": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["vapi_call_connected", "vapi_transfer_invoked", "bridgefu_received_correlation_header", "amazon_connect_contact_connected", "configured_screen_pop_visible", "audio_source_to_agent", "audio_agent_to_source", "source_call_ended"],
+            "properties": {
+              "vapi_call_connected": {"const": true},
+              "vapi_transfer_invoked": {"const": true},
+              "bridgefu_received_correlation_header": {"const": true},
+              "amazon_connect_contact_connected": {"const": true},
+              "configured_screen_pop_visible": {"const": true},
+              "audio_source_to_agent": {"const": true},
+              "audio_agent_to_source": {"const": true},
+              "source_call_ended": {"const": true}
+            }
+          },
+          "passed": {"const": true}
+        }
+      }
+    },
+    "teardown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["customer_stack_absent", "connect_instance_absent", "temporary_vapi_resources_absent", "test_credentials_absent", "qualification_objects_absent"],
+      "properties": {
+        "customer_stack_absent": {"const": true},
+        "connect_instance_absent": {"const": true},
+        "temporary_vapi_resources_absent": {"const": true},
+        "test_credentials_absent": {"const": true},
+        "qualification_objects_absent": {"const": true}
+      }
+    },
+    "redacted": {"const": true}
+  }
+}

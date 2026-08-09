@@ -20,7 +20,7 @@ def main() -> int:
         raise SystemExit("rvoip source must be crates.io")
     source_templates = [root / "cloudformation" / "template.yaml"] + sorted(
         (root / "cloudformation" / "nested").glob("*.yaml")
-    )
+    ) + sorted((root / "qualification" / "cloudformation").glob("*.yaml"))
     for path in source_templates:
         text = path.read_text()
         if "VapiApiKey:" in text or "NoEcho: true" in text:
@@ -66,6 +66,8 @@ def main() -> int:
             )
             rendered = [Path(release) / "cloudformation" / "template.yaml"] + sorted(
                 (Path(release) / "cloudformation" / "nested").glob("*.yaml")
+            ) + sorted(
+                (Path(release) / "qualification" / "cloudformation").glob("*.yaml")
             )
             subprocess.run(
                 [
