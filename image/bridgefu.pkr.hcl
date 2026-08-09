@@ -61,9 +61,9 @@ source "amazon-ebs" "bridgefu_arm64" {
   }
 
   launch_block_device_mappings {
-    device_name           = "/dev/xvda"
-    volume_type           = "gp3"
-    volume_size           = 24
+    device_name = "/dev/xvda"
+    volume_type = "gp3"
+    volume_size = 24
     # Public AMIs require public, unencrypted backing snapshots. Build releases
     # in an isolated publisher account with EBS encryption-by-default disabled.
     encrypted             = false
@@ -71,16 +71,20 @@ source "amazon-ebs" "bridgefu_arm64" {
   }
 
   tags = {
-    Name                  = "bridgefu-vapi-awsconnect-${var.release_version}"
-    ManagedBy             = "bridgefu-vapi-awsconnect"
-    BridgefuCommit        = var.bridgefu_commit
-    BridgefuRelease       = var.release_version
-    BridgefuRvoipVersion  = "0.3.7"
+    Name                 = "bridgefu-vapi-awsconnect-${var.release_version}"
+    ManagedBy            = "bridgefu-vapi-awsconnect"
+    BridgefuCommit       = var.bridgefu_commit
+    BridgefuRelease      = var.release_version
+    BridgefuRvoipVersion = "0.3.7"
   }
 }
 
 build {
   sources = ["source.amazon-ebs.bridgefu_arm64"]
+
+  provisioner "shell" {
+    inline = ["install -d -m 0755 /tmp/bridgefu-runtime"]
+  }
 
   provisioner "file" {
     source      = "image/runtime/"

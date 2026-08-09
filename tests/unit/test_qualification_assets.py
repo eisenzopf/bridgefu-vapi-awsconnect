@@ -42,6 +42,14 @@ class QualificationAssetTests(unittest.TestCase):
         browser = (QUALIFICATION / "browser" / "vapi-web-playwright.mjs").read_text()
         self.assertIn('join(ROOT, "qualification/package.json")', browser)
 
+    def test_packer_creates_runtime_staging_directory_before_upload(self):
+        packer = (ROOT / "image" / "bridgefu.pkr.hcl").read_text()
+        create = 'inline = ["install -d -m 0755 /tmp/bridgefu-runtime"]'
+        upload = 'destination = "/tmp/bridgefu-runtime/"'
+        self.assertIn(create, packer)
+        self.assertIn(upload, packer)
+        self.assertLess(packer.index(create), packer.index(upload))
+
     def test_disposable_connect_template_cannot_target_an_existing_instance(self):
         text = (
             QUALIFICATION / "cloudformation" / "disposable-connect.yaml"
