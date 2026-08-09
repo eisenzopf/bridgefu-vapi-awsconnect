@@ -259,6 +259,7 @@ Resources:
         VapiSignalingCidr3: ''
         VapiSignalingCidr4: ''
         MediaSourceCidr: !FindInMap [VapiRegionConfiguration, !Ref VapiRegion, MediaSourceCidr]
+        ArtifactBucket: !FindInMap [RegionRelease, !Ref 'AWS::Region', ArtifactBucket]
         ConnectInstanceArn: !Ref ConnectInstanceArn
         ConnectEntryFlowArn: !GetAtt ConnectIntegration.Outputs.WrapperFlowArn
         ConnectEntryFlowId: !GetAtt ConnectIntegration.Outputs.WrapperFlowId
@@ -328,6 +329,8 @@ Outputs:
     Value: __RELEASE_VERSION__
   BridgefuAmiId:
     Value: !FindInMap [RegionRelease, !Ref 'AWS::Region', AmiId]
+  ArtifactBucket:
+    Value: !FindInMap [RegionRelease, !Ref 'AWS::Region', ArtifactBucket]
   BridgefuSipUri:
     Value: !GetAtt Runtime.Outputs.SipUri
   BridgefuInstanceId:
@@ -336,12 +339,21 @@ Outputs:
     Value: !GetAtt VapiResources.Outputs.AssistantId
   VapiPrepareToolId:
     Value: !GetAtt VapiResources.Outputs.PrepareToolId
+  VapiWebhookCredentialId:
+    Value: !GetAtt VapiResources.Outputs.WebhookCredentialId
   ConnectWrapperFlowArn:
     Value: !GetAtt ConnectIntegration.Outputs.WrapperFlowArn
   AgentGuideFlowArn:
     Value: !GetAtt ConnectIntegration.Outputs.AgentGuideFlowArn
   HandoffTableName:
     Value: !GetAtt HandoffService.Outputs.HandoffTableName
+  CorrelationKeySecretArn:
+    Description: Secret ARN only; the correlation key value is never a stack output.
+    Value: !GetAtt HandoffService.Outputs.CorrelationKeySecretArn
+  RuntimeLogGroupName:
+    Value: !GetAtt Runtime.Outputs.RuntimeLogGroupName
+  LookupLogGroupName:
+    Value: !GetAtt HandoffService.Outputs.LookupLogGroupName
   ScreenPopSchemaHash:
     Value: !GetAtt Configuration.Outputs.SchemaHash
   DashboardUrl:

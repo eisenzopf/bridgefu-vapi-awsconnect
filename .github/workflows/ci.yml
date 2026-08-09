@@ -9,6 +9,20 @@ permissions:
   contents: read
 
 jobs:
+  qualification-client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test crates.io rvoip SIP smoke client
+        run: cargo test --locked --manifest-path qualification/sip-client/Cargo.toml
+      - uses: actions/setup-node@v4
+        with: {node-version: '22', cache: npm, cache-dependency-path: qualification/package-lock.json}
+      - name: Check browser smoke harnesses
+        run: |
+          npm --prefix qualification ci --ignore-scripts
+          node --check qualification/browser/agent-workspace-playwright.mjs
+          node --check qualification/browser/vapi-web-playwright.mjs
+
   validate:
     runs-on: ubuntu-latest
     steps:
@@ -36,6 +50,7 @@ jobs:
           cfn-lint
           target/release-a/cloudformation/template.yaml
           target/release-a/cloudformation/nested/*.yaml
+          target/release-a/qualification/cloudformation/*.yaml
           publisher/*.yaml
       - name: Packer validation
         run: |

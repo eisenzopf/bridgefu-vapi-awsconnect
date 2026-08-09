@@ -47,7 +47,7 @@ Resources:
                 Action: [s3:ListBucket, s3:GetBucketVersioning]
                 Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*'
               - Effect: Allow
-                Action: [s3:GetObject, s3:PutObject]
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/latest/*'

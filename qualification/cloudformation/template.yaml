@@ -1,0 +1,106 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Maintainer-only disposable qualification environment for the Bridgefu Vapi
+  to Amazon Connect release. Creates a new Connect instance and deletes it.
+
+Metadata:
+  BridgefuQualification:
+    Release: __RELEASE_VERSION__
+    ExistingConnectInputsAllowed: false
+
+Parameters:
+  DeploymentId:
+    Type: String
+    MinLength: 8
+    MaxLength: 24
+    AllowedPattern: '^bfq-[a-z0-9-]+$'
+  VapiApiKeySecretArn:
+    Type: String
+    AllowedPattern: '^arn:aws[-a-z0-9]*:secretsmanager:[-a-z0-9]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$'
+  PublicHostedZoneId:
+    Type: String
+    AllowedPattern: '^[A-Z0-9]+$'
+  SipHostname:
+    Type: String
+    AllowedPattern: '^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$'
+  InstanceType:
+    Type: String
+    Default: t4g.large
+    AllowedValues: [t4g.medium, t4g.large, t4g.xlarge, c7g.large, c7g.xlarge, m7g.large, m7g.xlarge]
+
+Resources:
+  DisposableConnect:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TemplateURL: __QUALIFICATION_TEMPLATE_BASE_URL__/disposable-connect.yaml
+      Parameters:
+        DeploymentId: !Ref DeploymentId
+        ProjectTag: bridgefu-vapi-awsconnect
+        ManagedByTag: bridgefu-qualification
+        ExecutionIdTag: !Ref DeploymentId
+      Tags:
+        - {Key: Project, Value: bridgefu-vapi-awsconnect}
+        - {Key: ManagedBy, Value: bridgefu-qualification}
+        - {Key: BridgefuExecutionId, Value: !Ref DeploymentId}
+
+  Candidate:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: DisposableConnect
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TemplateURL: __PRODUCT_TEMPLATE_URL__
+      Parameters:
+        DeploymentId: !Ref DeploymentId
+        InstanceType: !Ref InstanceType
+        ConnectInstanceArn: !GetAtt DisposableConnect.Outputs.ConnectInstanceArn
+        TargetContactFlowArn: !GetAtt DisposableConnect.Outputs.TargetContactFlowArn
+        PublicHostedZoneId: !Ref PublicHostedZoneId
+        SipHostname: !Ref SipHostname
+        VapiApiKeySecretArn: !Ref VapiApiKeySecretArn
+        VapiRegion: US
+        ScreenPopFieldsJson: >-
+          [{"key":"customer_name","label":"Customer","description":"Synthetic caller name.","type":"text","required":true,"max_length":256},{"key":"issue_summary","label":"Issue","description":"Synthetic qualification issue.","type":"text","required":true,"max_length":1024},{"key":"intent","label":"Intent","description":"Synthetic qualification intent.","type":"text","required":true,"max_length":128},{"key":"verification_status","label":"Verification","description":"Synthetic qualification status.","type":"choice","required":true,"choices":["synthetic","verified"]}]
+        DataRetentionMode: TestDelete
+        LogRetentionDays: 1
+        AlarmEmail: ''
+      Tags:
+        - {Key: Project, Value: bridgefu-vapi-awsconnect}
+        - {Key: ManagedBy, Value: bridgefu-qualification}
+        - {Key: BridgefuExecutionId, Value: !Ref DeploymentId}
+
+Outputs:
+  ConnectInstanceArn:
+    Value: !GetAtt DisposableConnect.Outputs.ConnectInstanceArn
+  ConnectInstanceId:
+    Value: !GetAtt DisposableConnect.Outputs.ConnectInstanceId
+  ConnectLoginUrl:
+    Value: !GetAtt DisposableConnect.Outputs.ConnectLoginUrl
+  AgentUsername:
+    Value: !GetAtt DisposableConnect.Outputs.AgentUsername
+  AgentCredentialSecretArn:
+    Value: !GetAtt DisposableConnect.Outputs.AgentCredentialSecretArn
+  BridgefuInstanceId:
+    Value: !GetAtt Candidate.Outputs.BridgefuInstanceId
+  ArtifactBucket:
+    Value: !GetAtt Candidate.Outputs.ArtifactBucket
+  BridgefuSipUri:
+    Value: !GetAtt Candidate.Outputs.BridgefuSipUri
+  VapiAssistantId:
+    Value: !GetAtt Candidate.Outputs.VapiAssistantId
+  VapiPrepareToolId:
+    Value: !GetAtt Candidate.Outputs.VapiPrepareToolId
+  VapiWebhookCredentialId:
+    Value: !GetAtt Candidate.Outputs.VapiWebhookCredentialId
+  ConnectWrapperFlowArn:
+    Value: !GetAtt Candidate.Outputs.ConnectWrapperFlowArn
+  HandoffTableName:
+    Value: !GetAtt Candidate.Outputs.HandoffTableName
+  CorrelationKeySecretArn:
+    Value: !GetAtt Candidate.Outputs.CorrelationKeySecretArn
+  RuntimeLogGroupName:
+    Value: !GetAtt Candidate.Outputs.RuntimeLogGroupName
+  LookupLogGroupName:
+    Value: !GetAtt Candidate.Outputs.LookupLogGroupName

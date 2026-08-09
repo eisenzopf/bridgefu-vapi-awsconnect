@@ -93,6 +93,14 @@ def main() -> int:
             "NESTED_TEMPLATE_BASE_URL": (
                 f"{args.public_base_url.rstrip('/')}/releases/{args.version}/cloudformation"
             ),
+            "QUALIFICATION_TEMPLATE_BASE_URL": (
+                f"{args.public_base_url.rstrip('/')}/releases/{args.version}/"
+                "qualification/cloudformation"
+            ),
+            "PRODUCT_TEMPLATE_URL": (
+                f"{args.public_base_url.rstrip('/')}/releases/{args.version}/"
+                "cloudformation/template.yaml"
+            ),
         }
         for region, release in region_release.items():
             token = token_for(region)
@@ -107,6 +115,14 @@ def main() -> int:
             render(
                 source,
                 staging / "cloudformation" / "nested" / source.name,
+                replacements,
+            )
+        for source in sorted(
+            (root / "qualification" / "cloudformation").glob("*.yaml")
+        ):
+            render(
+                source,
+                staging / "qualification" / "cloudformation" / source.name,
                 replacements,
             )
         shutil.copyfile(root / "bridgefu.lock.json", staging / "bridgefu.lock.json")

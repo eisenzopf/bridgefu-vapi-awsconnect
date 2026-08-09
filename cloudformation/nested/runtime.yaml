@@ -58,6 +58,9 @@ Parameters:
     Description: >-
       Vapi media addresses are dynamic. Exposure is bounded to the RTP/SRTP
       range and Bridgefu's dialog-bound symmetric-RTP checks.
+  ArtifactBucket:
+    Type: String
+    AllowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
   ConnectInstanceArn:
     Type: String
     AllowedPattern: '^arn:aws[-a-z0-9]*:connect:[-a-z0-9]+:[0-9]{12}:instance/[A-Za-z0-9-]+$'
@@ -312,6 +315,17 @@ Resources:
       CidrIp: !Ref VapiSignalingCidr4
       Description: Optional compatibility SIP UDP 4
 
+  QualificationSipSourceMediaIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: DeleteData
+    Properties:
+      GroupId: !GetAtt GatewaySecurityGroup.GroupId
+      IpProtocol: udp
+      FromPort: 40000
+      ToPort: 40031
+      CidrIp: !Ref MediaSourceCidr
+      Description: TestDelete-only RTP for the rvoip Vapi SIP smoke source
+
   PublicCertificate:
     Type: AWS::CertificateManager::Certificate
     Condition: SecureSip
@@ -430,6 +444,13 @@ Resources:
                 Effect: Allow
                 Action: cloudformation:SignalResource
                 Resource: !Ref 'AWS::StackId'
+              - !If
+                - DeleteData
+                - Sid: ReadOnlyQualificationInputs
+                  Effect: Allow
+                  Action: s3:GetObject
+                  Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/qualification/${ExecutionIdTag}/*'
+                - !Ref 'AWS::NoValue'
               - Sid: PublishBoundedMetrics
                 Effect: Allow
                 Action: cloudwatch:PutMetricData

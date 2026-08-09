@@ -1,0 +1,20 @@
+schema_version: 1
+release: bridgefu-vapi-awsconnect
+environment: disposable
+required_smokes:
+  - id: vapi-sip-transfer
+    source: vapi_sip
+    description: A controlled SIP client calls a temporary Vapi SIP endpoint.
+  - id: vapi-web-transfer
+    source: bridgefu_vapi_web_sdk
+    description: The pinned Bridgefu Vapi Web SDK starts the Vapi call.
+required_checks:
+  - vapi_call_connected
+  - vapi_transfer_invoked
+  - bridgefu_received_correlation_header
+  - amazon_connect_contact_connected
+  - configured_screen_pop_visible
+  - audio_source_to_agent
+  - audio_agent_to_source
+  - source_call_ended
+  - disposable_resources_removed
