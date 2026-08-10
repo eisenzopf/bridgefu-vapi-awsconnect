@@ -73,9 +73,23 @@ class QualificationAssetTests(unittest.TestCase):
     def test_image_build_has_memory_headroom_and_bounded_cargo_jobs(self):
         packer = (ROOT / "image" / "bridgefu.pkr.hcl").read_text()
         install = (ROOT / "image" / "install.sh").read_text()
-        self.assertIn('instance_type = "m7g.xlarge"', packer)
+        self.assertIn('instance_type = "m7g.2xlarge"', packer)
         self.assertIn(
-            "cargo build --locked --release --jobs 2 --bin bridgefu", install
+            "cargo build --locked --release --jobs 4 --bin bridgefu", install
+        )
+
+    def test_image_installs_and_verifies_opus_build_and_runtime_dependencies(self):
+        install = (ROOT / "image" / "install.sh").read_text()
+        package_block = install.split("sudo dnf install -y", 1)[1].split(
+            "\n\n", 1
+        )[0]
+        self.assertIn("opus-devel", package_block)
+        self.assertIn("rpm -q opus opus-devel", install)
+        self.assertIn("pkg-config --exists opus", install)
+        self.assertIn(
+            "ldd /usr/local/bin/bridgefu | grep -Eq "
+            "'libopus\\.so\\.[0-9]+ => /'",
+            install,
         )
 
     def test_disposable_connect_template_cannot_target_an_existing_instance(self):
