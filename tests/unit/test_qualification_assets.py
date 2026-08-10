@@ -50,6 +50,15 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn(upload, packer)
         self.assertLess(packer.index(create), packer.index(upload))
 
+    def test_release_creates_packer_manifest_parent_before_build(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+        build = workflow.split(
+            "      - name: Build and copy private candidate AMIs\n", 1
+        )[1].split("\n      - name:", 1)[0]
+        self.assertIn("mkdir -p target", build)
+        self.assertIn("packer build", build)
+        self.assertLess(build.index("mkdir -p target"), build.index("packer build"))
+
     def test_image_verifies_al2023_preinstalled_aws_cli_and_curl(self):
         install = (ROOT / "image" / "install.sh").read_text()
         package_block = install.split("sudo dnf install -y", 1)[1].split("\n\n", 1)[0]
