@@ -17,7 +17,8 @@ jobs:
         run: cargo test --locked --manifest-path qualification/sip-client/Cargo.toml
       - name: Build and launch the static release qualification client
         env:
-          RUSTFLAGS: -C link-arg=-lm -C link-arg=-lc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-musl-gcc
+          RUSTFLAGS: -C link-arg=-Wl,-Bstatic -C link-arg=-lm -C link-arg=-lc
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools

@@ -65,7 +65,16 @@ class QualificationAssetTests(unittest.TestCase):
             for name in ("ci.yml", "release.yml", "remote-qualification.yml")
         ]
         for workflow in workflows:
-            self.assertIn("RUSTFLAGS: -C link-arg=-lm -C link-arg=-lc", workflow)
+            self.assertIn(
+                "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: "
+                "aarch64-linux-musl-gcc",
+                workflow,
+            )
+            self.assertIn(
+                "RUSTFLAGS: -C link-arg=-Wl,-Bstatic "
+                "-C link-arg=-lm -C link-arg=-lc",
+                workflow,
+            )
             self.assertIn("aarch64-unknown-linux-musl", workflow)
             self.assertIn("--help >/dev/null", workflow)
         self.assertIn("runs-on: ubuntu-24.04-arm", workflows[0])
