@@ -40,7 +40,8 @@ fi
 
 rustc --version
 cargo --version
-(cd "$build_root/bridgefu" && cargo build --locked --release --bin bridgefu)
+(cd "$build_root/bridgefu" && \
+  cargo build --locked --release --jobs 2 --bin bridgefu)
 sudo install -o root -g root -m 0755 \
   "$build_root/bridgefu/target/release/bridgefu" /usr/local/bin/bridgefu
 
