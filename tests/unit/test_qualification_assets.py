@@ -59,6 +59,17 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("packer build", build)
         self.assertLess(build.index("mkdir -p target"), build.index("packer build"))
 
+    def test_static_sip_client_links_opus_dependencies_and_launches_in_ci(self):
+        workflows = [
+            (ROOT / ".github" / "workflows" / name).read_text()
+            for name in ("ci.yml", "release.yml", "remote-qualification.yml")
+        ]
+        for workflow in workflows:
+            self.assertIn("RUSTFLAGS: -C link-arg=-lm -C link-arg=-lc", workflow)
+            self.assertIn("aarch64-unknown-linux-musl", workflow)
+            self.assertIn("--help >/dev/null", workflow)
+        self.assertIn("runs-on: ubuntu-24.04-arm", workflows[0])
+
     def test_image_verifies_al2023_preinstalled_aws_cli_and_curl(self):
         install = (ROOT / "image" / "install.sh").read_text()
         package_block = install.split("sudo dnf install -y", 1)[1].split("\n\n", 1)[0]
