@@ -4,7 +4,12 @@ umask 022
 
 sudo dnf install -y \
   cargo clang cmake gcc gcc-c++ git haproxy jq openssl-devel \
-  pkgconf-pkg-config protobuf-compiler rust xfsprogs
+  opus-devel pkgconf-pkg-config protobuf-compiler rust xfsprogs
+
+# rvoip's Opus feature dynamically links libopus on GNU Linux. Prove both the
+# build metadata and runtime library are present before spending time compiling.
+rpm -q opus opus-devel
+pkg-config --exists opus
 
 # The standard Amazon Linux 2023 AMI ships with AWS CLI v2 and curl-minimal.
 # Keep both dependencies explicit because the runtime uses them for AWS APIs,
@@ -41,9 +46,10 @@ fi
 rustc --version
 cargo --version
 (cd "$build_root/bridgefu" && \
-  cargo build --locked --release --jobs 2 --bin bridgefu)
+  cargo build --locked --release --jobs 4 --bin bridgefu)
 sudo install -o root -g root -m 0755 \
   "$build_root/bridgefu/target/release/bridgefu" /usr/local/bin/bridgefu
+ldd /usr/local/bin/bridgefu | grep -Eq 'libopus\.so\.[0-9]+ => /'
 
 sudo useradd --system --home-dir /var/lib/bridgefu --shell /sbin/nologin bridgefu || true
 sudo install -d -o root -g bridgefu -m 0750 /etc/bridgefu /etc/bridgefu/tls
