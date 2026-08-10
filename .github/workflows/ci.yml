@@ -10,11 +10,24 @@ permissions:
 
 jobs:
   qualification-client:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Test crates.io rvoip SIP smoke client
         run: cargo test --locked --manifest-path qualification/sip-client/Cargo.toml
+      - name: Build and launch the static release qualification client
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-musl-gcc
+          RUSTFLAGS: -C link-arg=-Wl,-Bstatic -C link-arg=-lm -C link-arg=-lc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add aarch64-unknown-linux-musl
+          cargo build --release --locked --target aarch64-unknown-linux-musl \
+            --manifest-path qualification/sip-client/Cargo.toml
+          binary=qualification/sip-client/target/aarch64-unknown-linux-musl/release/bridgefu-vapi-sip-smoke
+          file "$binary" | grep -F 'statically linked'
+          "$binary" --help >/dev/null
       - uses: actions/setup-node@v4
         with: {node-version: '22', cache: npm, cache-dependency-path: qualification/package-lock.json}
       - name: Check browser smoke harnesses

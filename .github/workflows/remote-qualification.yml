@@ -27,6 +27,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build exact crates.io rvoip SIP source
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-musl-gcc
+          RUSTFLAGS: -C link-arg=-Wl,-Bstatic -C link-arg=-lm -C link-arg=-lc
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
@@ -35,6 +38,8 @@ jobs:
             --manifest-path qualification/sip-client/Cargo.toml
           file qualification/sip-client/target/aarch64-unknown-linux-musl/release/bridgefu-vapi-sip-smoke \
             | grep -F 'statically linked'
+          qualification/sip-client/target/aarch64-unknown-linux-musl/release/bridgefu-vapi-sip-smoke \
+            --help >/dev/null
       - uses: actions/upload-artifact@v4
         with:
           name: qualification-sip-client
