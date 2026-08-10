@@ -176,6 +176,14 @@ class ReleaseContractTests(unittest.TestCase):
                 "repo:${GitHubRepository}:environment:${GitHubEnvironment}", text
             )
 
+    def test_publisher_can_validate_release_templates_remotely(self):
+        text = (ROOT / "publisher" / "oidc-role.yaml").read_text()
+        statement = text.split("              - Sid: ValidateReleaseTemplates\n", 1)[
+            1
+        ].split("              - Effect:", 1)[0]
+        self.assertIn("Action: cloudformation:ValidateTemplate", statement)
+        self.assertIn("Resource: '*'", statement)
+
 
 if __name__ == "__main__":
     unittest.main()

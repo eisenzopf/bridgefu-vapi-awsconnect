@@ -68,6 +68,10 @@ Resources:
               - Effect: Allow
                 Action: kms:Sign
                 Resource: !GetAtt SigningKey.Arn
+              - Sid: ValidateReleaseTemplates
+                Effect: Allow
+                Action: cloudformation:ValidateTemplate
+                Resource: '*'
               - Effect: Allow
                 Action:
                   - ec2:AssociateIamInstanceProfile
