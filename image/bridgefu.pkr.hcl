@@ -39,7 +39,9 @@ variable "release_version" {
 
 source "amazon-ebs" "bridgefu_arm64" {
   region        = var.aws_region
-  instance_type = "c7g.large"
+  # Release/LTO builds exceeded the 4 GiB c7g.large builder. This temporary
+  # build instance does not determine the customer runtime instance type.
+  instance_type = "m7g.xlarge"
   ssh_username  = "ec2-user"
   ami_name      = "bridgefu-vapi-awsconnect-${var.release_version}-${formatdate("YYYYMMDDhhmmss", timestamp())}"
 

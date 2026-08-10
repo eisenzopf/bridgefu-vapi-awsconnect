@@ -70,6 +70,14 @@ class QualificationAssetTests(unittest.TestCase):
             install,
         )
 
+    def test_image_build_has_memory_headroom_and_bounded_cargo_jobs(self):
+        packer = (ROOT / "image" / "bridgefu.pkr.hcl").read_text()
+        install = (ROOT / "image" / "install.sh").read_text()
+        self.assertIn('instance_type = "m7g.xlarge"', packer)
+        self.assertIn(
+            "cargo build --locked --release --jobs 2 --bin bridgefu", install
+        )
+
     def test_disposable_connect_template_cannot_target_an_existing_instance(self):
         text = (
             QUALIFICATION / "cloudformation" / "disposable-connect.yaml"
