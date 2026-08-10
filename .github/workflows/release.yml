@@ -66,6 +66,7 @@ jobs:
         env:
           VERSION: ${{ steps.release.outputs.version }}
         run: |
+          mkdir -p target
           packer init image/bridgefu.pkr.hcl
           packer build \
             -var aws_region=us-west-2 \
