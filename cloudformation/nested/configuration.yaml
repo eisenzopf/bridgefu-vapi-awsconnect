@@ -79,8 +79,8 @@ Resources:
 Outputs:
   AgentGuideTemplateString: {Value: !GetAtt Configuration.AgentGuideTemplateString}
   RoutingFieldKey: {Value: !GetAtt Configuration.RoutingFieldKey}
-  RoutingConditionsJson: {Value: !GetAtt Configuration.RoutingConditionsJson}
+  RoutingNextAction: {Value: !GetAtt Configuration.RoutingNextAction}
+  RoutingDecisionActionJson: {Value: !GetAtt Configuration.RoutingDecisionActionJson}
   RoutingTransferActionsJson: {Value: !GetAtt Configuration.RoutingTransferActionsJson}
   SchemaHash: {Value: !GetAtt Configuration.SchemaHash}
   FunctionName: {Value: !Ref Function}
-

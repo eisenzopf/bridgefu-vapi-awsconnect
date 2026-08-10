@@ -52,7 +52,7 @@ def _send(event, status, physical_id, data, reason):
 
 def _routing(value, fields, instance_arn, region, account, connect):
     if value in (None, "", "{}"):
-        return "", "[]", ""
+        return "", "transfer-to-customer-flow", "", ""
     try:
         routing = json.loads(value)
     except json.JSONDecodeError:
@@ -112,11 +112,28 @@ def _routing(value, fields, instance_arn, region, account, connect):
                 },
             }
         )
-    return (
-        key,
-        json.dumps(conditions, separators=(",", ":")),
-        "," + ",".join(json.dumps(item, separators=(",", ":")) for item in actions),
+    decision = {
+        "Identifier": "choose-reviewed-route",
+        "Type": "Compare",
+        "Parameters": {"ComparisonValue": "$.Attributes.bridgefu_routing_value"},
+        "Transitions": {
+            "NextAction": "transfer-to-customer-flow",
+            "Conditions": conditions,
+            "Errors": [
+                {
+                    "NextAction": "transfer-to-customer-flow",
+                    "ErrorType": "NoMatchingCondition",
+                }
+            ],
+        },
+    }
+    decision_json = "," + json.dumps(decision, separators=(",", ":"))
+    actions_json = "," + ",".join(
+        json.dumps(item, separators=(",", ":")) for item in actions
     )
+    if len(decision_json) > 4096 or len(actions_json) > 4096:
+        raise ConfigurationError("routing_render_too_large")
+    return key, "choose-reviewed-route", decision_json, actions_json
 
 
 def render(properties, *, boto3_module=None):
@@ -162,7 +179,7 @@ def render(properties, *, boto3_module=None):
     if hostname == zone_name or not hostname.endswith("." + zone_name):
         raise ConfigurationError("sip_hostname_outside_zone")
 
-    routing_key, conditions, actions = _routing(
+    routing_key, next_action, decision_action, transfer_actions = _routing(
         properties.get("RoutingJson"),
         fields,
         properties["ConnectInstanceArn"],
@@ -180,8 +197,9 @@ def render(properties, *, boto3_module=None):
     return {
         "AgentGuideTemplateString": rows,
         "RoutingFieldKey": routing_key,
-        "RoutingConditionsJson": conditions,
-        "RoutingTransferActionsJson": actions,
+        "RoutingNextAction": next_action,
+        "RoutingDecisionActionJson": decision_action,
+        "RoutingTransferActionsJson": transfer_actions,
         "SchemaHash": schema_hash(fields),
         "FieldCount": str(len(fields)),
         "HostedZoneName": html.escape(zone_name),

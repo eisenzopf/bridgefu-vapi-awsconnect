@@ -233,7 +233,8 @@ Resources:
         TargetContactFlowArn: !Ref TargetContactFlowArn
         LookupFunctionArn: !GetAtt HandoffService.Outputs.LookupFunctionArn
         AgentGuideTemplateString: !GetAtt Configuration.Outputs.AgentGuideTemplateString
-        RoutingConditionsJson: !GetAtt Configuration.Outputs.RoutingConditionsJson
+        RoutingNextAction: !GetAtt Configuration.Outputs.RoutingNextAction
+        RoutingDecisionActionJson: !GetAtt Configuration.Outputs.RoutingDecisionActionJson
         RoutingTransferActionsJson: !GetAtt Configuration.Outputs.RoutingTransferActionsJson
         ProjectTag: bridgefu-vapi-awsconnect
         ManagedByTag: bridgefu-cloudformation
