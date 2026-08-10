@@ -29,9 +29,13 @@ Parameters:
     MinLength: 1
     MaxLength: 4096
     Description: Safe recipe-generated markup containing only configured field slots.
-  RoutingConditionsJson:
+  RoutingNextAction:
     Type: String
-    Default: '[]'
+    Default: transfer-to-customer-flow
+    AllowedValues: [transfer-to-customer-flow, choose-reviewed-route]
+  RoutingDecisionActionJson:
+    Type: String
+    Default: ''
     MaxLength: 4096
   RoutingTransferActionsJson:
     Type: String
@@ -146,8 +150,10 @@ Resources:
               "Type": "InvokeLambdaFunction",
               "Parameters": {
                 "LambdaFunctionARN": "${LookupFunctionArn}",
-                "InvocationTimeLimitSeconds": "8",
-                "LambdaInvocationAttributes": {"correlation_id": "$.Attributes.correlation_id"}
+                "InvocationTimeLimitSeconds": 8,
+                "InvocationType": "SYNCHRONOUS",
+                "LambdaInvocationAttributes": {"correlation_id": "$.Attributes.correlation_id"},
+                "ResponseValidation": {"ResponseType": "STRING_MAP"}
               },
               "Transitions": {
                 "NextAction": "copy-context",
@@ -158,6 +164,7 @@ Resources:
               "Identifier": "copy-context",
               "Type": "UpdateContactAttributes",
               "Parameters": {
+                "TargetContact": "Current",
                 "Attributes": {
                   "context_available": "$.External.context_available",
                   "screen_pop_label_1": "$.External.screen_pop_label_1",
@@ -189,6 +196,7 @@ Resources:
               "Identifier": "context-unavailable",
               "Type": "UpdateContactAttributes",
               "Parameters": {
+                "TargetContact": "Current",
                 "Attributes": {
                   "context_available": "false",
                   "screen_pop_label_1": "Context unavailable",
@@ -208,7 +216,7 @@ Resources:
                   "screen_pop_label_8": "unavailable",
                   "screen_pop_value_8": "unavailable",
                   "vapi_call_reference": "unavailable",
-                  "bridgefu_routing_value": ""
+                  "bridgefu_routing_value": "unavailable"
                 }
               },
               "Transitions": {
@@ -221,22 +229,10 @@ Resources:
               "Type": "UpdateContactEventHooks",
               "Parameters": {"EventHooks": {"DefaultAgentUI": "${AgentGuideFlow.ContactFlowArn}"}},
               "Transitions": {
-                "NextAction": "choose-reviewed-route",
+                "NextAction": "${RoutingNextAction}",
                 "Errors": [{"NextAction": "transfer-to-customer-flow", "ErrorType": "NoMatchingError"}]
               }
-            },
-            {
-              "Identifier": "choose-reviewed-route",
-              "Type": "Compare",
-              "Parameters": {"ComparisonValue": "$.Attributes.bridgefu_routing_value"},
-              "Transitions": {
-                "NextAction": "transfer-to-customer-flow",
-                "Conditions": ${RoutingConditionsJson},
-                "Errors": [
-                  {"NextAction": "transfer-to-customer-flow", "ErrorType": "NoMatchingCondition"}
-                ]
-              }
-            },
+            }${RoutingDecisionActionJson}${RoutingTransferActionsJson},
             {
               "Identifier": "transfer-to-customer-flow",
               "Type": "TransferToFlow",
@@ -245,7 +241,7 @@ Resources:
                 "NextAction": "disconnect",
                 "Errors": [{"NextAction": "disconnect", "ErrorType": "NoMatchingError"}]
               }
-            }${RoutingTransferActionsJson},
+            },
             {
               "Identifier": "disconnect",
               "Type": "DisconnectParticipant",

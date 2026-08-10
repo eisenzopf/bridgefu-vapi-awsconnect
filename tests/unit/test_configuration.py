@@ -89,7 +89,23 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn("screen_pop_label_1", result["AgentGuideTemplateString"])
         self.assertNotIn("screen_pop_label_2", result["AgentGuideTemplateString"])
         self.assertEqual(result["RoutingFieldKey"], "department")
-        self.assertIn("billing-flow", result["RoutingTransferActionsJson"])
+        self.assertEqual(result["RoutingNextAction"], "choose-reviewed-route")
+        decision = json.loads(result["RoutingDecisionActionJson"][1:])
+        self.assertEqual(decision["Identifier"], "choose-reviewed-route")
+        self.assertEqual(len(decision["Transitions"]["Conditions"]), 1)
+        transfer = json.loads(result["RoutingTransferActionsJson"][1:])
+        self.assertEqual(transfer["Identifier"], "transfer-to-route-1")
+        self.assertIn("billing-flow", transfer["Parameters"]["ContactFlowId"])
+
+    def test_no_routing_bypasses_the_compare_action(self):
+        properties = self.properties()
+        properties["RoutingJson"] = "{}"
+        with mock.patch.dict(os.environ, {"AWS_REGION": "us-west-2"}):
+            result = handler.render(properties, boto3_module=FakeBoto3())
+        self.assertEqual(result["RoutingFieldKey"], "")
+        self.assertEqual(result["RoutingNextAction"], "transfer-to-customer-flow")
+        self.assertEqual(result["RoutingDecisionActionJson"], "")
+        self.assertEqual(result["RoutingTransferActionsJson"], "")
 
     def test_rejects_cross_account_connect_target(self):
         properties = self.properties()
