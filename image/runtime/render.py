@@ -9,7 +9,7 @@ import os
 import re
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+TEMPLATE_ROOT = Path(__file__).resolve().parent.parent / "lib" / "bridgefu"
 OUTPUT_ROOT = Path(os.environ.get("BRIDGEFU_RENDER_ROOT", "/"))
 DEPLOYMENT = re.compile(r"^[a-z][a-z0-9-]{2,23}$")
 HOSTNAME = re.compile(
@@ -30,7 +30,7 @@ def required(name: str) -> str:
 
 
 def render(name: str, output: Path, replacements: dict[str, str], mode: int) -> None:
-    value = (ROOT / name).read_text()
+    value = (TEMPLATE_ROOT / name).read_text()
     for key, replacement in replacements.items():
         value = value.replace(f"__{key}__", replacement)
     if re.search(r"__[A-Z0-9_]+__", value):
