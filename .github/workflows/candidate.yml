@@ -1,0 +1,856 @@
+name: Build and qualify private candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: Exact future tag version without v (for v0.1.14 enter 0.1.14)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: bridgefu-vapi-awsconnect-candidate-${{ inputs.release_version }}
+  cancel-in-progress: false
+
+jobs:
+  build-private-candidate:
+    runs-on: ubuntu-24.04-arm
+    environment: production-release
+    outputs:
+      version: ${{ steps.inputs.outputs.version }}
+      candidate_id: ${{ steps.inputs.outputs.candidate_id }}
+      repository_commit: ${{ steps.inputs.outputs.repository_commit }}
+      bridgefu_commit: ${{ steps.inputs.outputs.bridgefu_commit }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: hashicorp/setup-packer@main
+        with: {version: '1.12.0'}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CANDIDATE_ROLE_ARN }}
+          aws-region: us-west-2
+      - name: Resolve immutable candidate inputs
+        id: inputs
+        env:
+          REQUESTED_VERSION: ${{ inputs.release_version }}
+        run: |
+          # shellcheck disable=SC2016
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          [[ "$REQUESTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]
+          test "${#REQUESTED_VERSION}" -le 48
+          jq -e '.release_ready == true or .release_ready == false' \
+            bridgefu.lock.json >/dev/null
+          bridgefu_commit="$(jq -r .commit bridgefu.lock.json)"
+          bridgefu_lock="$(jq -r .cargo_lock_sha256 bridgefu.lock.json)"
+          test "$bridgefu_commit" != 0000000000000000000000000000000000000000
+          candidate_id="candidate-${REQUESTED_VERSION}-${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          {
+            echo "version=$REQUESTED_VERSION"
+            echo "candidate_id=$candidate_id"
+            echo "repository_commit=$GITHUB_SHA"
+            echo "bridgefu_commit=$bridgefu_commit"
+            echo "bridgefu_lock=$bridgefu_lock"
+          } >> "$GITHUB_OUTPUT"
+      - name: Journal ownership and prove the version is unused
+        env:
+          VERSION: ${{ steps.inputs.outputs.version }}
+          CANDIDATE_ID: ${{ steps.inputs.outputs.candidate_id }}
+        run: |
+          # shellcheck disable=SC2016
+          set -euo pipefail
+          mkdir -p target/candidate
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          east_bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
+          state_key="candidates/runs/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/state.json"
+          jq -n \
+            --arg schema bridgefu-private-candidate-state/v1 \
+            --arg candidate_id "$CANDIDATE_ID" \
+            --arg version "$VERSION" \
+            --arg repository_commit "$GITHUB_SHA" \
+            --argjson workflow_run_id "$GITHUB_RUN_ID" \
+            --argjson workflow_run_attempt "$GITHUB_RUN_ATTEMPT" \
+            '{schema: $schema, candidate_id: $candidate_id, version: $version,
+              repository_commit: $repository_commit,
+              workflow_run_id: $workflow_run_id,
+              workflow_run_attempt: $workflow_run_attempt,
+              cleanup_authorized: false, qualified: false,
+              regional_amis: {}, release_objects: [], candidate_objects: []}' \
+            > target/candidate/state.json
+          aws s3api put-object --bucket "$east_bucket" --key "$state_key" \
+            --body target/candidate/state.json --region us-east-1 >/dev/null
+          qualified_prefix="candidates/qualified/$VERSION/$GITHUB_SHA/"
+          qualified_listing="$(aws s3api list-object-versions \
+            --bucket "$east_bucket" --prefix "$qualified_prefix" \
+            --region us-east-1)"
+          jq -e '((.Versions // []) | length) == 0 and
+            ((.DeleteMarkers // []) | length) == 0' \
+            <<<"$qualified_listing" >/dev/null
+          while read -r region; do
+            bucket="bridgefu-vapi-awsconnect-$account_id-$region"
+            test "$(aws s3api get-bucket-versioning --bucket "$bucket" \
+              --region "$region" --query Status --output text)" = Enabled
+            version_count="$(aws s3api list-object-versions --bucket "$bucket" \
+              --prefix "releases/$VERSION/" --region "$region" \
+              --query Versions --output json | jq 'length')"
+            marker_count="$(aws s3api list-object-versions --bucket "$bucket" \
+              --prefix "releases/$VERSION/" --region "$region" \
+              --query DeleteMarkers --output json | jq 'length')"
+            test "$version_count" = 0
+            test "$marker_count" = 0
+            image_count="$(aws ec2 describe-images --owners self --region "$region" \
+              --filters "Name=tag:BridgefuRelease,Values=$VERSION" \
+              --query 'length(Images)' --output text)"
+            test "$image_count" = 0
+          done < <(jq -r '.regions[].code' release/regions.json)
+          jq '.cleanup_authorized = true' target/candidate/state.json \
+            > target/candidate/state.next.json
+          mv target/candidate/state.next.json target/candidate/state.json
+          aws s3api put-object --bucket "$east_bucket" --key "$state_key" \
+            --body target/candidate/state.json --region us-east-1 >/dev/null
+      - name: Build and copy private candidate AMIs
+        env:
+          VERSION: ${{ steps.inputs.outputs.version }}
+          CANDIDATE_ID: ${{ steps.inputs.outputs.candidate_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p target
+          packer init image/bridgefu.pkr.hcl
+          packer build \
+            -var aws_region=us-west-2 \
+            -var bridgefu_commit=${{ steps.inputs.outputs.bridgefu_commit }} \
+            -var bridgefu_cargo_lock_sha256=${{ steps.inputs.outputs.bridgefu_lock }} \
+            -var candidate_id="$CANDIDATE_ID" \
+            -var distribution_repository_commit="$GITHUB_SHA" \
+            -var release_version="$VERSION" \
+            image/bridgefu.pkr.hcl
+          artifact_id="$(jq -er '.builds[-1].artifact_id' target/packer-manifest.json)"
+          source_ami="${artifact_id##*:}"
+          [[ "$source_ami" =~ ^ami-[0-9a-f]{17}$ ]]
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          east_bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
+          state_key="candidates/runs/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/state.json"
+          journal_ami() {
+            region="$1"
+            ami="$2"
+            snapshot_json="$3"
+            jq --arg region "$region" --arg ami "$ami" \
+              --argjson snapshot_ids "$snapshot_json" \
+              '.regional_amis[$region] = {ami_id: $ami,
+                snapshot_ids: $snapshot_ids}' target/candidate/state.json \
+              > target/candidate/state.next.json
+            mv target/candidate/state.next.json target/candidate/state.json
+            aws s3api put-object --bucket "$east_bucket" --key "$state_key" \
+              --body target/candidate/state.json --region us-east-1 >/dev/null
+          }
+          source_snapshots="$(aws ec2 describe-images --owners self \
+            --region us-west-2 --image-ids "$source_ami" \
+            --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' \
+            --output json)"
+          journal_ami us-west-2 "$source_ami" "$source_snapshots"
+          echo '{}' > target/candidate/region-release.json
+          while read -r region; do
+            if [[ "$region" = us-west-2 ]]; then
+              ami="$source_ami"
+            else
+              ami="$(aws ec2 copy-image --region "$region" \
+                --source-region us-west-2 --source-image-id "$source_ami" \
+                --name "bridgefu-vapi-awsconnect-$VERSION" --copy-image-tags \
+                --query ImageId --output text)"
+              journal_ami "$region" "$ami" '[]'
+            fi
+            aws ec2 wait image-available --region "$region" --image-ids "$ami"
+            image="$(aws ec2 describe-images --owners self --region "$region" \
+              --image-ids "$ami")"
+            test "$(jq -r '.Images[0].Tags[] |
+              select(.Key == "BridgefuCandidateId") | .Value' <<<"$image")" = \
+              "$CANDIDATE_ID"
+            test "$(jq -r '.Images[0].Tags[] |
+              select(.Key == "BridgefuRepositoryCommit") | .Value' <<<"$image")" = \
+              "$GITHUB_SHA"
+            snapshots="$(jq -c '[.Images[0].BlockDeviceMappings[].Ebs.SnapshotId]' \
+              <<<"$image")"
+            readarray -t snapshot_ids < <(jq -r '.[]' <<<"$snapshots")
+            if [[ "${#snapshot_ids[@]}" -gt 0 ]]; then
+              aws ec2 create-tags --region "$region" \
+                --resources "${snapshot_ids[@]}" --tags \
+                "Key=ManagedBy,Value=bridgefu-vapi-awsconnect" \
+                "Key=BridgefuCandidateId,Value=$CANDIDATE_ID" \
+                "Key=BridgefuRepositoryCommit,Value=$GITHUB_SHA" \
+                "Key=BridgefuRelease,Value=$VERSION"
+            fi
+            journal_ami "$region" "$ami" "$snapshots"
+            bucket="bridgefu-vapi-awsconnect-$account_id-$region"
+            jq --arg region "$region" --arg ami "$ami" --arg bucket "$bucket" \
+              '. + {($region): {"ami_id": $ami, "bucket": $bucket}}' \
+              target/candidate/region-release.json \
+              > target/candidate/region-release.next.json
+            mv target/candidate/region-release.next.json \
+              target/candidate/region-release.json
+          done < <(jq -r '.regions[].code' release/regions.json)
+      - name: Build staged release assets and native qualification clients
+        env:
+          VERSION: ${{ steps.inputs.outputs.version }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-musl-gcc
+          RUSTFLAGS: -C link-arg=-Wl,-Bstatic -C link-arg=-lm -C link-arg=-lc
+        run: |
+          set -euo pipefail
+          east_bucket="$(jq -r '.["us-east-1"].bucket' target/candidate/region-release.json)"
+          python release/build_release.py \
+            --version "$VERSION" \
+            --regions-file target/candidate/region-release.json \
+            --public-base-url "https://$east_bucket.s3.us-east-1.amazonaws.com" \
+            --release-prefix releases \
+            --repository-commit "$GITHUB_SHA" \
+            --render-phase assets \
+            --output target/candidate/release
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add aarch64-unknown-linux-musl
+          metadata="$(cargo metadata --locked --format-version 1 \
+            --manifest-path qualification/direct-secure-probe/Cargo.toml)"
+          jq -e '
+            ([.packages[] |
+              select(.name == "bridgefu-direct-secure-probe") |
+              .dependencies[] |
+              select(.name == "rvoip-sip" and
+                .req == "=0.3.7" and
+                .source == "registry+https://github.com/rust-lang/crates.io-index" and
+                .uses_default_features == false)] | length) == 1 and
+            ([.packages[] |
+              select(.name == "rvoip-sip" and
+                .version == "0.3.7" and
+                .source == "registry+https://github.com/rust-lang/crates.io-index")] |
+              length) == 1' <<<"$metadata"
+          cargo build --release --locked --target aarch64-unknown-linux-musl \
+            --manifest-path qualification/sip-client/Cargo.toml
+          cargo build --release --locked --target aarch64-unknown-linux-musl \
+            --manifest-path qualification/direct-secure-probe/Cargo.toml
+          sip_binary=qualification/sip-client/target/aarch64-unknown-linux-musl/release/bridgefu-vapi-sip-smoke
+          probe_binary=qualification/direct-secure-probe/target/aarch64-unknown-linux-musl/release/bridgefu-direct-secure-probe
+          for binary in "$sip_binary" "$probe_binary"; do
+            file "$binary" | grep -F 'ARM aarch64'
+            file "$binary" | grep -F 'statically linked'
+            "$binary" --help >/dev/null
+            install -m 0700 "$binary" target/candidate/
+          done
+      - name: Stage exact versions, render qualified roots, and validate both regions
+        env:
+          VERSION: ${{ steps.inputs.outputs.version }}
+          CANDIDATE_ID: ${{ steps.inputs.outputs.candidate_id }}
+        run: |
+          set -euo pipefail
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          east_bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
+          echo '{"schema":"bridgefu-staged-release-objects/v1","objects":[]}' \
+            > target/candidate/staged-objects.json
+          upload_release_object() {
+            region="$1"
+            bucket="$2"
+            source="$3"
+            relative="$4"
+            key="releases/$VERSION/$relative"
+            sha256="$(sha256sum "$source" | awk '{print $1}')"
+            size="$(wc -c < "$source" | tr -d ' ')"
+            version_id="$(aws s3api put-object --region "$region" \
+              --bucket "$bucket" --key "$key" --body "$source" \
+              --metadata "sha256=$sha256,candidate-id=$CANDIDATE_ID" \
+              --query VersionId --output text)"
+            test "$version_id" != None
+            jq --arg region "$region" --arg bucket "$bucket" --arg key "$key" \
+              --arg version_id "$version_id" --arg sha256 "$sha256" \
+              --argjson size_bytes "$size" \
+              '.objects += [{region: $region, bucket: $bucket, key: $key,
+                version_id: $version_id, sha256: $sha256,
+                size_bytes: $size_bytes}]' target/candidate/staged-objects.json \
+              > target/candidate/staged-objects.next.json
+            mv target/candidate/staged-objects.next.json \
+              target/candidate/staged-objects.json
+            state_key="candidates/runs/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/state.json"
+            jq --arg region "$region" --arg bucket "$bucket" --arg key "$key" \
+              --arg version_id "$version_id" --arg sha256 "$sha256" \
+              --argjson size_bytes "$size" \
+              '.release_objects += [{region: $region, bucket: $bucket, key: $key,
+                version_id: $version_id, sha256: $sha256,
+                size_bytes: $size_bytes}]' target/candidate/state.json \
+              > target/candidate/state.next.json
+            mv target/candidate/state.next.json target/candidate/state.json
+            aws s3api put-object --bucket "$east_bucket" --key "$state_key" \
+              --body target/candidate/state.json --region us-east-1 >/dev/null
+          }
+          existing_release_version() {
+            region="$1"
+            relative="$2"
+            jq -er --arg region "$region" \
+              --arg key "releases/$VERSION/$relative" \
+              '[.objects[] | select(.region == $region and .key == $key)] |
+               if length == 1 then .[0].version_id else error(
+                 "missing or duplicate exact staged object") end' \
+              target/candidate/staged-objects.json
+          }
+          verify_or_upload_release_object() {
+            region="$1"
+            bucket="$2"
+            source="$3"
+            relative="$4"
+            key="releases/$VERSION/$relative"
+            matches="$(jq --arg region "$region" --arg key "$key" \
+              '[.objects[] | select(.region == $region and .key == $key)] | length' \
+              target/candidate/staged-objects.json)"
+            if [[ "$matches" = 0 ]]; then
+              upload_release_object "$region" "$bucket" "$source" "$relative"
+              return
+            fi
+            test "$matches" = 1
+            expected_sha="$(jq -r --arg region "$region" --arg key "$key" \
+              '.objects[] | select(.region == $region and .key == $key) | .sha256' \
+              target/candidate/staged-objects.json)"
+            expected_size="$(jq -r --arg region "$region" --arg key "$key" \
+              '.objects[] | select(.region == $region and .key == $key) | .size_bytes' \
+              target/candidate/staged-objects.json)"
+            test "$(sha256sum "$source" | awk '{print $1}')" = "$expected_sha"
+            test "$(wc -c < "$source" | tr -d ' ')" = "$expected_size"
+          }
+          upload_candidate_object() {
+            source="$1"
+            relative="$2"
+            key="candidates/$CANDIDATE_ID/$relative"
+            sha256="$(sha256sum "$source" | awk '{print $1}')"
+            size="$(wc -c < "$source" | tr -d ' ')"
+            version_id="$(aws s3api put-object --region us-east-1 \
+              --bucket "$east_bucket" --key "$key" --body "$source" \
+              --metadata "sha256=$sha256,candidate-id=$CANDIDATE_ID" \
+              --query VersionId --output text)"
+            test "$version_id" != None
+            state_key="candidates/runs/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/state.json"
+            jq --arg region us-east-1 --arg bucket "$east_bucket" --arg key "$key" \
+              --arg version_id "$version_id" --arg sha256 "$sha256" \
+              --argjson size_bytes "$size" \
+              '.candidate_objects += [{region: $region, bucket: $bucket, key: $key,
+                version_id: $version_id, sha256: $sha256,
+                size_bytes: $size_bytes}]' target/candidate/state.json \
+              > target/candidate/state.next.json
+            mv target/candidate/state.next.json target/candidate/state.json
+            aws s3api put-object --bucket "$east_bucket" --key "$state_key" \
+              --body target/candidate/state.json --region us-east-1 >/dev/null
+          }
+          while IFS= read -r -d '' source; do
+            relative="${source#target/candidate/release/}"
+            upload_release_object us-east-1 "$east_bucket" "$source" "$relative"
+          done < <(find target/candidate/release/artifacts/lambda \
+            target/candidate/release/cloudformation/nested -type f -print0 | sort -z)
+          upload_release_object us-east-1 "$east_bucket" \
+            target/candidate/release/qualification/cloudformation/disposable-connect.yaml \
+            qualification/cloudformation/disposable-connect.yaml
+          while read -r region; do
+            [[ "$region" = us-east-1 ]] && continue
+            bucket="bridgefu-vapi-awsconnect-$account_id-$region"
+            while IFS= read -r -d '' source; do
+              relative="${source#target/candidate/release/}"
+              upload_release_object "$region" "$bucket" "$source" "$relative"
+            done < <(find target/candidate/release/artifacts/lambda -type f \
+              -print0 | sort -z)
+          done < <(jq -r '.regions[].code' release/regions.json)
+          lambda_version() {
+            existing_release_version "$1" "artifacts/lambda/$2"
+          }
+          nested_version() {
+            existing_release_version us-east-1 "cloudformation/nested/$1"
+          }
+          jq -n \
+            --arg schema bridgefu-release-object-versions/v1 \
+            --arg east_configuration "$(lambda_version us-east-1 configuration.zip)" \
+            --arg east_vapi "$(lambda_version us-east-1 vapi_provisioner.zip)" \
+            --arg east_prepare "$(lambda_version us-east-1 prepare_handoff.zip)" \
+            --arg east_transfer "$(lambda_version us-east-1 transfer_destination.zip)" \
+            --arg east_lookup "$(lambda_version us-east-1 connect_lookup.zip)" \
+            --arg west_configuration "$(lambda_version us-west-2 configuration.zip)" \
+            --arg west_vapi "$(lambda_version us-west-2 vapi_provisioner.zip)" \
+            --arg west_prepare "$(lambda_version us-west-2 prepare_handoff.zip)" \
+            --arg west_transfer "$(lambda_version us-west-2 transfer_destination.zip)" \
+            --arg west_lookup "$(lambda_version us-west-2 connect_lookup.zip)" \
+            --arg configuration "$(nested_version configuration.yaml)" \
+            --arg network "$(nested_version network.yaml)" \
+            --arg handoff "$(nested_version handoff-service.yaml)" \
+            --arg connect "$(nested_version connect.yaml)" \
+            --arg runtime "$(nested_version runtime.yaml)" \
+            --arg vapi "$(nested_version vapi.yaml)" \
+            --arg observability "$(nested_version observability.yaml)" \
+            --arg disposable "$(existing_release_version us-east-1 \
+              qualification/cloudformation/disposable-connect.yaml)" \
+            '{schema: $schema, lambda: {
+               "us-east-1": {"configuration.zip": $east_configuration,
+                 "vapi_provisioner.zip": $east_vapi,
+                 "prepare_handoff.zip": $east_prepare,
+                 "transfer_destination.zip": $east_transfer,
+                 "connect_lookup.zip": $east_lookup},
+               "us-west-2": {"configuration.zip": $west_configuration,
+                 "vapi_provisioner.zip": $west_vapi,
+                 "prepare_handoff.zip": $west_prepare,
+                 "transfer_destination.zip": $west_transfer,
+                 "connect_lookup.zip": $west_lookup}},
+             nested: {"configuration.yaml": $configuration,
+               "network.yaml": $network, "handoff-service.yaml": $handoff,
+               "connect.yaml": $connect, "runtime.yaml": $runtime,
+               "vapi.yaml": $vapi, "observability.yaml": $observability},
+             qualification: {"disposable-connect.yaml": $disposable}}' \
+            > target/candidate/object-versions.json
+          python release/build_release.py \
+            --version "$VERSION" \
+            --regions-file target/candidate/region-release.json \
+            --versions-file target/candidate/object-versions.json \
+            --public-base-url "https://$east_bucket.s3.us-east-1.amazonaws.com" \
+            --release-prefix releases --repository-commit "$GITHUB_SHA" \
+            --render-phase product --output target/candidate/release
+          upload_release_object us-east-1 "$east_bucket" \
+            target/candidate/release/cloudformation/template.yaml \
+            cloudformation/template.yaml
+          product_version="$(existing_release_version us-east-1 \
+            cloudformation/template.yaml)"
+          jq --arg version_id "$product_version" \
+            '.product_template = $version_id' \
+            target/candidate/object-versions.json \
+            > target/candidate/object-versions.next.json
+          mv target/candidate/object-versions.next.json \
+            target/candidate/object-versions.json
+          python release/build_release.py \
+            --version "$VERSION" \
+            --regions-file target/candidate/region-release.json \
+            --versions-file target/candidate/object-versions.json \
+            --public-base-url "https://$east_bucket.s3.us-east-1.amazonaws.com" \
+            --release-prefix releases --repository-commit "$GITHUB_SHA" \
+            --render-phase complete --output target/candidate/release
+          python release/build_release.py \
+            --verify-existing target/candidate/release \
+            --expected-version "$VERSION" \
+            --expected-repository-commit "$GITHUB_SHA"
+          while IFS= read -r -d '' source; do
+            relative="${source#target/candidate/release/}"
+            verify_or_upload_release_object us-east-1 "$east_bucket" \
+              "$source" "$relative"
+          done < <(find target/candidate/release -type f \
+            ! -name .bridgefu-vapi-awsconnect-release -print0 | sort -z)
+          while IFS= read -r -d '' source; do
+            relative="${source#target/candidate/release/}"
+            upload_candidate_object "$source" "release/$relative"
+          done < <(find target/candidate/release -type f \
+            ! -name .bridgefu-vapi-awsconnect-release -print0 | sort -z)
+          upload_candidate_object target/candidate/bridgefu-vapi-sip-smoke \
+            bridgefu-vapi-sip-smoke
+          upload_candidate_object target/candidate/bridgefu-direct-secure-probe \
+            bridgefu-direct-secure-probe
+          upload_candidate_object target/candidate/region-release.json \
+            region-release.json
+          upload_candidate_object target/candidate/staged-objects.json \
+            staged-objects.json
+          upload_candidate_object target/candidate/object-versions.json \
+            object-versions.json
+          while IFS= read -r -d '' template; do
+            while read -r region; do
+              aws cloudformation validate-template --region "$region" \
+                --template-body "file://$template" >/dev/null
+            done < <(jq -r '.regions[].code' release/regions.json)
+          done < <(find target/candidate/release -name '*.yaml' -print0 | sort -z)
+          for relative in cloudformation/template.yaml \
+            qualification/cloudformation/template.yaml; do
+            version_id="$(existing_release_version us-east-1 "$relative")"
+            encoded_version="$(python -c \
+              'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' \
+              "$version_id")"
+            template_url="https://$east_bucket.s3.us-east-1.amazonaws.com/releases/$VERSION/$relative?versionId=$encoded_version"
+            while read -r region; do
+              aws cloudformation validate-template --region "$region" \
+                --template-url "$template_url" >/dev/null
+            done < <(jq -r '.regions[].code' release/regions.json)
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: private-release-candidate
+          path: target/candidate
+          if-no-files-found: error
+          retention-days: 7
+
+  qualify-both-regions:
+    needs: build-private-candidate
+    strategy:
+      fail-fast: false
+      matrix:
+        region: [us-west-2, us-east-1]
+    runs-on: ubuntu-latest
+    environment: live-qualification
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: '${{ needs.build-private-candidate.outputs.repository_commit }}'}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: qualification/package-lock.json
+      - uses: actions/download-artifact@v4
+        with: {name: private-release-candidate, path: target/candidate}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_QUALIFICATION_ROLE_ARN }}
+          aws-region: ${{ matrix.region }}
+      - name: Install pinned qualification dependencies
+        run: |
+          python -m pip install -r qualification/requirements-runner.txt
+          npm --prefix qualification ci --ignore-scripts
+          PLAYWRIGHT_BROWSERS_PATH=0 npm --prefix qualification exec playwright install --with-deps chromium
+      - name: Checkout the exact Bridgefu source used by the AMI
+        run: |
+          repository="$(jq -r .repository bridgefu.lock.json)"
+          commit="$(jq -r .commit bridgefu.lock.json)"
+          git clone --filter=blob:none --no-checkout "$repository" target/pinned-bridgefu
+          git -C target/pinned-bridgefu checkout --detach "$commit"
+          test "$(shasum -a 256 target/pinned-bridgefu/Cargo.lock | awk '{print $1}')" = \
+            "$(jq -r .cargo_lock_sha256 bridgefu.lock.json)"
+      - name: Run both live smoke paths and prove teardown
+        env:
+          VERSION: ${{ needs.build-private-candidate.outputs.version }}
+          REGION: ${{ matrix.region }}
+          VAPI_PUBLIC_KEY: ${{ secrets.VAPI_PUBLIC_KEY }}
+          VAPI_SECRET_WEST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_WEST_2 || vars.VAPI_API_KEY_SECRET_ARN }}
+          VAPI_SECRET_EAST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_EAST_1 }}
+        run: |
+          set -euo pipefail
+          chmod 0700 \
+            target/candidate/bridgefu-vapi-sip-smoke \
+            target/candidate/bridgefu-direct-secure-probe
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
+          case "$REGION" in
+            us-west-2) vapi_secret_arn="$VAPI_SECRET_WEST"; short_region=w ;;
+            us-east-1) vapi_secret_arn="$VAPI_SECRET_EAST"; short_region=e ;;
+            *) exit 2 ;;
+          esac
+          test -n "$vapi_secret_arn"
+          execution_id="bfq-${short_region}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          template_version="$(jq -er --arg key \
+            "releases/$VERSION/qualification/cloudformation/template.yaml" \
+            '[.objects[] | select(.region == "us-east-1" and .key == $key)] |
+             if length == 1 then .[0].version_id else error(
+               "qualification template is not uniquely versioned") end' \
+            target/candidate/staged-objects.json)"
+          encoded_version="$(python -c \
+            'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' \
+            "$template_version")"
+          python qualification/controller.py run \
+            --execution-id "$execution_id" \
+            --release "$VERSION" \
+            --region "$REGION" \
+            --template-url "https://$bucket.s3.us-east-1.amazonaws.com/releases/$VERSION/qualification/cloudformation/template.yaml?versionId=$encoded_version" \
+            --vapi-secret-arn "$vapi_secret_arn" \
+            --hosted-zone-id "${{ vars.PUBLIC_HOSTED_ZONE_ID }}" \
+            --hosted-zone-name "${{ vars.PUBLIC_HOSTED_ZONE_NAME }}" \
+            --cloudformation-role-arn "${{ vars.AWS_QUALIFICATION_CLOUDFORMATION_ROLE_ARN }}" \
+            --bridgefu-checkout target/pinned-bridgefu \
+            --sip-client target/candidate/bridgefu-vapi-sip-smoke \
+            --direct-secure-probe target/candidate/bridgefu-direct-secure-probe \
+            --output "target/live-qualification-$REGION"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qualification-${{ matrix.region }}
+          path: target/live-qualification-${{ matrix.region }}
+          if-no-files-found: warn
+          retention-days: 14
+
+  seal-qualified-receipt:
+    needs: [build-private-candidate, qualify-both-regions]
+    runs-on: ubuntu-latest
+    environment: production-release
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: '${{ needs.build-private-candidate.outputs.repository_commit }}'}
+      - uses: actions/download-artifact@v4
+        with: {name: private-release-candidate, path: target/candidate}
+      - uses: actions/download-artifact@v4
+        with: {name: qualification-us-west-2, path: target/qualification/us-west-2}
+      - uses: actions/download-artifact@v4
+        with: {name: qualification-us-east-1, path: target/qualification/us-east-1}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CANDIDATE_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Verify both regional qualifications and seal the receipt
+        env:
+          VERSION: ${{ needs.build-private-candidate.outputs.version }}
+          CANDIDATE_ID: ${{ needs.build-private-candidate.outputs.candidate_id }}
+          SIGNING_KEY_ARN: ${{ vars.RELEASE_SIGNING_KEY_ARN }}
+          BRIDGEFU_COMMIT: ${{ needs.build-private-candidate.outputs.bridgefu_commit }}
+        run: |
+          set -euo pipefail
+          for region in us-west-2 us-east-1; do
+            evidence="target/qualification/$region/evidence.json"
+            zero="target/qualification/$region/zero-state.json"
+            jq -e --arg version "$VERSION" --arg region "$region" \
+              --arg bridgefu_commit "$BRIDGEFU_COMMIT" \
+              'def exact_true_checks($required):
+                 (keys | sort) == ($required | sort) and
+                 ([.[]] | all(. == true));
+               .schema_version == 2 and
+               .release == $version and .region == $region and
+               .bridgefu_commit == $bridgefu_commit and .redacted == true and
+               .secure_preflight.passed == true and
+               (.secure_preflight.checks | exact_true_checks([
+                 "sips_signaling",
+                 "tls_transport",
+                 "rtp_savp",
+                 "sdes_srtp",
+                 "srtp_contexts_installed",
+                 "answered",
+                 "inbound_200",
+                 "outbound_ack",
+                 "contact_dns",
+                 "contact_sips",
+                 "contact_tls",
+                 "exactly_one_correlation_header",
+                 "agent_available",
+                 "agent_sole_contact_auto_accepted",
+                 "agent_remote_audio",
+                 "agent_outbound_rtp",
+                 "agent_remote_hangup",
+                 "agent_contact_cleanup",
+                 "owned_ssm_commands_terminal",
+                 "runtime_probe_process_absent",
+                 "runtime_configuration_restored",
+                 "runtime_private_dns_verified",
+                 "runtime_run_artifacts_absent",
+                 "runtime_bridgefu_ready"
+               ])) and
+               ([.scenarios[].id] | sort) == ["vapi-sip-transfer","vapi-web-transfer"] and
+               ([.scenarios[].passed] | all(. == true)) and
+               ((.scenarios[] | select(.id == "vapi-sip-transfer") | .checks) |
+                 exact_true_checks([
+                   "vapi_call_connected",
+                   "vapi_transfer_invoked",
+                   "handoff_context_stored",
+                   "bridgefu_received_correlation_header",
+                   "vapi_destination_sips_signaling",
+                   "vapi_destination_tls_transport",
+                   "vapi_destination_media_profile_allowed",
+                   "vapi_destination_media_posture_consistent",
+                   "vapi_destination_answered",
+                   "amazon_connect_contact_connected",
+                   "configured_screen_pop_visible",
+                   "audio_source_to_agent",
+                   "audio_agent_to_source",
+                   "dtmf_source_to_agent",
+                   "source_call_ended"
+                 ])) and
+               ((.scenarios[] | select(.id == "vapi-web-transfer") | .checks) |
+                 exact_true_checks([
+                   "vapi_call_connected",
+                   "vapi_transfer_invoked",
+                   "handoff_context_stored",
+                   "bridgefu_received_correlation_header",
+                   "vapi_destination_sips_signaling",
+                   "vapi_destination_tls_transport",
+                   "vapi_destination_media_profile_allowed",
+                   "vapi_destination_media_posture_consistent",
+                   "vapi_destination_answered",
+                   "amazon_connect_contact_connected",
+                   "configured_screen_pop_visible",
+                   "audio_source_to_agent",
+                   "audio_agent_to_source",
+                   "dtmf_source_to_agent",
+                   "dtmf_agent_to_source",
+                   "source_call_ended"
+                 ])) and
+               (.teardown | exact_true_checks([
+                 "customer_stack_absent",
+                 "connect_instance_absent",
+                 "temporary_vapi_resources_absent",
+                 "test_credentials_absent",
+                 "qualification_objects_absent",
+                 "qualification_private_dns_absent"
+               ]))' "$evidence" >/dev/null
+            jq -e '(.customer_stack_absent == true and
+              .connect_instance_absent == true and
+              .temporary_vapi_resources_absent == true and
+              .test_credentials_absent == true and
+              .qualification_objects_absent == true and
+              .qualification_private_dns_absent == true and .redacted == true)' \
+              "$zero" >/dev/null
+          done
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          east_bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
+          state_key="candidates/runs/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/state.json"
+          persist_candidate_state() {
+            aws s3api put-object --bucket "$east_bucket" --key "$state_key" \
+              --body target/candidate/state.json --region us-east-1 >/dev/null
+          }
+          record_candidate_object() {
+            key="$1"
+            version_id="$2"
+            source="$3"
+            sha256="$(sha256sum "$source" | awk '{print $1}')"
+            size="$(wc -c < "$source" | tr -d ' ')"
+            jq --arg region us-east-1 --arg bucket "$east_bucket" --arg key "$key" \
+              --arg version_id "$version_id" --arg sha256 "$sha256" \
+              --argjson size_bytes "$size" \
+              '.candidate_objects += [{region: $region, bucket: $bucket, key: $key,
+                version_id: $version_id, sha256: $sha256,
+                size_bytes: $size_bytes}]' target/candidate/state.json \
+              > target/candidate/state.next.json
+            mv target/candidate/state.next.json target/candidate/state.json
+            persist_candidate_state
+          }
+          upload_and_record() {
+            region="$1"
+            bucket="$2"
+            source="$3"
+            relative="$4"
+            key="releases/$VERSION/$relative"
+            sha256="$(sha256sum "$source" | awk '{print $1}')"
+            size="$(wc -c < "$source" | tr -d ' ')"
+            version_id="$(aws s3api put-object --region "$region" \
+              --bucket "$bucket" --key "$key" --body "$source" \
+              --metadata "sha256=$sha256,candidate-id=$CANDIDATE_ID" \
+              --query VersionId --output text)"
+            test "$version_id" != None
+            jq --arg region "$region" --arg bucket "$bucket" --arg key "$key" \
+              --arg version_id "$version_id" --arg sha256 "$sha256" \
+              --argjson size_bytes "$size" \
+              '.objects += [{region: $region, bucket: $bucket, key: $key,
+                version_id: $version_id, sha256: $sha256,
+                size_bytes: $size_bytes}]' target/candidate/staged-objects.json \
+              > target/candidate/staged-objects.next.json
+            mv target/candidate/staged-objects.next.json \
+              target/candidate/staged-objects.json
+            jq --arg region "$region" --arg bucket "$bucket" --arg key "$key" \
+              --arg version_id "$version_id" --arg sha256 "$sha256" \
+              --argjson size_bytes "$size" \
+              '.release_objects += [{region: $region, bucket: $bucket, key: $key,
+                version_id: $version_id, sha256: $sha256,
+                size_bytes: $size_bytes}]' target/candidate/state.json \
+              > target/candidate/state.next.json
+            mv target/candidate/state.next.json target/candidate/state.json
+            persist_candidate_state
+          }
+          for region in us-west-2 us-east-1; do
+            upload_and_record us-east-1 "$east_bucket" \
+              "target/qualification/$region/evidence.json" \
+              "qualification/$region/evidence.json"
+            upload_and_record us-east-1 "$east_bucket" \
+              "target/qualification/$region/zero-state.json" \
+              "qualification/$region/zero-state.json"
+          done
+          manifest=target/candidate/release/manifest.json
+          openssl dgst -sha256 -binary "$manifest" > target/manifest.digest
+          aws kms sign --key-id "$SIGNING_KEY_ARN" \
+            --signing-algorithm ECDSA_SHA_256 --message-type DIGEST \
+            --message fileb://target/manifest.digest --query Signature --output text \
+            | base64 --decode > target/candidate/release/manifest.sig
+          upload_and_record us-east-1 "$east_bucket" \
+            target/candidate/release/manifest.sig manifest.sig
+          manifest_record="$(jq -c --arg key "releases/$VERSION/manifest.json" \
+            '.objects[] | select(.key == $key and .region == "us-east-1")' \
+            target/candidate/staged-objects.json)"
+          test -n "$manifest_record"
+          west_evidence_sha="$(sha256sum target/qualification/us-west-2/evidence.json | awk '{print $1}')"
+          east_evidence_sha="$(sha256sum target/qualification/us-east-1/evidence.json | awk '{print $1}')"
+          jq -n \
+            --arg schema bridgefu-qualified-candidate-receipt/v1 \
+            --arg candidate_id "$CANDIDATE_ID" \
+            --arg version "$VERSION" \
+            --arg repository "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --arg repository_commit "$GITHUB_SHA" \
+            --arg bridgefu_commit "$BRIDGEFU_COMMIT" \
+            --arg qualified_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg signing_key_arn "$SIGNING_KEY_ARN" \
+            --argjson workflow_run_id "$GITHUB_RUN_ID" \
+            --argjson workflow_run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --argjson manifest "$manifest_record" \
+            --argjson regional_amis "$(cat target/candidate/region-release.json)" \
+            --argjson release_objects "$(jq '.objects' target/candidate/staged-objects.json)" \
+            --arg west_evidence_sha "$west_evidence_sha" \
+            --arg east_evidence_sha "$east_evidence_sha" \
+            --arg west_execution "$(jq -r .execution_id target/qualification/us-west-2/evidence.json)" \
+            --arg east_execution "$(jq -r .execution_id target/qualification/us-east-1/evidence.json)" \
+            --argjson west_evidence_schema_version "$(jq .schema_version target/qualification/us-west-2/evidence.json)" \
+            --argjson east_evidence_schema_version "$(jq .schema_version target/qualification/us-east-1/evidence.json)" \
+            --argjson west_secure_preflight_passed "$(jq .secure_preflight.passed target/qualification/us-west-2/evidence.json)" \
+            --argjson east_secure_preflight_passed "$(jq .secure_preflight.passed target/qualification/us-east-1/evidence.json)" \
+            --argjson west_required_checks_passed "$(jq '[.secure_preflight.checks[], .scenarios[].passed, .scenarios[].checks[], .teardown[]] | all(. == true)' target/qualification/us-west-2/evidence.json)" \
+            --argjson east_required_checks_passed "$(jq '[.secure_preflight.checks[], .scenarios[].passed, .scenarios[].checks[], .teardown[]] | all(. == true)' target/qualification/us-east-1/evidence.json)" \
+            --argjson west_scenario_ids "$(jq -c '[.scenarios[].id] | sort' target/qualification/us-west-2/evidence.json)" \
+            --argjson east_scenario_ids "$(jq -c '[.scenarios[].id] | sort' target/qualification/us-east-1/evidence.json)" \
+            '{schema: $schema, candidate_id: $candidate_id, version: $version,
+              repository: {url: $repository, commit: $repository_commit},
+              bridgefu_commit: $bridgefu_commit, qualified_at: $qualified_at,
+              workflow: {run_id: $workflow_run_id, run_attempt: $workflow_run_attempt},
+              signing_key_arn: $signing_key_arn, manifest: $manifest,
+              regional_amis: $regional_amis, release_objects: $release_objects,
+              qualification: {
+                "us-west-2": {execution_id: $west_execution,
+                  evidence_sha256: $west_evidence_sha,
+                  evidence_schema_version: $west_evidence_schema_version,
+                  secure_preflight_passed: $west_secure_preflight_passed,
+                  required_checks_passed: $west_required_checks_passed,
+                  scenario_ids: $west_scenario_ids, zero_resource_proof: true},
+                "us-east-1": {execution_id: $east_execution,
+                  evidence_sha256: $east_evidence_sha,
+                  evidence_schema_version: $east_evidence_schema_version,
+                  secure_preflight_passed: $east_secure_preflight_passed,
+                  required_checks_passed: $east_required_checks_passed,
+                  scenario_ids: $east_scenario_ids, zero_resource_proof: true}
+              }}' > target/candidate/qualified-receipt.json
+          jq -e '
+            .schema == "bridgefu-qualified-candidate-receipt/v1" and
+            (.qualification | keys | sort) == ["us-east-1","us-west-2"] and
+            ([.qualification[] |
+              .evidence_schema_version == 2 and
+              .secure_preflight_passed == true and
+              .required_checks_passed == true and
+              .scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"] and
+              .zero_resource_proof == true] | all(. == true))' \
+            target/candidate/qualified-receipt.json >/dev/null
+          openssl dgst -sha256 -binary target/candidate/qualified-receipt.json \
+            > target/receipt.digest
+          aws kms sign --key-id "$SIGNING_KEY_ARN" \
+            --signing-algorithm ECDSA_SHA_256 --message-type DIGEST \
+            --message fileb://target/receipt.digest --query Signature --output text \
+            | base64 --decode > target/candidate/qualified-receipt.sig
+          receipt_prefix="candidates/qualified/$VERSION/$GITHUB_SHA"
+          receipt_sig_sha="$(sha256sum target/candidate/qualified-receipt.sig |
+            awk '{print $1}')"
+          receipt_sig_version="$(aws s3api put-object --bucket "$east_bucket" \
+            --key "$receipt_prefix/receipt.sig" \
+            --body target/candidate/qualified-receipt.sig \
+            --metadata "candidate-id=$CANDIDATE_ID,sha256=$receipt_sig_sha" \
+            --query VersionId --output text)"
+          test "$receipt_sig_version" != None
+          record_candidate_object "$receipt_prefix/receipt.sig" \
+            "$receipt_sig_version" target/candidate/qualified-receipt.sig
+          receipt_json_sha="$(sha256sum target/candidate/qualified-receipt.json |
+            awk '{print $1}')"
+          receipt_json_version="$(aws s3api put-object --bucket "$east_bucket" \
+            --key "$receipt_prefix/receipt.json" \
+            --body target/candidate/qualified-receipt.json --if-none-match '*' \
+            --metadata "candidate-id=$CANDIDATE_ID,sha256=$receipt_json_sha" \
+            --query VersionId --output text)"
+          test "$receipt_json_version" != None
+          record_candidate_object "$receipt_prefix/receipt.json" \
+            "$receipt_json_version" target/candidate/qualified-receipt.json
+          jq '.qualified = true' target/candidate/state.json \
+            > target/candidate/state.next.json
+          mv target/candidate/state.next.json target/candidate/state.json
+          persist_candidate_state
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qualified-candidate-receipt
+          path: |
+            target/candidate/qualified-receipt.json
+            target/candidate/qualified-receipt.sig
+          if-no-files-found: error
+          retention-days: 90

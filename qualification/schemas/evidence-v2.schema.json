@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bridgefu.dev/vapi-awsconnect/qualification/evidence-v2.schema.json",
+  "title": "Bridgefu secure preflight and Vapi to Amazon Connect release evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "release", "execution_id", "region", "started_at", "ended_at", "bridgefu_commit", "secure_preflight", "scenarios", "teardown", "redacted"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "release": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$"},
+    "execution_id": {"type": "string", "pattern": "^bfq-[a-z0-9-]{4,28}$"},
+    "region": {"enum": ["us-west-2", "us-east-1"]},
+    "started_at": {"type": "string", "format": "date-time"},
+    "ended_at": {"type": "string", "format": "date-time"},
+    "bridgefu_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "secure_preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["binary_sha256", "probe_result_sha256", "agent_observation_sha256", "cleanup_receipt_sha256", "checks", "passed"],
+      "properties": {
+        "binary_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "probe_result_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "agent_observation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "cleanup_receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sips_signaling",
+            "tls_transport",
+            "rtp_savp",
+            "sdes_srtp",
+            "srtp_contexts_installed",
+            "answered",
+            "inbound_200",
+            "outbound_ack",
+            "contact_dns",
+            "contact_sips",
+            "contact_tls",
+            "exactly_one_correlation_header",
+            "agent_available",
+            "agent_sole_contact_auto_accepted",
+            "agent_remote_audio",
+            "agent_outbound_rtp",
+            "agent_remote_hangup",
+            "agent_contact_cleanup",
+            "owned_ssm_commands_terminal",
+            "runtime_probe_process_absent",
+            "runtime_configuration_restored",
+            "runtime_private_dns_verified",
+            "runtime_run_artifacts_absent",
+            "runtime_bridgefu_ready"
+          ],
+          "properties": {
+            "sips_signaling": {"const": true},
+            "tls_transport": {"const": true},
+            "rtp_savp": {"const": true},
+            "sdes_srtp": {"const": true},
+            "srtp_contexts_installed": {"const": true},
+            "answered": {"const": true},
+            "inbound_200": {"const": true},
+            "outbound_ack": {"const": true},
+            "contact_dns": {"const": true},
+            "contact_sips": {"const": true},
+            "contact_tls": {"const": true},
+            "exactly_one_correlation_header": {"const": true},
+            "agent_available": {"const": true},
+            "agent_sole_contact_auto_accepted": {"const": true},
+            "agent_remote_audio": {"const": true},
+            "agent_outbound_rtp": {"const": true},
+            "agent_remote_hangup": {"const": true},
+            "agent_contact_cleanup": {"const": true},
+            "owned_ssm_commands_terminal": {"const": true},
+            "runtime_probe_process_absent": {"const": true},
+            "runtime_configuration_restored": {"const": true},
+            "runtime_private_dns_verified": {"const": true},
+            "runtime_run_artifacts_absent": {"const": true},
+            "runtime_bridgefu_ready": {"const": true}
+          }
+        },
+        "passed": {"const": true}
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "source_observation_sha256", "agent_observation_sha256", "runtime_security_evidence_sha256", "runtime_security_media_profile", "runtime_security_media_keying", "runtime_security_media_suite", "runtime_security_srtp_negotiated", "checks", "passed"],
+        "properties": {
+          "id": {"enum": ["vapi-sip-transfer", "vapi-web-transfer"]},
+          "source_observation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "agent_observation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "runtime_security_evidence_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "runtime_security_media_profile": {"enum": ["RTP/AVP", "RTP/SAVP"]},
+          "runtime_security_media_keying": {"enum": ["none", "SDES-SRTP"]},
+          "runtime_security_media_suite": {"enum": ["none", "AES_CM_128_HMAC_SHA1_80", "AES_CM_128_HMAC_SHA1_32"]},
+          "runtime_security_srtp_negotiated": {"type": "boolean"},
+          "checks": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["vapi_call_connected", "vapi_transfer_invoked", "handoff_context_stored", "bridgefu_received_correlation_header", "vapi_destination_sips_signaling", "vapi_destination_tls_transport", "vapi_destination_media_profile_allowed", "vapi_destination_media_posture_consistent", "vapi_destination_answered", "amazon_connect_contact_connected", "configured_screen_pop_visible", "audio_source_to_agent", "audio_agent_to_source", "dtmf_source_to_agent", "source_call_ended"],
+            "properties": {
+              "vapi_call_connected": {"const": true},
+              "vapi_transfer_invoked": {"const": true},
+              "handoff_context_stored": {"const": true},
+              "bridgefu_received_correlation_header": {"const": true},
+              "vapi_destination_sips_signaling": {"const": true},
+              "vapi_destination_tls_transport": {"const": true},
+              "vapi_destination_media_profile_allowed": {"const": true},
+              "vapi_destination_media_posture_consistent": {"const": true},
+              "vapi_destination_answered": {"const": true},
+              "amazon_connect_contact_connected": {"const": true},
+              "configured_screen_pop_visible": {"const": true},
+              "audio_source_to_agent": {"const": true},
+              "audio_agent_to_source": {"const": true},
+              "dtmf_source_to_agent": {"const": true},
+              "dtmf_agent_to_source": {"const": true},
+              "source_call_ended": {"const": true}
+            }
+          },
+          "passed": {"const": true}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"id": {"const": "vapi-sip-transfer"}}, "required": ["id"]},
+            "then": {"properties": {"checks": {"not": {"required": ["dtmf_agent_to_source"]}}}}
+          },
+          {
+            "if": {"properties": {"id": {"const": "vapi-web-transfer"}}, "required": ["id"]},
+            "then": {"properties": {"checks": {"required": ["dtmf_agent_to_source"]}}}
+          },
+          {
+            "if": {"properties": {"runtime_security_media_profile": {"const": "RTP/SAVP"}}, "required": ["runtime_security_media_profile"]},
+            "then": {"properties": {"runtime_security_media_keying": {"const": "SDES-SRTP"}, "runtime_security_media_suite": {"enum": ["AES_CM_128_HMAC_SHA1_80", "AES_CM_128_HMAC_SHA1_32"]}, "runtime_security_srtp_negotiated": {"const": true}}}
+          },
+          {
+            "if": {"properties": {"runtime_security_media_profile": {"const": "RTP/AVP"}}, "required": ["runtime_security_media_profile"]},
+            "then": {"properties": {"runtime_security_media_keying": {"const": "none"}, "runtime_security_media_suite": {"const": "none"}, "runtime_security_srtp_negotiated": {"const": false}}}
+          }
+        ]
+      },
+      "allOf": [
+        {"contains": {"properties": {"id": {"const": "vapi-sip-transfer"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"id": {"const": "vapi-web-transfer"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1}
+      ]
+    },
+    "teardown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["customer_stack_absent", "connect_instance_absent", "temporary_vapi_resources_absent", "test_credentials_absent", "qualification_objects_absent", "qualification_private_dns_absent"],
+      "properties": {
+        "customer_stack_absent": {"const": true},
+        "connect_instance_absent": {"const": true},
+        "temporary_vapi_resources_absent": {"const": true},
+        "test_credentials_absent": {"const": true},
+        "qualification_objects_absent": {"const": true},
+        "qualification_private_dns_absent": {"const": true}
+      }
+    },
+    "redacted": {"const": true}
+  }
+}

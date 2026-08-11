@@ -8,7 +8,7 @@ of caller details you chose to collect.
 flowchart LR
     V["New Vapi template assistant"] -->|"Store context"| L["AWS Lambda"]
     L --> D["DynamoDB"]
-    V -->|"SIPS transfer"| B["Bridgefu EC2"]
+    V -->|"SIPS transfer; SRTP preferred"| B["Bridgefu EC2"]
     B --> C["Amazon Connect"]
     C -->|"Correlation lookup"| D
     C --> A["Agent screen pop"]

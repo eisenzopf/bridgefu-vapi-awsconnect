@@ -38,13 +38,16 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: PublicImmutableReleaseRead
+          - Sid: PublicQualifiedReleaseRead
             Effect: Allow
             Principal: '*'
             Action: s3:GetObject
             Resource:
               - !Sub '${ReleaseBucket.Arn}/releases/*'
               - !Sub '${ReleaseBucket.Arn}/latest/*'
+            Condition:
+              StringEquals:
+                s3:ExistingObjectTag/bridgefu-publication-status: published
           - Sid: RequireTls
             Effect: Deny
             Principal: '*'

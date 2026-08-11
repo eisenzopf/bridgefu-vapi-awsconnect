@@ -4,7 +4,7 @@ umask 022
 
 sudo dnf install -y \
   cargo clang cmake gcc gcc-c++ git haproxy jq openssl-devel \
-  opus-devel pkgconf-pkg-config protobuf-compiler rust xfsprogs
+  logrotate opus-devel pkgconf-pkg-config protobuf-compiler rust xfsprogs
 
 # rvoip's Opus feature dynamically links libopus on GNU Linux. Prove both the
 # build metadata and runtime library are present before spending time compiling.
@@ -61,9 +61,11 @@ for script in bridgefu-load-secrets bridgefu-cert-refresh bridgefu-cert-reload b
   sudo install -o root -g root -m 0755 "/usr/local/lib/bridgefu/$script" "/usr/local/sbin/$script"
 done
 sudo install -o root -g root -m 0755 /usr/local/lib/bridgefu/bootstrap.sh /usr/local/sbin/bridgefu-bootstrap
-for unit in bridgefu.service bridgefu-cert-refresh.service bridgefu-cert-refresh.timer bridgefu-cert-reload.service bridgefu-cert-reload.timer; do
+sudo install -o root -g root -m 0644 /usr/local/lib/bridgefu/bridgefu.logrotate /etc/logrotate.d/bridgefu
+for unit in bridgefu.service bridgefu-logrotate.service bridgefu-logrotate.timer bridgefu-cert-refresh.service bridgefu-cert-refresh.timer bridgefu-cert-reload.service bridgefu-cert-reload.timer; do
   sudo install -o root -g root -m 0644 "/usr/local/lib/bridgefu/$unit" "/etc/systemd/system/$unit"
 done
+sudo logrotate --debug /etc/logrotate.d/bridgefu >/dev/null
 
 curl --fail --location --silent --show-error \
   https://amazoncloudwatch-agent.s3.amazonaws.com/amazon_linux/arm64/latest/amazon-cloudwatch-agent.rpm \

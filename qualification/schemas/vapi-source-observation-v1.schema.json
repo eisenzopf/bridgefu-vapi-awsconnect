@@ -50,9 +50,11 @@
         "codec",
         "security",
         "source_marker_sent_at_ms",
+        "dtmf_source_to_agent_sent_at_ms",
         "agent_marker_observed_at_ms",
         "source_to_agent_marker_frames_sent",
-        "agent_to_source_marker_frames"
+        "agent_to_source_marker_frames",
+        "dtmf_agent_to_source_observed"
       ],
       "properties": {
         "codec": {"const": "negotiated"},
@@ -63,6 +65,12 @@
           "maxItems": 32,
           "items": {"type": "integer", "minimum": 1}
         },
+        "dtmf_source_to_agent_sent_at_ms": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {"type": "integer", "minimum": 1}
+        },
         "agent_marker_observed_at_ms": {
           "type": "array",
           "minItems": 3,
@@ -70,7 +78,8 @@
           "items": {"type": "integer", "minimum": 1}
         },
         "source_to_agent_marker_frames_sent": {"type": "integer", "minimum": 5},
-        "agent_to_source_marker_frames": {"type": "integer", "minimum": 3}
+        "agent_to_source_marker_frames": {"type": "integer", "minimum": 3},
+        "dtmf_agent_to_source_observed": {"const": true}
       }
     },
     "hangup": {

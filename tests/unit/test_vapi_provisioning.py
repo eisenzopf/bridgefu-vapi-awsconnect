@@ -176,6 +176,19 @@ class VapiProvisioningTests(unittest.TestCase):
         self.assertNotIn("route", schema["properties"])
         self.assertNotIn("sipUri", schema["properties"])
 
+        prompt = assistant["model"]["messages"][0]["content"]
+        self.assertIn("JSON Schema is the sole authoritative list", prompt)
+        self.assertIn("satisfy every required field", prompt)
+        self.assertIn("enumerated field's allowed choices", prompt)
+        self.assertNotIn("all four fields", prompt)
+        for legacy_field in (
+            "customer's name",
+            "issue summary",
+            "intent label",
+            "verification status",
+        ):
+            self.assertNotIn(legacy_field, prompt)
+
     def test_update_preserves_ids_and_never_rewrites_the_assistant(self):
         client = FakeVapi()
         old = config()

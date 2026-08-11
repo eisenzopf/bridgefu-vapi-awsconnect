@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bridgefu.dev/vapi-awsconnect/qualification/direct-secure-agent-observation-v1.schema.json",
+  "title": "Bridgefu direct secure Agent Workspace observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "producer",
+    "producer_revision_sha256",
+    "mode",
+    "agent_available",
+    "sole_contact_auto_accepted",
+    "remote_audio_observed",
+    "outbound_rtp_observed",
+    "remote_hangup_observed",
+    "contact_cleanup_observed",
+    "redacted"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "producer": {"const": "bridgefu-agent-direct-secure-observer@1"},
+    "producer_revision_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "mode": {"const": "direct-secure-preflight"},
+    "agent_available": {"const": true},
+    "sole_contact_auto_accepted": {"const": true},
+    "remote_audio_observed": {"const": true},
+    "outbound_rtp_observed": {"const": true},
+    "remote_hangup_observed": {"const": true},
+    "contact_cleanup_observed": {"const": true},
+    "redacted": {"const": true}
+  }
+}

@@ -164,36 +164,46 @@ def emit_correlation_evidence(
     )
 
 
+def _decode_value(value: Any, depth: int = 0) -> Any:
+    if depth > 2 or not isinstance(value, Mapping) or len(value) != 1:
+        raise HandoffError("handoff_store_invalid", 500)
+    kind, raw = next(iter(value.items()))
+    if kind == "S" and isinstance(raw, str):
+        return raw
+    if kind == "N" and isinstance(raw, str):
+        try:
+            return int(raw)
+        except ValueError:
+            raise HandoffError("handoff_store_invalid", 500) from None
+    if kind == "M" and isinstance(raw, Mapping) and raw:
+        if any(not isinstance(key, str) or not key for key in raw):
+            raise HandoffError("handoff_store_invalid", 500)
+        return {key: _decode_value(item, depth + 1) for key, item in raw.items()}
+    raise HandoffError("handoff_store_invalid", 500)
+
+
 def _decode_item(item: Mapping[str, Any]) -> dict[str, Any]:
-    decoded: dict[str, Any] = {}
-    for key, value in item.items():
-        if not isinstance(value, Mapping) or len(value) != 1:
-            raise HandoffError("handoff_store_invalid", 500)
-        kind, raw = next(iter(value.items()))
-        if kind == "S" and isinstance(raw, str):
-            decoded[key] = raw
-        elif kind == "N" and isinstance(raw, str):
-            try:
-                decoded[key] = int(raw)
-            except ValueError:
-                raise HandoffError("handoff_store_invalid", 500) from None
-        else:
-            raise HandoffError("handoff_store_invalid", 500)
-    return decoded
+    return {key: _decode_value(value) for key, value in item.items()}
 
 
-def _encode_item(record: Mapping[str, Any]) -> dict[str, dict[str, str]]:
-    encoded: dict[str, dict[str, str]] = {}
-    for key, value in record.items():
-        if isinstance(value, bool):
+def _encode_value(value: Any, depth: int = 0) -> dict[str, Any]:
+    if depth > 2 or isinstance(value, bool):
+        raise HandoffError("handoff_store_invalid", 500)
+    if isinstance(value, int):
+        return {"N": str(value)}
+    if isinstance(value, str):
+        return {"S": value}
+    if isinstance(value, Mapping) and value:
+        if any(not isinstance(key, str) or not key for key in value):
             raise HandoffError("handoff_store_invalid", 500)
-        if isinstance(value, int):
-            encoded[key] = {"N": str(value)}
-        elif isinstance(value, str):
-            encoded[key] = {"S": value}
-        else:
-            raise HandoffError("handoff_store_invalid", 500)
-    return encoded
+        return {
+            "M": {key: _encode_value(item, depth + 1) for key, item in value.items()}
+        }
+    raise HandoffError("handoff_store_invalid", 500)
+
+
+def _encode_item(record: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    return {key: _encode_value(value) for key, value in record.items()}
 
 
 def _conditional_failure(error: Exception) -> bool:
@@ -220,7 +230,8 @@ class DynamoHandoffStore:
                 "schema_version,correlation_id,customer_name,issue_summary,intent,"
                 "verification_status,vapi_call_reference,vapi_call_fingerprint,"
                 "content_hash,created_at,updated_at,expires_at,handoff_status,"
-                "bridgefu_call_id,attachment_expires_at"
+                "bridgefu_call_id,attachment_expires_at,screen_pop_values,"
+                "screen_pop_schema_hash"
             ),
         )
         item = response.get("Item")

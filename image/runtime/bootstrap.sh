@@ -20,6 +20,10 @@ record_step data-volume-discovery
 getent group bridgefu >/dev/null || groupadd --system bridgefu
 install -d -o root -g bridgefu -m 0750 /etc/bridgefu /etc/bridgefu/tls
 install -d -o bridgefu -g bridgefu -m 0750 /var/lib/bridgefu
+install -d -o bridgefu -g bridgefu -m 0750 /var/log/bridgefu
+touch /var/log/bridgefu/bridgefu.log
+chown bridgefu:bridgefu /var/log/bridgefu/bridgefu.log
+chmod 0640 /var/log/bridgefu/bridgefu.log
 install -d -o root -g root -m 0755 /run/bridgefu
 
 root_source="$(findmnt -n -o SOURCE /)"
@@ -70,13 +74,13 @@ chown root:bridgefu /etc/bridgefu/bridgefu.yaml
 chown root:haproxy /etc/haproxy/haproxy.cfg
 
 systemctl daemon-reload
-if [[ "$BRIDGEFU_SIP_SECURITY" == sips_srtp ]]; then
+if [[ "$BRIDGEFU_SIP_SECURITY" != sip_rtp ]]; then
   record_step certificate-refresh
   /usr/local/sbin/bridgefu-cert-refresh
 fi
 record_step proxy-start
 systemctl enable --now haproxy.service
-if [[ "$BRIDGEFU_SIP_SECURITY" == sips_srtp ]]; then
+if [[ "$BRIDGEFU_SIP_SECURITY" != sip_rtp ]]; then
   systemctl enable bridgefu-cert-refresh.timer bridgefu-cert-reload.timer
   systemctl start bridgefu-cert-refresh.timer bridgefu-cert-reload.timer
 fi
@@ -85,10 +89,11 @@ record_step cloudwatch-agent-start
 /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
   -a fetch-config -m ec2 -s \
   -c file:/opt/aws/amazon-cloudwatch-agent/etc/bridgefu.json
+systemctl enable --now bridgefu-logrotate.timer
 record_step bridgefu-service-start
 if ! systemctl enable --now bridgefu.service; then
   systemctl status --no-pager --lines=40 bridgefu.service >&2 || true
-  journalctl --no-pager --lines=80 --unit=bridgefu.service >&2 || true
+  tail --lines=80 /var/log/bridgefu/bridgefu.log >&2 || true
   exit 1
 fi
 
@@ -103,7 +108,7 @@ curl --silent --fail --max-time 3 http://127.0.0.1:9090/readyz >/dev/null
 record_step control-readiness
 control_ready=false
 for _ in $(seq 1 30); do
-  if [[ "$BRIDGEFU_SIP_SECURITY" == sips_srtp ]]; then
+  if [[ "$BRIDGEFU_SIP_SECURITY" != sip_rtp ]]; then
     if curl --silent --fail --max-time 3 \
       --resolve "$BRIDGEFU_CONTROL_HOSTNAME:443:$BRIDGEFU_PRIVATE_IP" \
       --cacert /etc/bridgefu/tls/fullchain.pem \

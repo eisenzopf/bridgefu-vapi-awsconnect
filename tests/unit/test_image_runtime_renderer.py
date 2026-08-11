@@ -81,6 +81,24 @@ class ImageRuntimeRendererTests(unittest.TestCase):
             )
             self.assertEqual(cloudwatch["agent"]["region"], "us-west-2")
 
+            environment["BRIDGEFU_SIP_SECURITY"] = "sips_optional_srtp"
+            subprocess.run(
+                [sys.executable, os.fspath(executable)],
+                check=True,
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+            bridgefu = (installed / "etc/bridgefu/bridgefu.yaml").read_text()
+            self.assertIn("sip_security: sips_optional_srtp", bridgefu)
+            self.assertIn("sip_tls:", bridgefu)
+            self.assertIn("bind: 0.0.0.0:5061", bridgefu)
+            self.assertIn("certificate_chain: /etc/bridgefu/tls/fullchain.pem", bridgefu)
+            self.assertIn(
+                "ssl crt /etc/haproxy/bridgefu.pem",
+                (installed / "etc/haproxy/haproxy.cfg").read_text(),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

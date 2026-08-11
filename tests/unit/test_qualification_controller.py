@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import datetime as dt
 import importlib.util
 import json
+import shutil
+import subprocess
+import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
@@ -16,13 +23,948 @@ SPEC.loader.exec_module(CONTROLLER)
 
 
 class QualificationControllerTests(unittest.TestCase):
+    def test_command_failure_retains_bounded_sanitized_stderr(self):
+        completed = subprocess.CompletedProcess(
+            ["aws", "cloudformation"],
+            255,
+            "",
+            "ValidationError: nested stack failed password=do-not-retain " + "x" * 5000,
+        )
+        with mock.patch.object(CONTROLLER.subprocess, "run", return_value=completed):
+            with self.assertRaises(CONTROLLER.QualificationError) as raised:
+                CONTROLLER.CommandRunner().run(["aws", "cloudformation"])
+        message = str(raised.exception)
+        self.assertIn("ValidationError: nested stack failed", message)
+        self.assertIn("password=[REDACTED]", message)
+        self.assertNotIn("do-not-retain", message)
+        self.assertLessEqual(len(message), CONTROLLER.DIAGNOSTIC_LIMIT + 64)
+
+    def test_ssm_polling_outlives_the_cli_waiter_and_fails_closed(self):
+        class FakeAws:
+            def __init__(self, statuses):
+                self.statuses = iter(statuses)
+
+            def json(self, arguments):
+                self.arguments = arguments
+                return {"Status": next(self.statuses)}
+
+        success = FakeAws(["Pending", "InProgress", "Success"])
+        CONTROLLER.wait_for_ssm_command(
+            success, "command-id", "i-1234", timeout=1, poll_seconds=0
+        )
+        self.assertEqual(success.arguments[0:2], ["ssm", "get-command-invocation"])
+
+        failed = FakeAws(["Failed"])
+        with self.assertRaises(CONTROLLER.QualificationError):
+            CONTROLLER.wait_for_ssm_command(
+                failed, "command-id", "i-1234", timeout=1, poll_seconds=0
+            )
+
+        class EventuallyVisibleAws:
+            def __init__(self):
+                self.calls = 0
+
+            def json(self, arguments):
+                self.calls += 1
+                if self.calls == 1:
+                    raise CONTROLLER.QualificationError(
+                        "command failed: aws ssm: InvocationDoesNotExist"
+                    )
+                return {"Status": "Success"}
+
+        eventually_visible = EventuallyVisibleAws()
+        CONTROLLER.wait_for_ssm_command(
+            eventually_visible,
+            "command-id",
+            "i-1234",
+            timeout=1,
+            poll_seconds=0,
+        )
+        self.assertEqual(eventually_visible.calls, 2)
+
+    def test_vapi_list_uses_a_bounded_explicit_limit(self):
+        class FakeVapi(CONTROLLER.Vapi):
+            def __init__(self):
+                super().__init__("private-test-key")
+                self.path = None
+
+            def request(self, method, path, payload=None, *, allow_missing=False):
+                self.path = path
+                return []
+
+        client = FakeVapi()
+        self.assertEqual(client.list("call", limit=20), [])
+        self.assertEqual(client.path, "/call?limit=20")
+        for invalid in (0, 101):
+            with self.assertRaises(CONTROLLER.QualificationError):
+                client.list("call", limit=invalid)
+
+    def test_vapi_call_discovery_uses_exact_server_side_filters(self):
+        class FakeVapi(CONTROLLER.Vapi):
+            def __init__(self):
+                super().__init__("private-test-key")
+                self.path = None
+
+            def request(self, method, path, payload=None, *, allow_missing=False):
+                self.path = path
+                return []
+
+        client = FakeVapi()
+        client.list_calls(
+            assistant_id="assistant_1234",
+            created_at_ge=dt.datetime(2026, 8, 11, 4, 20, tzinfo=dt.UTC),
+            phone_number_id="phone_1234",
+            call_id="call_1234",
+        )
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(client.path).query)
+        self.assertEqual(query["assistantId"], ["assistant_1234"])
+        self.assertEqual(query["phoneNumberId"], ["phone_1234"])
+        self.assertEqual(query["id"], ["call_1234"])
+        self.assertEqual(query["createdAtGe"], ["2026-08-11T04:20:00Z"])
+        self.assertEqual(query["limit"], ["20"])
+
+    def test_vapi_sip_phone_uses_explicit_digest_authentication(self):
+        class FakeVapi(CONTROLLER.Vapi):
+            def __init__(self):
+                super().__init__("private-test-key")
+                self.observed = None
+
+            def request(self, method, path, payload=None, *, allow_missing=False):
+                self.observed = (method, path, payload, allow_missing)
+                return {
+                    "id": "phone_1234",
+                    "provider": "vapi",
+                    "status": "active",
+                    "sipUri": payload["sipUri"],
+                }
+
+        authentication = {
+            "realm": "sip.vapi.ai",
+            "username": "bfq_0123456789abcdef",
+            "password": "0123456789abcdef0123456789abcdef",
+        }
+        client = FakeVapi()
+        phone = client.create_phone(
+            "bfq-test1234",
+            "assistant_1234",
+            authentication,
+        )
+        self.assertEqual(phone["status"], "active")
+        self.assertEqual(client.observed[0:2], ("POST", "/phone-number"))
+        payload = client.observed[2]
+        self.assertEqual(payload["sipUri"], "sip:bfq_0123456789abcdef@sip.vapi.ai")
+        self.assertEqual(payload["authentication"], authentication)
+        self.assertLessEqual(len(payload["name"]), 40)
+
+        with self.assertRaises(CONTROLLER.QualificationError):
+            client.create_phone(
+                "bfq-test1234",
+                "assistant_1234",
+                {**authentication, "password": "too-short"},
+            )
+
+    def test_vapi_sip_phone_activation_is_bounded_and_exact(self):
+        class FakeVapi:
+            def __init__(self, statuses):
+                self.statuses = iter(statuses)
+
+            def get(self, resource, resource_id):
+                self.observed = (resource, resource_id)
+                status = next(self.statuses)
+                return {
+                    "id": "phone_1234",
+                    "sipUri": "sip:bfq_0123456789abcdef@sip.vapi.ai",
+                    "assistantId": "assistant_1234",
+                    "status": status,
+                }
+
+        client = FakeVapi(["pending", "provisioning", "active"])
+        active = CONTROLLER.wait_for_vapi_phone_active(
+            client,
+            "phone_1234",
+            "sip:bfq_0123456789abcdef@sip.vapi.ai",
+            "assistant_1234",
+            timeout=1,
+            poll_seconds=0,
+        )
+        self.assertEqual(active["status"], "active")
+        self.assertEqual(client.observed, ("phone-number", "phone_1234"))
+
+        with self.assertRaisesRegex(CONTROLLER.QualificationError, "terminal status"):
+            CONTROLLER.wait_for_vapi_phone_active(
+                FakeVapi(["failed"]),
+                "phone_1234",
+                "sip:bfq_0123456789abcdef@sip.vapi.ai",
+                "assistant_1234",
+                timeout=1,
+                poll_seconds=0,
+            )
+
+    def test_vapi_transient_deletion_targets_and_verifies_one_exact_id(self):
+        class FakeVapi(CONTROLLER.Vapi):
+            def __init__(self):
+                super().__init__("private-test-key")
+                self.values = iter(
+                    [
+                        {"id": "phone_1234"},
+                        {"id": "phone_1234"},
+                        None,
+                    ]
+                )
+                self.deleted = None
+
+            def get(self, resource, resource_id):
+                self.observed = (resource, resource_id)
+                return next(self.values)
+
+            def request(self, method, path, payload=None, *, allow_missing=False):
+                self.deleted = (method, path, allow_missing)
+                return None
+
+        client = FakeVapi()
+        client.delete("phone-number", "phone_1234", timeout=1, poll_seconds=0)
+        self.assertEqual(client.observed, ("phone-number", "phone_1234"))
+        self.assertEqual(client.deleted, ("DELETE", "/phone-number/phone_1234", True))
+
+    def test_vapi_phone_ownership_journal_is_strict_hashed_and_non_secret(self):
+        journal = CONTROLLER.vapi_phone_ownership_journal(
+            "bfq-test1234",
+            "us-west-2",
+            "phone_1234",
+            "assistant_1234",
+            created_at="2026-08-11T04:20:00Z",
+        )
+        self.assertEqual(journal["owned_name"], "BFQ bfq-test1234 SIP smoke")
+        self.assertEqual(journal["resource_type"], "phone-number")
+        serialized = json.dumps(journal)
+        for forbidden in ("sip:", "password", "authentication", "api.vapi.ai"):
+            self.assertNotIn(forbidden, serialized)
+        CONTROLLER.validate_vapi_phone_ownership_journal(journal)
+        for field, replacement in (
+            ("phone_id", "phone_other"),
+            ("assistant_id", "assistant_other"),
+            ("owned_name", "customer phone"),
+            ("ownership_sha256", "0" * 64),
+        ):
+            changed = dict(journal)
+            changed[field] = replacement
+            with self.assertRaises(CONTROLLER.QualificationError):
+                CONTROLLER.validate_vapi_phone_ownership_journal(changed)
+
+    def test_vapi_phone_journal_is_uploaded_from_memory_to_exact_key(self):
+        class Runner:
+            def run(self, arguments, **kwargs):
+                self.arguments = arguments
+                self.kwargs = kwargs
+                return ""
+
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.args = SimpleNamespace(
+            execution_id="bfq-test1234", region="us-west-2"
+        )
+        controller.outputs = {"ArtifactBucket": "bridgefu-artifacts-test"}
+        controller.runner = Runner()
+        controller.temp_phone_journal_object = None
+        controller.write_phone_ownership_journal("phone_1234", "assistant_1234")
+        expected = (
+            "s3://bridgefu-artifacts-test/qualification/bfq-test1234/"
+            "ownership/vapi-phone.json"
+        )
+        self.assertEqual(controller.temp_phone_journal_object, expected)
+        self.assertEqual(controller.runner.arguments[0:4], ["aws", "s3", "cp", "-"])
+        self.assertIn(expected, controller.runner.arguments)
+        self.assertIn("--sse", controller.runner.arguments)
+        journal = json.loads(controller.runner.kwargs["input_text"])
+        self.assertEqual(journal["phone_id"], "phone_1234")
+        retained = controller.runner.kwargs["input_text"].lower()
+        self.assertNotIn("sip:", retained)
+        self.assertNotIn("password", retained)
+        self.assertNotIn("authentication", retained)
+
+    def test_vapi_phone_journal_precedes_uri_and_activation_validation(self):
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.args = SimpleNamespace(execution_id="bfq-test1234")
+        controller.outputs = {"VapiAssistantId": "assistant_1234"}
+        controller.aws = mock.Mock()
+        controller.temp_phone_id = None
+        controller.vapi = mock.Mock()
+        controller.vapi.create_phone.return_value = {
+            "id": "phone_1234",
+            "sipUri": "sip:unexpected@sip.vapi.ai",
+        }
+        controller.write_phone_ownership_journal = mock.Mock()
+        with mock.patch.object(CONTROLLER, "ensure_connect_agent_available"):
+            with self.assertRaisesRegex(
+                CONTROLLER.QualificationError, "endpoint is invalid"
+            ):
+                controller._sip_smoke(Path("unused"), "unused")
+        self.assertEqual(controller.temp_phone_id, "phone_1234")
+        controller.write_phone_ownership_journal.assert_called_once_with(
+            "phone_1234", "assistant_1234"
+        )
+
+    def test_failed_phone_delete_retains_journal_and_skips_stack_deletion(self):
+        output = Path(tempfile.mkdtemp(prefix="qualification-ownership-test-"))
+
+        class Vapi:
+            def delete(self, resource, resource_id):
+                raise CONTROLLER.QualificationError("delete failed")
+
+            def get(self, resource, resource_id):
+                return {"id": resource_id}
+
+        class Aws:
+            region = "us-west-2"
+
+            def __init__(self):
+                self.text_calls = []
+
+            def text(self, arguments, timeout=900):
+                self.text_calls.append(arguments)
+                return ""
+
+            def exists(self, arguments):
+                return "describe-stacks" in arguments
+
+            def json(self, arguments, timeout=900):
+                if "list-object-versions" in arguments:
+                    return {
+                        "IsTruncated": False,
+                        "Versions": [
+                            {
+                                "Key": (
+                                    "qualification/bfq-test1234/ownership/"
+                                    "vapi-phone.json"
+                                ),
+                                "VersionId": "version-1",
+                            }
+                        ],
+                    }
+                raise AssertionError(arguments)
+
+        try:
+            controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+            controller.args = SimpleNamespace(
+                execution_id="bfq-test1234", region="us-west-2", output=output
+            )
+            controller.stack_name = "bridgefu-bfq-test1234"
+            controller.outputs = {
+                "ArtifactBucket": "bridgefu-artifacts-test",
+                "VapiAssistantId": "assistant_1234",
+            }
+            controller.vapi = Vapi()
+            controller.temp_phone_id = "phone_1234"
+            controller.temp_phone_journal_object = (
+                "s3://bridgefu-artifacts-test/qualification/bfq-test1234/"
+                "ownership/vapi-phone.json"
+            )
+            controller.temp_sip_auth_object = None
+            controller.processes = []
+            controller.ssm_commands = []
+            controller.created_stack = True
+            controller.aws = Aws()
+            with self.assertRaises(CONTROLLER.QualificationError):
+                controller.cleanup()
+            self.assertEqual(controller.temp_phone_id, "phone_1234")
+            self.assertIsNotNone(controller.temp_phone_journal_object)
+            flattened = [value for call in controller.aws.text_calls for value in call]
+            self.assertNotIn("delete-stack", flattened)
+            self.assertNotIn("delete-objects", flattened)
+        finally:
+            shutil.rmtree(output)
+
+    def test_versioned_qualification_prefix_is_paginated_deleted_and_proven(self):
+        class Aws:
+            def __init__(self):
+                self.calls = []
+                self.list_count = 0
+
+            def json(self, arguments, timeout=900):
+                self.calls.append(arguments)
+                if "list-object-versions" in arguments:
+                    self.list_count += 1
+                    if self.list_count == 1:
+                        return {
+                            "IsTruncated": True,
+                            "Versions": [
+                                {
+                                    "Key": "qualification/bfq-test1234/a",
+                                    "VersionId": "version-1",
+                                }
+                            ],
+                            "NextKeyMarker": "qualification/bfq-test1234/a",
+                            "NextVersionIdMarker": "version-1",
+                        }
+                    if self.list_count == 2:
+                        self.second_arguments = arguments
+                        return {
+                            "IsTruncated": False,
+                            "DeleteMarkers": [
+                                {
+                                    "Key": "qualification/bfq-test1234/b",
+                                    "VersionId": "marker-1",
+                                }
+                            ],
+                        }
+                    return {"IsTruncated": False}
+                if "delete-objects" in arguments:
+                    payload = json.loads(arguments[arguments.index("--delete") + 1])
+                    self.deleted = payload["Objects"]
+                    return {}
+                raise AssertionError(arguments)
+
+        aws = Aws()
+        CONTROLLER.purge_object_versions_exact(
+            aws,
+            "bridgefu-artifacts-test",
+            "qualification/bfq-test1234/",
+        )
+        self.assertEqual(
+            aws.deleted,
+            [
+                {
+                    "Key": "qualification/bfq-test1234/a",
+                    "VersionId": "version-1",
+                },
+                {
+                    "Key": "qualification/bfq-test1234/b",
+                    "VersionId": "marker-1",
+                },
+            ],
+        )
+        self.assertIn("--key-marker", aws.second_arguments)
+        self.assertIn("--version-id-marker", aws.second_arguments)
+        self.assertTrue(
+            all(
+                "--no-paginate" in call
+                for call in aws.calls
+                if "list-object-versions" in call
+            )
+        )
+
+    def test_exact_key_version_cleanup_does_not_delete_adjacent_objects(self):
+        class Aws:
+            def __init__(self):
+                self.list_count = 0
+
+            def json(self, arguments, timeout=900):
+                if "list-object-versions" in arguments:
+                    self.list_count += 1
+                    if self.list_count == 1:
+                        return {
+                            "IsTruncated": False,
+                            "Versions": [
+                                {
+                                    "Key": "qualification/bfq-test1234/sip-auth.json",
+                                    "VersionId": "secret-version",
+                                },
+                                {
+                                    "Key": "qualification/bfq-test1234/sip-auth.json.bak",
+                                    "VersionId": "unrelated-version",
+                                },
+                            ],
+                        }
+                    return {
+                        "IsTruncated": False,
+                        "Versions": [
+                            {
+                                "Key": "qualification/bfq-test1234/sip-auth.json.bak",
+                                "VersionId": "unrelated-version",
+                            }
+                        ],
+                    }
+                if "delete-objects" in arguments:
+                    self.deleted = json.loads(
+                        arguments[arguments.index("--delete") + 1]
+                    )["Objects"]
+                    return {}
+                raise AssertionError(arguments)
+
+        aws = Aws()
+        CONTROLLER.purge_object_versions_exact(
+            aws,
+            "bridgefu-artifacts-test",
+            "qualification/bfq-test1234/sip-auth.json",
+            exact_key=True,
+        )
+        self.assertEqual(
+            aws.deleted,
+            [
+                {
+                    "Key": "qualification/bfq-test1234/sip-auth.json",
+                    "VersionId": "secret-version",
+                }
+            ],
+        )
+
+    def test_object_version_pagination_and_entry_bounds_fail_closed(self):
+        class TruncatedAws:
+            def json(self, arguments, timeout=900):
+                return {
+                    "IsTruncated": True,
+                    "NextKeyMarker": "qualification/bfq-test1234/a",
+                    "NextVersionIdMarker": "version-1",
+                }
+
+        with mock.patch.object(CONTROLLER, "MAX_OBJECT_VERSION_PAGES", 1):
+            with self.assertRaisesRegex(
+                CONTROLLER.QualificationError, "pagination bound"
+            ):
+                CONTROLLER.list_object_versions_exact(
+                    TruncatedAws(),
+                    "bridgefu-artifacts-test",
+                    "qualification/bfq-test1234/",
+                )
+
+        class TooManyAws:
+            def json(self, arguments, timeout=900):
+                return {
+                    "IsTruncated": False,
+                    "Versions": [
+                        {
+                            "Key": "qualification/bfq-test1234/a",
+                            "VersionId": "version-1",
+                        },
+                        {
+                            "Key": "qualification/bfq-test1234/b",
+                            "VersionId": "version-2",
+                        },
+                    ],
+                }
+
+        with mock.patch.object(CONTROLLER, "MAX_OBJECT_VERSIONS", 1):
+            with self.assertRaisesRegex(CONTROLLER.QualificationError, "version bound"):
+                CONTROLLER.list_object_versions_exact(
+                    TooManyAws(),
+                    "bridgefu-artifacts-test",
+                    "qualification/bfq-test1234/",
+                )
+
     def test_failed_environment_retention_must_be_explicit(self):
         self.assertEqual(
-            CONTROLLER.create_failure_arguments(False), ["--on-failure", "DELETE"]
+            CONTROLLER.create_failure_arguments(False), ["--disable-rollback"]
         )
         self.assertEqual(
             CONTROLLER.create_failure_arguments(True), ["--disable-rollback"]
         )
+
+    def test_connect_agent_availability_is_exact_and_idempotent(self):
+        instance_arn = "arn:aws:connect:us-west-2:123456789012:instance/instance-1"
+
+        class Runner:
+            def probe(self, arguments, timeout=60):
+                self.arguments = arguments
+                return (
+                    255,
+                    "",
+                    "InvalidRequestException: User already in requested status",
+                )
+
+        class Aws:
+            region = "us-west-2"
+
+            def __init__(self):
+                self.runner = Runner()
+                self.responses = iter(
+                    [
+                        {
+                            "UserSummaryList": [
+                                {
+                                    "Username": "bridgefu-demo-agent",
+                                    "Id": "user-1",
+                                    "Arn": f"{instance_arn}/agent/user-1",
+                                }
+                            ]
+                        },
+                        {
+                            "AgentStatusSummaryList": [
+                                {
+                                    "Name": "Available",
+                                    "Type": "ROUTABLE",
+                                    "Id": "status-1",
+                                    "Arn": f"{instance_arn}/agent-state/status-1",
+                                }
+                            ]
+                        },
+                    ]
+                )
+
+            def json(self, arguments):
+                return next(self.responses)
+
+        aws = Aws()
+        CONTROLLER.ensure_connect_agent_available(
+            aws,
+            {
+                "ConnectInstanceId": "instance-1",
+                "ConnectInstanceArn": instance_arn,
+                "AgentUsername": "bridgefu-demo-agent",
+            },
+        )
+        invocation = aws.runner.arguments
+        self.assertIn("put-user-status", invocation)
+        self.assertEqual(invocation[invocation.index("--user-id") + 1], "user-1")
+        self.assertEqual(
+            invocation[invocation.index("--agent-status-id") + 1], "status-1"
+        )
+
+    def test_scenario_checks_are_derived_from_dtmf_and_media_observations(self):
+        fields = list(CONTROLLER.synthetic_context("vapi-web-transfer"))
+        source = {
+            "vapi": {"web_call_started": True},
+            "media": {
+                "source_to_agent_marker_frames_sent": 25,
+                "agent_marker_observed_at_ms": [1, 2, 3, 4, 5],
+                "agent_to_source_marker_frames": 5,
+                "dtmf_source_to_agent_sent_at_ms": [10],
+                "dtmf_agent_to_source_observed": True,
+            },
+            "hangup": {"local_end_completed": True, "cleanup_observed": True},
+        }
+        agent = {
+            "screen_pop": {"visible": True, "visible_fields": fields},
+            "media": {
+                "source_to_agent_marker_frames": 5,
+                "source_marker_observed_at_ms": [1, 2, 3],
+                "agent_to_source_marker_frames_sent": 25,
+                "dtmf_source_to_agent_observed": True,
+                "dtmf_agent_to_source_sent_at_ms": [10],
+            },
+        }
+        call = {
+            "status": "ended",
+            "transfers": ["completed"],
+            "artifact": {
+                "messages": [
+                    {"toolName": "prepare_handoff"},
+                    {"toolName": "transferCall"},
+                ]
+            },
+        }
+        checks = CONTROLLER.derive_scenario_checks(
+            "vapi-web-transfer",
+            source,
+            agent,
+            call,
+            {"correlation_id": "bf1_x", "handoff_status": "CONSUMED"},
+            {
+                "bridgefu_received_correlation_header": True,
+                "connect_lookup_available": True,
+                "vapi_destination_sips_signaling": True,
+                "vapi_destination_tls_transport": True,
+                "vapi_destination_media_profile_allowed": True,
+                "vapi_destination_media_posture_consistent": True,
+                "vapi_destination_answered": True,
+            },
+        )
+        self.assertTrue(all(checks.values()))
+        self.assertTrue(checks["dtmf_agent_to_source"])
+        agent["media"]["dtmf_source_to_agent_observed"] = False
+        checks = CONTROLLER.derive_scenario_checks(
+            "vapi-web-transfer",
+            source,
+            agent,
+            call,
+            {"correlation_id": "bf1_x", "handoff_status": "CONSUMED"},
+            {
+                "bridgefu_received_correlation_header": True,
+                "connect_lookup_available": True,
+                "vapi_destination_sips_signaling": True,
+                "vapi_destination_tls_transport": True,
+                "vapi_destination_media_profile_allowed": True,
+                "vapi_destination_media_posture_consistent": True,
+                "vapi_destination_answered": True,
+            },
+        )
+        self.assertFalse(checks["dtmf_source_to_agent"])
+
+    def test_dtmf_fields_are_required_by_each_observation_and_release_schema(self):
+        participant = {
+            "schema_version": 1,
+            "producer": "bridgefu-agent-workspace-playwright@1",
+            "producer_revision_sha256": "a" * 64,
+            "execution_id": "bfq-test1234",
+            "scenario_id": "vapi-web-transfer",
+            "hangup_origin": "source",
+            "correlation_fingerprint": "a" * 12,
+            "source_call_fingerprint": "b" * 12,
+            "observed_at": "2026-08-11T04:20:00Z",
+            "screen_pop": {
+                "visible": True,
+                "visible_fields": [
+                    "customer_name",
+                    "issue_summary",
+                    "intent",
+                    "verification_status",
+                ],
+                "screenshot_sha256": "c" * 64,
+            },
+            "media": {
+                "source_to_agent_marker_frames": 5,
+                "source_marker_observed_at_ms": [1, 2, 3],
+                "dtmf_source_to_agent_observed": True,
+                "agent_marker_sent_at_ms": [1, 2, 3, 4, 5],
+                "agent_to_source_marker_frames_sent": 25,
+                "dtmf_agent_to_source_sent_at_ms": [6],
+            },
+            "hangup": {
+                "origin": "source",
+                "local_end_completed": False,
+                "remote_end_observed": True,
+                "cleanup_observed": True,
+            },
+            "redacted": True,
+        }
+        CONTROLLER.validate_schema(
+            participant, "participant-observation-v1.schema.json"
+        )
+        for field in (
+            "dtmf_source_to_agent_observed",
+            "dtmf_agent_to_source_sent_at_ms",
+        ):
+            changed = json.loads(json.dumps(participant))
+            del changed["media"][field]
+            with self.assertRaises(CONTROLLER.QualificationError):
+                CONTROLLER.validate_schema(
+                    changed, "participant-observation-v1.schema.json"
+                )
+
+        web = {
+            "schema_version": 1,
+            "producer": "bridgefu-vapi-web-playwright@1",
+            "producer_revision_sha256": "a" * 64,
+            "site_bundle_sha256": "b" * 64,
+            "browser_sdk_version": "2.5.2",
+            "execution_id": "bfq-test1234",
+            "scenario_id": "vapi-web-transfer",
+            "hangup_origin": "source",
+            "correlation_fingerprint": "a" * 12,
+            "source_call_fingerprint": "b" * 12,
+            "observed_at": "2026-08-11T04:20:00Z",
+            "vapi": {
+                "web_call_started": True,
+                "transfer_trigger_sent": True,
+                "call_end_observed": True,
+            },
+            "media": {
+                "codec": "negotiated",
+                "security": "srtp",
+                "source_marker_sent_at_ms": [1, 2, 3, 4, 5],
+                "dtmf_source_to_agent_sent_at_ms": [6],
+                "agent_marker_observed_at_ms": [1, 2, 3],
+                "source_to_agent_marker_frames_sent": 25,
+                "agent_to_source_marker_frames": 3,
+                "dtmf_agent_to_source_observed": True,
+            },
+            "hangup": {
+                "origin": "source",
+                "local_end_completed": True,
+                "remote_end_observed": False,
+                "cleanup_observed": True,
+            },
+            "redacted": True,
+        }
+        CONTROLLER.validate_schema(web, "vapi-source-observation-v1.schema.json")
+        for field in (
+            "dtmf_source_to_agent_sent_at_ms",
+            "dtmf_agent_to_source_observed",
+        ):
+            changed = json.loads(json.dumps(web))
+            del changed["media"][field]
+            with self.assertRaises(CONTROLLER.QualificationError):
+                CONTROLLER.validate_schema(
+                    changed, "vapi-source-observation-v1.schema.json"
+                )
+
+        sip = {
+            "schema_version": 1,
+            "producer": "bridgefu-vapi-sip-smoke@1",
+            "producer_revision_sha256": "a" * 64,
+            "execution_id": "bfq-test1234",
+            "scenario_id": "vapi-sip-transfer",
+            "observed_at": "2026-08-11T04:20:00Z",
+            "signaling": {
+                "source": "rvoip-sip-0.3.7",
+                "target": "sip.vapi.ai",
+                "invite_sent": True,
+                "answered": True,
+                "transport": "udp",
+            },
+            "media": {
+                "codec": "pcmu-or-pcma",
+                "prompt_frames_sent": 1,
+                "source_marker_sent_at_ms": [1],
+                "source_to_agent_marker_frames_sent": 5,
+                "dtmf_source_to_agent_sent_at_ms": [2],
+                "dtmf_source_to_agent_frames_sent": 15,
+                "agent_marker_observed_at_ms": [1, 2, 3, 4, 5],
+                "agent_to_source_marker_frames": 5,
+            },
+            "hangup": {"local_bye_completed": True, "cleanup_observed": True},
+            "redacted": True,
+        }
+        CONTROLLER.validate_schema(sip, "source-observation-v1.schema.json")
+        for field in (
+            "dtmf_source_to_agent_sent_at_ms",
+            "dtmf_source_to_agent_frames_sent",
+        ):
+            changed = json.loads(json.dumps(sip))
+            del changed["media"][field]
+            with self.assertRaises(CONTROLLER.QualificationError):
+                CONTROLLER.validate_schema(changed, "source-observation-v1.schema.json")
+
+        base_checks = {
+            "vapi_call_connected": True,
+            "vapi_transfer_invoked": True,
+            "handoff_context_stored": True,
+            "bridgefu_received_correlation_header": True,
+            "amazon_connect_contact_connected": True,
+            "configured_screen_pop_visible": True,
+            "audio_source_to_agent": True,
+            "audio_agent_to_source": True,
+            "dtmf_source_to_agent": True,
+            "source_call_ended": True,
+        }
+        evidence = {
+            "schema_version": 1,
+            "release": "1.2.3",
+            "execution_id": "bfq-test1234",
+            "region": "us-west-2",
+            "started_at": "2026-08-11T04:20:00Z",
+            "ended_at": "2026-08-11T04:21:00Z",
+            "bridgefu_commit": "a" * 40,
+            "scenarios": [
+                {
+                    "id": "vapi-sip-transfer",
+                    "source_observation_sha256": "a" * 64,
+                    "agent_observation_sha256": "b" * 64,
+                    "checks": dict(base_checks),
+                    "passed": True,
+                },
+                {
+                    "id": "vapi-web-transfer",
+                    "source_observation_sha256": "c" * 64,
+                    "agent_observation_sha256": "d" * 64,
+                    "checks": {**base_checks, "dtmf_agent_to_source": True},
+                    "passed": True,
+                },
+            ],
+            "teardown": {
+                "customer_stack_absent": True,
+                "connect_instance_absent": True,
+                "temporary_vapi_resources_absent": True,
+                "test_credentials_absent": True,
+                "qualification_objects_absent": True,
+            },
+            "redacted": True,
+        }
+        CONTROLLER.validate_schema(evidence, "evidence-v1.schema.json")
+        for scenario_index, field in (
+            (0, "handoff_context_stored"),
+            (0, "dtmf_source_to_agent"),
+            (1, "dtmf_agent_to_source"),
+        ):
+            changed = json.loads(json.dumps(evidence))
+            del changed["scenarios"][scenario_index]["checks"][field]
+            with self.assertRaises(CONTROLLER.QualificationError):
+                CONTROLLER.validate_schema(changed, "evidence-v1.schema.json")
+
+    def test_cloudformation_failure_evidence_is_saved_before_cleanup(self):
+        output = Path(tempfile.mkdtemp(prefix="qualification-evidence-test-"))
+        try:
+            args = SimpleNamespace(
+                execution_id="bfq-test1234", region="us-west-2", output=output
+            )
+            controller = CONTROLLER.Controller(args)
+            controller.created_stack = True
+            controller.phase = "cloudformation_deploy"
+
+            class Aws:
+                region = "us-west-2"
+
+                def json(self, arguments, timeout=900):
+                    if "describe-stacks" in arguments:
+                        return {"Stacks": [{"StackStatus": "CREATE_FAILED"}]}
+                    return {
+                        "StackEvents": [
+                            {
+                                "LogicalResourceId": "Candidate",
+                                "ResourceType": "AWS::CloudFormation::Stack",
+                                "ResourceStatus": "CREATE_FAILED",
+                                "ResourceStatusReason": (
+                                    "Image unavailable password=do-not-retain"
+                                ),
+                                "Timestamp": "2026-08-11T04:20:00Z",
+                            }
+                        ]
+                    }
+
+            controller.aws = Aws()
+            controller.record_failure_evidence(
+                CONTROLLER.QualificationError("aws cloudformation failed")
+            )
+            evidence = json.loads((output / "failure-evidence.json").read_text())
+            self.assertEqual(evidence["phase"], "cloudformation_deploy")
+            self.assertTrue(evidence["cloudformation"]["observed"])
+            self.assertIn("capture_error", evidence["cloudformation"])
+            CONTROLLER.validate_schema(evidence, "failure-evidence-v1.schema.json")
+            failure = evidence["cloudformation"]["failed_events"][0]
+            self.assertEqual(failure["stack_depth"], 0)
+            reason = failure["reason"]
+            self.assertIn("password=[REDACTED]", reason)
+            self.assertNotIn("do-not-retain", reason)
+        finally:
+            shutil.rmtree(output)
+            if "controller" in locals():
+                shutil.rmtree(controller.work, ignore_errors=True)
+
+    def test_cloudformation_failure_capture_descends_into_bounded_nested_stacks(self):
+        nested = (
+            "arn:aws:cloudformation:us-west-2:123456789012:"
+            "stack/bridgefu-candidate/12345678-1234-1234-1234-123456789012"
+        )
+
+        class Aws:
+            region = "us-west-2"
+
+            def json(self, arguments, timeout=900):
+                identifier = arguments[arguments.index("--stack-name") + 1]
+                if identifier == "bridgefu-bfq-test1234":
+                    return {
+                        "StackEvents": [
+                            {
+                                "EventId": "root-event",
+                                "LogicalResourceId": "Candidate",
+                                "PhysicalResourceId": nested,
+                                "ResourceType": "AWS::CloudFormation::Stack",
+                                "ResourceStatus": "CREATE_FAILED",
+                                "ResourceStatusReason": "Nested stack failed",
+                                "Timestamp": "2026-08-11T04:20:00Z",
+                            }
+                        ]
+                    }
+                self.assert_nested = identifier
+                return {
+                    "StackEvents": [
+                        {
+                            "EventId": "nested-event",
+                            "LogicalResourceId": "BridgefuHost",
+                            "ResourceType": "AWS::EC2::Instance",
+                            "ResourceStatus": "CREATE_FAILED",
+                            "ResourceStatusReason": "AMI was not launchable",
+                            "Timestamp": "2026-08-11T04:20:01Z",
+                        }
+                    ]
+                }
+
+        aws = Aws()
+        events, error = CONTROLLER.collect_cloudformation_failure_events(
+            aws, "bridgefu-bfq-test1234"
+        )
+        self.assertIsNone(error)
+        self.assertEqual(aws.assert_nested, nested)
+        self.assertEqual([item["stack_depth"] for item in events], [0, 1])
+        self.assertEqual(events[1]["reason"], "AMI was not launchable")
 
     def test_correlation_is_exact_deterministic_bf1_hmac(self):
         value = CONTROLLER.derive_correlation_id(
@@ -93,7 +1035,26 @@ class QualificationControllerTests(unittest.TestCase):
                             "header_count": 1,
                         }
                     )
-                }
+                },
+                {
+                    "message": json.dumps(
+                        {
+                            "event": "bridgefu_vapi_destination_security_evidence",
+                            "correlation_fingerprint": fingerprint,
+                            "leg": "vapi-to-bridgefu",
+                            "uri_scheme": "sips",
+                            "signaling_transport": "tls",
+                            "media_profile": "RTP/SAVP",
+                            "media_keying": "SDES-SRTP",
+                            "media_suite": "AES_CM_128_HMAC_SHA1_80",
+                            "inbound_srtp_context_installed": True,
+                            "outbound_srtp_context_installed": True,
+                            "answered": True,
+                            "redacted": True,
+                            "message": "accepted Vapi destination leg",
+                        }
+                    )
+                },
             ]
         }
         lookup = {
@@ -128,7 +1089,7 @@ class QualificationControllerTests(unittest.TestCase):
                             {"toolName": "prepare_handoff"},
                             {"toolName": "transferCall"},
                         ]
-                    }
+                    },
                 }
             )
         )

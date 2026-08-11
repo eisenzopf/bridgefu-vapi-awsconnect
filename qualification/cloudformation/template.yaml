@@ -27,6 +27,14 @@ Parameters:
     Type: String
     Default: t4g.large
     AllowedValues: [t4g.medium, t4g.large, t4g.xlarge, c7g.large, c7g.xlarge, m7g.large, m7g.xlarge]
+  SipSecurity:
+    Type: String
+    Default: sips_optional_srtp
+    AllowedValues: [sips_optional_srtp, sips_srtp, sip_rtp]
+    Description: >-
+      The release path keeps signaling on SIPS/TLS, prefers SRTP, and accepts
+      RTP/AVP only when Vapi does not offer SRTP. Plain SIP/RTP is available
+      only because this qualification stack uses DataRetentionMode=TestDelete.
 
 Resources:
   DisposableConnect:
@@ -34,7 +42,7 @@ Resources:
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
     Properties:
-      TemplateURL: __QUALIFICATION_TEMPLATE_BASE_URL__/disposable-connect.yaml
+      TemplateURL: __QUALIFICATION_TEMPLATE_BASE_URL__/disposable-connect.yaml?versionId=__QUALIFICATION_DISPOSABLE_CONNECT_VERSION_ID_URLENCODED__
       Parameters:
         DeploymentId: !Ref DeploymentId
         ProjectTag: bridgefu-vapi-awsconnect
@@ -50,7 +58,7 @@ Resources:
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
     Properties:
-      TemplateURL: __PRODUCT_TEMPLATE_URL__
+      TemplateURL: __PRODUCT_TEMPLATE_URL__?versionId=__PRODUCT_TEMPLATE_VERSION_ID_URLENCODED__
       Parameters:
         DeploymentId: !Ref DeploymentId
         InstanceType: !Ref InstanceType
@@ -60,6 +68,7 @@ Resources:
         SipHostname: !Ref SipHostname
         VapiApiKeySecretArn: !Ref VapiApiKeySecretArn
         VapiRegion: US
+        SipSecurity: !Ref SipSecurity
         ScreenPopFieldsJson: >-
           [{"key":"customer_name","label":"Customer","description":"Synthetic caller name.","type":"text","required":true,"max_length":256},{"key":"issue_summary","label":"Issue","description":"Synthetic qualification issue.","type":"text","required":true,"max_length":1024},{"key":"intent","label":"Intent","description":"Synthetic qualification intent.","type":"text","required":true,"max_length":128},{"key":"verification_status","label":"Verification","description":"Synthetic qualification status.","type":"choice","required":true,"choices":["synthetic","verified"]}]
         DataRetentionMode: TestDelete
@@ -69,6 +78,33 @@ Resources:
         - {Key: Project, Value: bridgefu-vapi-awsconnect}
         - {Key: ManagedBy, Value: bridgefu-qualification}
         - {Key: BridgefuExecutionId, Value: !Ref DeploymentId}
+
+  QualificationSipPrivateHostedZone:
+    Type: AWS::Route53::HostedZone
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Name: !Ref SipHostname
+      VPCs:
+        - VPCId: !GetAtt Candidate.Outputs.BridgefuVpcId
+          VPCRegion: !Ref 'AWS::Region'
+      HostedZoneConfig:
+        Comment: !Sub 'Disposable split-horizon SIP DNS for ${DeploymentId}'
+      HostedZoneTags:
+        - {Key: Project, Value: bridgefu-vapi-awsconnect}
+        - {Key: ManagedBy, Value: bridgefu-qualification}
+        - {Key: BridgefuExecutionId, Value: !Ref DeploymentId}
+
+  QualificationSipPrivateRecord:
+    Type: AWS::Route53::RecordSet
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      HostedZoneId: !Ref QualificationSipPrivateHostedZone
+      Name: !Ref SipHostname
+      Type: A
+      TTL: '30'
+      ResourceRecords: [!GetAtt Candidate.Outputs.BridgefuInstancePrivateIp]
 
 Outputs:
   ConnectInstanceArn:
@@ -83,6 +119,8 @@ Outputs:
     Value: !GetAtt DisposableConnect.Outputs.AgentCredentialSecretArn
   BridgefuInstanceId:
     Value: !GetAtt Candidate.Outputs.BridgefuInstanceId
+  QualificationSipPrivateHostedZoneId:
+    Value: !Ref QualificationSipPrivateHostedZone
   ArtifactBucket:
     Value: !GetAtt Candidate.Outputs.ArtifactBucket
   BridgefuSipUri:

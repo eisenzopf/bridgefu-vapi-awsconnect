@@ -17,8 +17,10 @@ import hmac
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
+import stat
 import subprocess
 import tempfile
 import time
@@ -32,6 +34,11 @@ from typing import Any
 
 import jsonschema
 
+try:
+    import direct_secure_preflight
+except ModuleNotFoundError:  # Imported as a repository module by unit tests.
+    from qualification import direct_secure_preflight
+
 ROOT = Path(__file__).resolve().parents[1]
 QUALIFICATION = ROOT / "qualification"
 PRODUCER = "bridgefu-vapi-awsconnect-qualification@1"
@@ -42,22 +49,47 @@ EXECUTION_ID = re.compile(r"^bfq-[a-z0-9-]{4,20}$")
 VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$")
 RESOURCE_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+S3_BUCKET = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
 SCENARIOS = ("vapi-web-transfer", "vapi-sip-transfer")
 CONTEXT = {
     "customer_name": "Bridgefu Synthetic Caller",
     "intent": "qualification",
     "verification_status": "synthetic",
 }
-CHECKS = {
-    "vapi_call_connected": True,
-    "vapi_transfer_invoked": True,
-    "bridgefu_received_correlation_header": True,
-    "amazon_connect_contact_connected": True,
-    "configured_screen_pop_visible": True,
-    "audio_source_to_agent": True,
-    "audio_agent_to_source": True,
-    "source_call_ended": True,
+DIAGNOSTIC_LIMIT = 2048
+PHONE_OWNERSHIP_PRODUCER = "bridgefu-vapi-phone-ownership@1"
+AGENT_OBSERVER_PRODUCER = "bridgefu-agent-workspace-playwright@1"
+MAX_OBJECT_VERSION_PAGES = 100
+MAX_OBJECT_VERSIONS = 10_000
+MAX_DELETE_OBJECTS = 1_000
+VAPI_DESTINATION_SECURITY_EVENT = "bridgefu_vapi_destination_security_evidence"
+VAPI_DESTINATION_SECURITY_FIELDS = {
+    "event",
+    "correlation_fingerprint",
+    "leg",
+    "uri_scheme",
+    "signaling_transport",
+    "media_profile",
+    "media_keying",
+    "media_suite",
+    "inbound_srtp_context_installed",
+    "outbound_srtp_context_installed",
+    "answered",
+    "redacted",
 }
+VAPI_DESTINATION_SECURITY_EXPECTED = {
+    "event": VAPI_DESTINATION_SECURITY_EVENT,
+    "leg": "vapi-to-bridgefu",
+    "uri_scheme": "sips",
+    "signaling_transport": "tls",
+    "answered": True,
+    "redacted": True,
+}
+VAPI_DESTINATION_MEDIA_SUITES = {
+    "AES_CM_128_HMAC_SHA1_80",
+    "AES_CM_128_HMAC_SHA1_32",
+}
+VAPI_DESTINATION_MEDIA_PROFILES = {"RTP/AVP", "RTP/SAVP"}
 
 
 class QualificationError(RuntimeError):
@@ -76,12 +108,125 @@ def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def canonical_sha256(value: Mapping[str, Any]) -> str:
+    return sha256_bytes(
+        json.dumps(value, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    )
+
+
+def vapi_phone_owned_name(execution_id: str) -> str:
+    if not EXECUTION_ID.fullmatch(execution_id):
+        raise QualificationError("execution ID is invalid")
+    name = f"BFQ {execution_id} SIP smoke"
+    if len(name) > 40:
+        raise QualificationError("temporary Vapi endpoint name is invalid")
+    return name
+
+
+def vapi_phone_ownership_journal(
+    execution_id: str,
+    region: str,
+    phone_id: str,
+    assistant_id: str,
+    *,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    if (
+        not EXECUTION_ID.fullmatch(execution_id)
+        or region not in REGIONS
+        or not RESOURCE_ID.fullmatch(phone_id)
+        or not RESOURCE_ID.fullmatch(assistant_id)
+    ):
+        raise QualificationError("temporary Vapi endpoint ownership is invalid")
+    owned = {
+        "execution_id": execution_id,
+        "region": region,
+        "resource_type": "phone-number",
+        "phone_id": phone_id,
+        "assistant_id": assistant_id,
+        "owned_name": vapi_phone_owned_name(execution_id),
+    }
+    value: dict[str, Any] = {
+        "schema_version": 1,
+        "producer": PHONE_OWNERSHIP_PRODUCER,
+        **owned,
+        "ownership_sha256": canonical_sha256(owned),
+        "created_at": created_at or utc_now(),
+        "redacted": True,
+    }
+    return dict(validate_vapi_phone_ownership_journal(value))
+
+
+def validate_vapi_phone_ownership_journal(value: Any) -> Mapping[str, Any]:
+    keys = {
+        "schema_version",
+        "producer",
+        "execution_id",
+        "region",
+        "resource_type",
+        "phone_id",
+        "assistant_id",
+        "owned_name",
+        "ownership_sha256",
+        "created_at",
+        "redacted",
+    }
+    if not isinstance(value, Mapping) or set(value) != keys:
+        raise QualificationError("temporary Vapi endpoint journal shape is invalid")
+    execution_id = value.get("execution_id")
+    region = value.get("region")
+    phone_id = value.get("phone_id")
+    assistant_id = value.get("assistant_id")
+    if (
+        value.get("schema_version") != 1
+        or value.get("producer") != PHONE_OWNERSHIP_PRODUCER
+        or value.get("resource_type") != "phone-number"
+        or value.get("redacted") is not True
+        or not isinstance(execution_id, str)
+        or not EXECUTION_ID.fullmatch(execution_id)
+        or region not in REGIONS
+        or not isinstance(phone_id, str)
+        or not RESOURCE_ID.fullmatch(phone_id)
+        or not isinstance(assistant_id, str)
+        or not RESOURCE_ID.fullmatch(assistant_id)
+        or value.get("owned_name") != vapi_phone_owned_name(execution_id)
+        or not isinstance(value.get("created_at"), str)
+        or not re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z", value["created_at"]
+        )
+    ):
+        raise QualificationError("temporary Vapi endpoint journal is invalid")
+    owned = {
+        "execution_id": execution_id,
+        "region": region,
+        "resource_type": "phone-number",
+        "phone_id": phone_id,
+        "assistant_id": assistant_id,
+        "owned_name": value["owned_name"],
+    }
+    if value.get("ownership_sha256") != canonical_sha256(owned):
+        raise QualificationError("temporary Vapi endpoint journal hash is invalid")
+    return value
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def executable_sha256(path: Path) -> str:
+    try:
+        details = path.lstat()
+    except OSError as error:
+        raise QualificationError("direct secure probe binary is unavailable") from error
+    if not stat.S_ISREG(details.st_mode) or not os.access(path, os.X_OK):
+        raise QualificationError(
+            "direct secure probe must be an executable regular non-symlink file"
+        )
+    return sha256_file(path)
 
 
 def private_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -118,6 +263,226 @@ def validate_schema(value: Any, name: str) -> None:
         raise QualificationError(f"{name} validation failed") from error
 
 
+def read_private_json(path: Path) -> Any:
+    value = read_json(path)
+    try:
+        mode = path.stat().st_mode
+    except OSError as error:
+        raise QualificationError("private qualification JSON is unavailable") from error
+    if stat.S_IMODE(mode) != 0o600:
+        raise QualificationError("private qualification JSON must be mode 0600")
+    return value
+
+
+def validate_direct_agent_readiness(value: Any) -> Mapping[str, Any]:
+    expected = {
+        "schema_version": 1,
+        "producer": "bridgefu-agent-direct-secure-observer@1",
+        "mode": "direct-secure-preflight",
+        "agent_available": True,
+        "redacted": True,
+    }
+    if not isinstance(value, Mapping) or dict(value) != expected:
+        raise QualificationError("direct secure agent readiness is invalid")
+    return value
+
+
+def validate_agent_readiness(
+    value: Any, execution_id: str, scenario: str
+) -> Mapping[str, Any]:
+    expected = {
+        "schema_version": 1,
+        "producer": AGENT_OBSERVER_PRODUCER,
+        "mode": "scenario-observer",
+        "execution_id": execution_id,
+        "scenario_id": scenario,
+        "agent_available": True,
+        "redacted": True,
+    }
+    if (
+        not EXECUTION_ID.fullmatch(execution_id)
+        or scenario not in SCENARIOS
+        or not isinstance(value, Mapping)
+        or dict(value) != expected
+    ):
+        raise QualificationError("Amazon Connect observer readiness is invalid")
+    return value
+
+
+def validate_web_source_readiness(value: Any) -> Mapping[str, Any]:
+    keys = {
+        "schema_version",
+        "call_id",
+        "source_call_fingerprint",
+        "started_at",
+        "started_epoch_ms",
+    }
+    if not isinstance(value, Mapping) or set(value) != keys:
+        raise QualificationError("Vapi browser readiness shape is invalid")
+    call_id = value.get("call_id")
+    fingerprint = value.get("source_call_fingerprint")
+    started_at = value.get("started_at")
+    started_epoch_ms = value.get("started_epoch_ms")
+    if (
+        value.get("schema_version") != 1
+        or not isinstance(call_id, str)
+        or not RESOURCE_ID.fullmatch(call_id)
+        or fingerprint != sha256_bytes(call_id.encode("utf-8"))[:12]
+        or not isinstance(started_at, str)
+        or not re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z",
+            started_at,
+        )
+        or type(started_epoch_ms) is not int
+        or started_epoch_ms <= 0
+    ):
+        raise QualificationError("Vapi browser readiness is invalid")
+    try:
+        parsed = dt.datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise QualificationError(
+            "Vapi browser readiness timestamp is invalid"
+        ) from error
+    if (
+        parsed.tzinfo is None
+        or int(parsed.timestamp() * 1000) != started_epoch_ms
+        or parsed > dt.datetime.now(dt.UTC) + dt.timedelta(minutes=1)
+    ):
+        raise QualificationError("Vapi browser readiness timestamp is invalid")
+    return value
+
+
+def direct_cleanup_receipt(
+    execution_id: str,
+    *,
+    probe_command_terminal: bool,
+    cleanup_command_terminal: bool,
+    remote: Mapping[str, Any],
+) -> dict[str, Any]:
+    remote_fields = set(direct_secure_preflight.CLEANUP_FIELDS)
+    if (
+        not EXECUTION_ID.fullmatch(execution_id)
+        or type(probe_command_terminal) is not bool
+        or type(cleanup_command_terminal) is not bool
+        or not isinstance(remote, Mapping)
+        or set(remote) != remote_fields
+        or any(type(remote[name]) is not bool for name in remote_fields)
+    ):
+        raise QualificationError("direct secure cleanup proof is invalid")
+    checks = [probe_command_terminal, cleanup_command_terminal]
+    checks.extend(remote[name] for name in direct_secure_preflight.CLEANUP_FIELDS)
+    return {
+        "schema_version": 1,
+        "producer": direct_secure_preflight.PRODUCER,
+        "execution_id": execution_id,
+        "observed_at": utc_now(),
+        "probe_command_terminal": probe_command_terminal,
+        "cleanup_command_terminal": cleanup_command_terminal,
+        **dict(remote),
+        "passed": all(checks),
+        "redacted": True,
+    }
+
+
+def derive_direct_secure_checks(
+    probe: Mapping[str, Any],
+    agent: Mapping[str, Any],
+    cleanup: Mapping[str, Any],
+) -> dict[str, bool]:
+    signaling = probe.get("signaling") if isinstance(probe, Mapping) else None
+    media = probe.get("media") if isinstance(probe, Mapping) else None
+    return {
+        "sips_signaling": (
+            isinstance(signaling, Mapping) and signaling.get("scheme") == "sips"
+        ),
+        "tls_transport": (
+            isinstance(signaling, Mapping) and signaling.get("transport") == "tls"
+        ),
+        "rtp_savp": (isinstance(media, Mapping) and media.get("profile") == "RTP/SAVP"),
+        "sdes_srtp": (
+            isinstance(media, Mapping) and media.get("keying") == "SDES-SRTP"
+        ),
+        "srtp_contexts_installed": (
+            isinstance(media, Mapping) and media.get("contexts_installed") is True
+        ),
+        "answered": (
+            isinstance(signaling, Mapping) and signaling.get("answered") is True
+        ),
+        "inbound_200": (
+            isinstance(signaling, Mapping) and signaling.get("inbound_200") is True
+        ),
+        "outbound_ack": (
+            isinstance(signaling, Mapping) and signaling.get("outbound_ack") is True
+        ),
+        "contact_dns": (
+            isinstance(signaling, Mapping) and signaling.get("contact_host") == "dns"
+        ),
+        "contact_sips": (
+            isinstance(signaling, Mapping) and signaling.get("contact_sips") is True
+        ),
+        "contact_tls": (
+            isinstance(signaling, Mapping) and signaling.get("contact_tls") is True
+        ),
+        "exactly_one_correlation_header": (
+            isinstance(signaling, Mapping)
+            and signaling.get("invite_count") == 1
+            and signaling.get("correlation_header_count") == 1
+        ),
+        "agent_available": agent.get("agent_available") is True,
+        "agent_sole_contact_auto_accepted": (
+            agent.get("sole_contact_auto_accepted") is True
+        ),
+        "agent_remote_audio": agent.get("remote_audio_observed") is True,
+        "agent_outbound_rtp": agent.get("outbound_rtp_observed") is True,
+        "agent_remote_hangup": agent.get("remote_hangup_observed") is True,
+        "agent_contact_cleanup": agent.get("contact_cleanup_observed") is True,
+        "owned_ssm_commands_terminal": (
+            cleanup.get("probe_command_terminal") is True
+            and cleanup.get("cleanup_command_terminal") is True
+        ),
+        "runtime_probe_process_absent": (cleanup.get("probe_process_absent") is True),
+        "runtime_configuration_restored": (
+            cleanup.get("configuration_restored") is True
+        ),
+        "runtime_private_dns_verified": (cleanup.get("private_dns_verified") is True),
+        "runtime_run_artifacts_absent": (cleanup.get("run_artifacts_absent") is True),
+        "runtime_bridgefu_ready": cleanup.get("bridgefu_active") is True,
+    }
+
+
+def sanitize_diagnostic(value: Any, maximum: int = DIAGNOSTIC_LIMIT) -> str:
+    """Return one bounded line that cannot retain common credential forms."""
+    if not isinstance(value, str) or maximum < 1:
+        return "unavailable"
+    cleaned = re.sub(r"[\x00-\x1f\x7f]+", " ", value)
+    cleaned = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "Bearer [REDACTED]", cleaned)
+    secret_assignment = re.compile(
+        r"(?i)[\"']?\b(authorization|x-api-key|api[-_ ]?key|password|passwd|secret|"
+        r"token|credential|signature)\b[\"']?\s*[:=]\s*"
+        r"(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+    )
+    cleaned = secret_assignment.sub(
+        lambda match: f"{match.group(1)}=[REDACTED]", cleaned
+    )
+    cleaned = re.sub(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b", "[REDACTED_AWS_KEY]", cleaned)
+    cleaned = re.sub(
+        r"\beyJ[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]{8,}){1,2}\b",
+        "[REDACTED_TOKEN]",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?i)([?&](?:x-amz-[^=&\s]+|token|key|secret|password|signature)=)[^&\s]+",
+        r"\1[REDACTED]",
+        cleaned,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return "unavailable"
+    if len(cleaned) > maximum:
+        cleaned = cleaned[: maximum - 3].rstrip() + "..."
+    return cleaned
+
+
 class CommandRunner:
     """Subprocess boundary kept injectable for fail-closed unit tests."""
 
@@ -144,7 +509,11 @@ class CommandRunner:
                 f"command failed to run: {arguments[0]}"
             ) from error
         if result.returncode != 0:
-            raise QualificationError(f"command failed: {arguments[0]} {arguments[1]}")
+            command = Path(arguments[0]).name if arguments else "command"
+            service = arguments[1] if len(arguments) > 1 else ""
+            label = f"{command} {service}".strip()
+            detail = sanitize_diagnostic(result.stderr)
+            raise QualificationError(f"command failed: {label}: {detail}")
         return result.stdout
 
     def popen(
@@ -229,6 +598,145 @@ class Aws:
         return secret
 
 
+def _validate_version_target(bucket: str, prefix: str, *, exact_key: bool) -> None:
+    parts = prefix.split("/")
+    if (
+        not S3_BUCKET.fullmatch(bucket)
+        or not prefix.startswith("qualification/")
+        or len(parts) < 3
+        or not EXECUTION_ID.fullmatch(parts[1])
+        or (exact_key and prefix.endswith("/"))
+        or (not exact_key and not prefix.endswith("/"))
+        or len(prefix.encode("utf-8")) > 512
+        or re.search(r"[\x00-\x1f\x7f]", prefix)
+        or ".." in prefix.split("/")
+    ):
+        raise QualificationError("qualification object target is invalid")
+
+
+def list_object_versions_exact(
+    aws: Aws, bucket: str, prefix: str, *, exact_key: bool = False
+) -> list[dict[str, str]]:
+    """List every version and delete marker under one bounded exact prefix."""
+    _validate_version_target(bucket, prefix, exact_key=exact_key)
+    results: list[dict[str, str]] = []
+    seen_versions: set[tuple[str, str]] = set()
+    key_marker: str | None = None
+    version_marker: str | None = None
+    seen_markers: set[tuple[str | None, str | None]] = set()
+    for _ in range(MAX_OBJECT_VERSION_PAGES):
+        marker = (key_marker, version_marker)
+        if marker in seen_markers:
+            raise QualificationError("qualification object pagination did not advance")
+        seen_markers.add(marker)
+        arguments = [
+            "s3api",
+            "list-object-versions",
+            "--bucket",
+            bucket,
+            "--prefix",
+            prefix,
+            "--max-keys",
+            "1000",
+            "--no-paginate",
+        ]
+        if key_marker is not None:
+            arguments.extend(["--key-marker", key_marker])
+        if version_marker is not None:
+            arguments.extend(["--version-id-marker", version_marker])
+        page = aws.json(arguments, timeout=120)
+        if not isinstance(page, Mapping) or not isinstance(
+            page.get("IsTruncated"), bool
+        ):
+            raise QualificationError("qualification object version list is invalid")
+        for field in ("Versions", "DeleteMarkers"):
+            values = page.get(field, [])
+            if not isinstance(values, list):
+                raise QualificationError("qualification object version list is invalid")
+            for value in values:
+                key = value.get("Key") if isinstance(value, Mapping) else None
+                version_id = (
+                    value.get("VersionId") if isinstance(value, Mapping) else None
+                )
+                if (
+                    not isinstance(key, str)
+                    or not key.startswith(prefix)
+                    or len(key.encode("utf-8")) > 1024
+                    or re.search(r"[\x00-\x1f\x7f]", key)
+                    or not isinstance(version_id, str)
+                    or not 1 <= len(version_id) <= 1024
+                    or re.search(r"[\x00-\x1f\x7f]", version_id)
+                ):
+                    raise QualificationError(
+                        "qualification object version identity is invalid"
+                    )
+                if exact_key and key != prefix:
+                    continue
+                if not exact_key and key == prefix:
+                    raise QualificationError(
+                        "qualification object version identity is invalid"
+                    )
+                version_identity = (key, version_id)
+                if version_identity in seen_versions:
+                    raise QualificationError(
+                        "qualification object version identity is duplicated"
+                    )
+                seen_versions.add(version_identity)
+                results.append({"Key": key, "VersionId": version_id})
+                if len(results) > MAX_OBJECT_VERSIONS:
+                    raise QualificationError(
+                        "qualification object version bound was exceeded"
+                    )
+        if not page.get("IsTruncated", False):
+            return results
+        next_key = page.get("NextKeyMarker")
+        next_version = page.get("NextVersionIdMarker")
+        if (
+            not isinstance(next_key, str)
+            or not next_key.startswith(prefix)
+            or not isinstance(next_version, str)
+            or not next_version
+            or len(next_key.encode("utf-8")) > 1024
+            or len(next_version) > 1024
+            or re.search(r"[\x00-\x1f\x7f]", next_key + next_version)
+        ):
+            raise QualificationError(
+                "qualification object pagination marker is invalid"
+            )
+        key_marker, version_marker = next_key, next_version
+    raise QualificationError("qualification object pagination bound was exceeded")
+
+
+def purge_object_versions_exact(
+    aws: Aws, bucket: str, prefix: str, *, exact_key: bool = False
+) -> None:
+    versions = list_object_versions_exact(aws, bucket, prefix, exact_key=exact_key)
+    for offset in range(0, len(versions), MAX_DELETE_OBJECTS):
+        chunk = versions[offset : offset + MAX_DELETE_OBJECTS]
+        response = aws.json(
+            [
+                "s3api",
+                "delete-objects",
+                "--bucket",
+                bucket,
+                "--delete",
+                json.dumps(
+                    {"Objects": chunk, "Quiet": True},
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            ],
+            timeout=120,
+        )
+        if not isinstance(response, Mapping) or response.get("Errors") not in (
+            None,
+            [],
+        ):
+            raise QualificationError("qualification object version deletion failed")
+    if list_object_versions_exact(aws, bucket, prefix, exact_key=exact_key):
+        raise QualificationError("qualification object versions remain after cleanup")
+
+
 class Vapi:
     def __init__(self, private_key: str, base_url: str = VAPI_BASE_URL) -> None:
         if not isinstance(private_key, str) or not 8 <= len(private_key) <= 1024:
@@ -286,24 +794,73 @@ class Vapi:
             raise QualificationError("Vapi API resource has an invalid shape")
         return value
 
-    def list(self, resource: str) -> list[Mapping[str, Any]]:
-        value = self.request("GET", f"/{resource}?limit=100")
+    def list(self, resource: str, *, limit: int = 100) -> list[Mapping[str, Any]]:
+        if not 1 <= limit <= 100:
+            raise QualificationError("Vapi API list limit is invalid")
+        value = self.request("GET", f"/{resource}?limit={limit}")
         if not isinstance(value, list) or any(
             not isinstance(item, Mapping) for item in value
         ):
             raise QualificationError("Vapi API list has an invalid shape")
         return list(value)
 
-    def create_phone(self, execution_id: str, assistant_id: str) -> Mapping[str, Any]:
-        suffix = hashlib.sha256(execution_id.encode("ascii")).hexdigest()[:16]
+    def list_calls(
+        self,
+        *,
+        assistant_id: str,
+        created_at_ge: dt.datetime,
+        phone_number_id: str | None,
+        call_id: str | None,
+        limit: int = 20,
+    ) -> list[Mapping[str, Any]]:
+        for value in (assistant_id, phone_number_id, call_id):
+            if value is not None and not RESOURCE_ID.fullmatch(value):
+                raise QualificationError("Vapi call filter is invalid")
+        if created_at_ge.tzinfo is None or not 1 <= limit <= 100:
+            raise QualificationError("Vapi call filter is invalid")
+        query: list[tuple[str, str]] = [
+            ("limit", str(limit)),
+            ("assistantId", assistant_id),
+            (
+                "createdAtGe",
+                created_at_ge.astimezone(dt.UTC).isoformat().replace("+00:00", "Z"),
+            ),
+        ]
+        if phone_number_id is not None:
+            query.append(("phoneNumberId", phone_number_id))
+        if call_id is not None:
+            query.append(("id", call_id))
+        value = self.request("GET", "/call?" + urllib.parse.urlencode(query))
+        if not isinstance(value, list) or any(
+            not isinstance(item, Mapping) for item in value
+        ):
+            raise QualificationError("Vapi API call list has an invalid shape")
+        return list(value)
+
+    def create_phone(
+        self,
+        execution_id: str,
+        assistant_id: str,
+        authentication: Mapping[str, str],
+    ) -> Mapping[str, Any]:
+        if set(authentication) != {"realm", "username", "password"}:
+            raise QualificationError("Vapi SIP authentication has an invalid shape")
+        username = authentication["username"]
+        if (
+            authentication["realm"] != "sip.vapi.ai"
+            or re.fullmatch(r"bfq_[a-f0-9]{16}", username) is None
+            or not 16 <= len(authentication["password"]) <= 40
+        ):
+            raise QualificationError("Vapi SIP authentication is invalid")
         value = self.request(
             "POST",
             "/phone-number",
             {
                 "provider": "vapi",
-                "name": f"Bridgefu qualification {execution_id}",
-                "sipUri": f"sip:bfq_{suffix}@sip.vapi.ai",
+                "name": vapi_phone_owned_name(execution_id),
+                "sipUri": f"sip:{username}@sip.vapi.ai",
                 "assistantId": assistant_id,
+                "authentication": dict(authentication),
             },
         )
         if not isinstance(value, Mapping):
@@ -312,9 +869,31 @@ class Vapi:
             )
         return value
 
-    def delete(self, resource: str, resource_id: str) -> None:
-        if self.get(resource, resource_id) is not None:
-            self.request("DELETE", f"/{resource}/{resource_id}")
+    def delete(
+        self,
+        resource: str,
+        resource_id: str,
+        *,
+        timeout: int = 30,
+        poll_seconds: float = 0.5,
+    ) -> None:
+        existing = self.get(resource, resource_id)
+        if existing is None:
+            return
+        if existing.get("id") != resource_id:
+            raise QualificationError("Vapi deletion target identity changed")
+        self.request("DELETE", f"/{resource}/{resource_id}", allow_missing=True)
+        deadline = time.monotonic() + timeout
+        while True:
+            current = self.get(resource, resource_id)
+            if current is None:
+                return
+            if current.get("id") != resource_id:
+                raise QualificationError("Vapi deletion target identity changed")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise QualificationError("Vapi exact-resource deletion timed out")
+            time.sleep(min(poll_seconds, remaining))
 
 
 def extract_vapi_key(secret: str) -> str:
@@ -400,7 +979,7 @@ def make_session(
         "session_id": hashlib.sha256(f"{scenario}:{call_id}".encode()).hexdigest()[:24],
         "scenario_id": scenario,
         "hangup_origin": "source",
-        "security": "sips_srtp",
+        "security": "sips_optional_srtp",
         "codec": "negotiated" if scenario == "vapi-web-transfer" else "pcmu",
         "network_profile": "baseline",
         "network_contract": {
@@ -439,8 +1018,10 @@ def stack_outputs(value: Any) -> dict[str, str]:
         and isinstance(item.get("OutputValue"), str)
     }
     required = {
+        "ConnectInstanceArn",
         "ConnectInstanceId",
         "ConnectLoginUrl",
+        "AgentUsername",
         "AgentCredentialSecretArn",
         "BridgefuInstanceId",
         "ArtifactBucket",
@@ -451,6 +1032,7 @@ def stack_outputs(value: Any) -> dict[str, str]:
         "CorrelationKeySecretArn",
         "RuntimeLogGroupName",
         "LookupLogGroupName",
+        "QualificationSipPrivateHostedZoneId",
     }
     if not required.issubset(result):
         raise QualificationError("qualification stack is missing required outputs")
@@ -474,7 +1056,7 @@ def decode_dynamo(value: Any) -> Any:
     raise QualificationError("DynamoDB evidence contains an unsupported value")
 
 
-def verify_handoff_item(item: Any, session: Mapping[str, Any]) -> None:
+def verify_handoff_item(item: Any, session: Mapping[str, Any]) -> Mapping[str, Any]:
     if not isinstance(item, Mapping):
         raise QualificationError("handoff context record was not found")
     decoded = {key: decode_dynamo(value) for key, value in item.items()}
@@ -489,15 +1071,19 @@ def verify_handoff_item(item: Any, session: Mapping[str, Any]) -> None:
         or decoded.get("handoff_status") not in {"RESERVED", "CONSUMED"}
     ):
         raise QualificationError("handoff context record does not match the smoke call")
+    return decoded
 
 
 def json_objects_from_logs(
     events: Iterable[Mapping[str, Any]],
 ) -> Iterable[Mapping[str, Any]]:
     for event in events:
+        if not isinstance(event, Mapping):
+            continue
         message = event.get("message")
         if not isinstance(message, str):
             continue
+        seen: set[str] = set()
         for candidate in (message, *message.splitlines()):
             start = candidate.find("{")
             if start < 0:
@@ -507,21 +1093,32 @@ def json_objects_from_logs(
             except json.JSONDecodeError:
                 continue
             if isinstance(value, Mapping):
-                yield value
+                value_key = json.dumps(value, separators=(",", ":"), sort_keys=True)
+                if value_key not in seen:
+                    seen.add(value_key)
+                    yield value
                 fields = value.get("fields")
                 if isinstance(fields, Mapping):
-                    yield fields
+                    fields_key = json.dumps(
+                        fields, separators=(",", ":"), sort_keys=True
+                    )
+                    if fields_key not in seen:
+                        seen.add(fields_key)
+                        yield fields
 
 
-def verify_log_evidence(runtime: Any, lookup: Any, fingerprint: str) -> None:
+def verify_log_evidence(runtime: Any, lookup: Any, fingerprint: str) -> dict[str, Any]:
+    if not re.fullmatch(r"[0-9a-f]{12}", fingerprint):
+        raise QualificationError("correlation fingerprint is invalid")
     runtime_events = runtime.get("events", []) if isinstance(runtime, Mapping) else []
     lookup_events = lookup.get("events", []) if isinstance(lookup, Mapping) else []
+    runtime_values = list(json_objects_from_logs(runtime_events))
     header = any(
         value.get("event") == "bridgefu_sip_invite_evidence"
         and value.get("correlation_fingerprint") == fingerprint
         and value.get("header_name") == "x-correlation-id"
         and value.get("header_count") == 1
-        for value in json_objects_from_logs(runtime_events)
+        for value in runtime_values
     )
     available = any(
         value.get("event") == "bridgefu_correlation_evidence"
@@ -530,10 +1127,173 @@ def verify_log_evidence(runtime: Any, lookup: Any, fingerprint: str) -> None:
         and value.get("result") == "available"
         for value in json_objects_from_logs(lookup_events)
     )
-    if not header or not available:
+    security_events = [
+        value
+        for value in runtime_values
+        if value.get("event") == VAPI_DESTINATION_SECURITY_EVENT
+        and value.get("correlation_fingerprint") == fingerprint
+    ]
+    if len(security_events) != 1:
         raise QualificationError(
-            "correlated Bridgefu and Connect log evidence did not converge"
+            "exactly one correlated Vapi destination security event is required"
         )
+    security_event = security_events[0]
+    security_keys = set(security_event)
+    if security_keys != VAPI_DESTINATION_SECURITY_FIELDS | {"message"}:
+        raise QualificationError("Vapi destination security event shape is invalid")
+    if security_event.get("message") != "accepted Vapi destination leg":
+        raise QualificationError("Vapi destination security event shape is invalid")
+    expected_security = {
+        **VAPI_DESTINATION_SECURITY_EXPECTED,
+        "correlation_fingerprint": fingerprint,
+    }
+    media_profile = security_event.get("media_profile")
+    media_keying = security_event.get("media_keying")
+    media_suite = security_event.get("media_suite")
+    inbound_srtp = security_event.get("inbound_srtp_context_installed")
+    outbound_srtp = security_event.get("outbound_srtp_context_installed")
+    secure_media = (
+        media_profile == "RTP/SAVP"
+        and media_keying == "SDES-SRTP"
+        and media_suite in VAPI_DESTINATION_MEDIA_SUITES
+        and inbound_srtp is True
+        and outbound_srtp is True
+    )
+    plain_media = (
+        media_profile == "RTP/AVP"
+        and media_keying == "none"
+        and media_suite == "none"
+        and inbound_srtp is False
+        and outbound_srtp is False
+    )
+    security = (
+        all(
+            security_event.get(name) == expected
+            for name, expected in expected_security.items()
+        )
+        and (secure_media or plain_media)
+    )
+    if not header or not available or not security:
+        raise QualificationError(
+            "correlated Bridgefu, destination security, and Connect log evidence did not converge"
+        )
+    security_projection = {
+        name: security_event[name] for name in sorted(VAPI_DESTINATION_SECURITY_FIELDS)
+    }
+    return {
+        "bridgefu_received_correlation_header": header,
+        "connect_lookup_available": available,
+        "vapi_destination_sips_signaling": (security_event.get("uri_scheme") == "sips"),
+        "vapi_destination_tls_transport": (
+            security_event.get("signaling_transport") == "tls"
+        ),
+        "vapi_destination_media_profile_allowed": (
+            media_profile in VAPI_DESTINATION_MEDIA_PROFILES
+        ),
+        "vapi_destination_media_posture_consistent": secure_media or plain_media,
+        "vapi_destination_answered": security_event.get("answered") is True,
+        "vapi_destination_security_evidence_sha256": canonical_sha256(
+            security_projection
+        ),
+        "vapi_destination_media_profile": media_profile,
+        "vapi_destination_media_keying": media_keying,
+        "vapi_destination_media_suite": media_suite,
+        "vapi_destination_srtp_negotiated": secure_media,
+    }
+
+
+def derive_scenario_checks(
+    scenario: str,
+    source: Mapping[str, Any],
+    agent: Mapping[str, Any],
+    call: Mapping[str, Any],
+    handoff: Mapping[str, Any],
+    log_proof: Mapping[str, Any],
+) -> dict[str, bool]:
+    """Derive release assertions only from the retained remote observations."""
+    if scenario not in SCENARIOS:
+        raise QualificationError("qualification scenario is unsupported")
+    source_media = source.get("media")
+    agent_media = agent.get("media")
+    screen = agent.get("screen_pop")
+    if not all(
+        isinstance(value, Mapping) for value in (source_media, agent_media, screen)
+    ):
+        raise QualificationError("scenario evidence is incomplete")
+    expected_fields = set(synthetic_context(scenario))
+    screen_fields = screen.get("visible_fields")
+    screen_visible = (
+        screen.get("visible") is True
+        and isinstance(screen_fields, list)
+        and set(screen_fields) == expected_fields
+    )
+    source_to_agent = (
+        int(source_media.get("source_to_agent_marker_frames_sent", 0)) >= 5
+        and int(agent_media.get("source_to_agent_marker_frames", 0)) >= 5
+        and len(agent_media.get("source_marker_observed_at_ms", [])) >= 3
+    )
+    agent_to_source = (
+        int(agent_media.get("agent_to_source_marker_frames_sent", 0)) >= 5
+        and int(source_media.get("agent_to_source_marker_frames", 0)) >= 3
+        and len(source_media.get("agent_marker_observed_at_ms", [])) >= 3
+    )
+    dtmf_source_to_agent = (
+        len(source_media.get("dtmf_source_to_agent_sent_at_ms", [])) >= 1
+        and agent_media.get("dtmf_source_to_agent_observed") is True
+    )
+    if scenario == "vapi-web-transfer":
+        source_connected = source.get("vapi", {}).get("web_call_started") is True
+        ended = source.get("hangup", {}).get("local_end_completed") is True
+    else:
+        signaling = source.get("signaling")
+        source_connected = (
+            isinstance(signaling, Mapping)
+            and signaling.get("invite_sent") is True
+            and signaling.get("answered") is True
+        )
+        ended = source.get("hangup", {}).get("local_bye_completed") is True
+    checks = {
+        "vapi_call_connected": source_connected and call.get("status") == "ended",
+        "vapi_transfer_invoked": call_contains_transfer(call),
+        "handoff_context_stored": (
+            handoff.get("correlation_id") is not None
+            and handoff.get("handoff_status") in {"RESERVED", "CONSUMED"}
+        ),
+        "bridgefu_received_correlation_header": (
+            log_proof.get("bridgefu_received_correlation_header") is True
+        ),
+        "vapi_destination_sips_signaling": (
+            log_proof.get("vapi_destination_sips_signaling") is True
+        ),
+        "vapi_destination_tls_transport": (
+            log_proof.get("vapi_destination_tls_transport") is True
+        ),
+        "vapi_destination_media_profile_allowed": (
+            log_proof.get("vapi_destination_media_profile_allowed") is True
+        ),
+        "vapi_destination_media_posture_consistent": (
+            log_proof.get("vapi_destination_media_posture_consistent") is True
+        ),
+        "vapi_destination_answered": (
+            log_proof.get("vapi_destination_answered") is True
+        ),
+        "amazon_connect_contact_connected": (
+            screen_visible and source_to_agent and agent_to_source
+        ),
+        "configured_screen_pop_visible": screen_visible
+        and log_proof.get("connect_lookup_available") is True,
+        "audio_source_to_agent": source_to_agent,
+        "audio_agent_to_source": agent_to_source,
+        "dtmf_source_to_agent": dtmf_source_to_agent,
+        "source_call_ended": ended
+        and source.get("hangup", {}).get("cleanup_observed") is True,
+    }
+    if scenario == "vapi-web-transfer":
+        checks["dtmf_agent_to_source"] = (
+            len(agent_media.get("dtmf_agent_to_source_sent_at_ms", [])) >= 1
+            and source_media.get("dtmf_agent_to_source_observed") is True
+        )
+    return checks
 
 
 def call_contains_transfer(value: Any) -> bool:
@@ -582,9 +1342,383 @@ def call_contains_transfer(value: Any) -> bool:
 
 
 def create_failure_arguments(retain_on_failure: bool) -> list[str]:
-    if retain_on_failure:
-        return ["--disable-rollback"]
-    return ["--on-failure", "DELETE"]
+    # The controller owns cleanup. Keeping rollback disabled until it has read
+    # the stack events is what makes a normal failed run diagnosable; the
+    # retain flag controls whether cleanup follows evidence capture.
+    del retain_on_failure
+    return ["--disable-rollback"]
+
+
+def collect_cloudformation_failure_events(
+    aws: Aws, stack_name: str, *, maximum_stacks: int = 8, maximum_events: int = 50
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Collect sanitized root and nested-stack failures without physical IDs."""
+    stack_arn = re.compile(
+        rf"^arn:aws[-a-z0-9]*:cloudformation:{re.escape(aws.region)}:[0-9]{{12}}:"
+        r"stack/[A-Za-z][-A-Za-z0-9]{0,127}/[A-Za-z0-9-]+$"
+    )
+    queue: list[tuple[str, int]] = [(stack_name, 0)]
+    visited: set[str] = set()
+    seen_events: set[str] = set()
+    failures: list[dict[str, Any]] = []
+    errors: list[str] = []
+    while queue and len(visited) < maximum_stacks and len(failures) < maximum_events:
+        identifier, depth = queue.pop(0)
+        if identifier in visited:
+            continue
+        visited.add(identifier)
+        try:
+            response = aws.json(
+                [
+                    "cloudformation",
+                    "describe-stack-events",
+                    "--stack-name",
+                    identifier,
+                    "--max-items",
+                    "100",
+                ],
+                timeout=120,
+            )
+        except QualificationError as error:
+            errors.append(sanitize_diagnostic(str(error), 256))
+            continue
+        values = response.get("StackEvents") if isinstance(response, Mapping) else None
+        if not isinstance(values, list):
+            errors.append("CloudFormation stack events had an invalid shape")
+            continue
+        for item in values:
+            if not isinstance(item, Mapping):
+                continue
+            event_id = item.get("EventId")
+            status = item.get("ResourceStatus")
+            logical_id = item.get("LogicalResourceId")
+            resource_type = item.get("ResourceType")
+            physical_id = item.get("PhysicalResourceId")
+            if (
+                resource_type == "AWS::CloudFormation::Stack"
+                and isinstance(physical_id, str)
+                and physical_id != identifier
+                and logical_id != stack_name
+                and stack_arn.fullmatch(physical_id)
+                and physical_id not in visited
+                and len(queue) + len(visited) < maximum_stacks
+            ):
+                queue.append((physical_id, depth + 1))
+            if not isinstance(status, str) or not any(
+                marker in status for marker in ("FAILED", "ROLLBACK", "CANCEL")
+            ):
+                continue
+            dedupe = (
+                event_id
+                if isinstance(event_id, str)
+                else "|".join(
+                    str(item.get(key, ""))
+                    for key in (
+                        "LogicalResourceId",
+                        "ResourceType",
+                        "ResourceStatus",
+                        "ResourceStatusReason",
+                        "Timestamp",
+                    )
+                )
+            )
+            if dedupe in seen_events:
+                continue
+            seen_events.add(dedupe)
+            failures.append(
+                {
+                    "stack_depth": depth,
+                    "logical_resource_id": sanitize_diagnostic(logical_id, 256),
+                    "resource_type": sanitize_diagnostic(resource_type, 256),
+                    "status": sanitize_diagnostic(status, 128),
+                    "reason": sanitize_diagnostic(
+                        item.get("ResourceStatusReason"), 1024
+                    ),
+                    "timestamp": sanitize_diagnostic(item.get("Timestamp"), 64),
+                }
+            )
+            if len(failures) == maximum_events:
+                break
+    return failures, sanitize_diagnostic("; ".join(errors), 512) if errors else None
+
+
+def ensure_connect_agent_available(aws: Aws, outputs: Mapping[str, str]) -> None:
+    """Select exactly the disposable agent's routable Available status."""
+    instance_id = outputs.get("ConnectInstanceId")
+    instance_arn = outputs.get("ConnectInstanceArn")
+    username = outputs.get("AgentUsername")
+    arn_match = re.fullmatch(
+        rf"arn:aws[-a-z0-9]*:connect:{re.escape(aws.region)}:[0-9]{{12}}:"
+        rf"instance/({re.escape(instance_id or '')})",
+        instance_arn or "",
+    )
+    if (
+        arn_match is None
+        or not isinstance(instance_id, str)
+        or not RESOURCE_ID.fullmatch(instance_id)
+        or username != "bridgefu-demo-agent"
+    ):
+        raise QualificationError(
+            "Connect availability target is not the exact disposable agent"
+        )
+    users = aws.json(
+        [
+            "connect",
+            "list-users",
+            "--instance-id",
+            instance_id,
+            "--max-results",
+            "100",
+        ]
+    )
+    statuses = aws.json(
+        [
+            "connect",
+            "list-agent-statuses",
+            "--instance-id",
+            instance_id,
+            "--max-results",
+            "100",
+        ]
+    )
+    user_summaries = (
+        users.get("UserSummaryList") if isinstance(users, Mapping) else None
+    )
+    status_summaries = (
+        statuses.get("AgentStatusSummaryList")
+        if isinstance(statuses, Mapping)
+        else None
+    )
+    if not isinstance(user_summaries, list) or not isinstance(status_summaries, list):
+        raise QualificationError("Connect availability lookup did not return lists")
+    user_matches = [
+        item
+        for item in user_summaries
+        if isinstance(item, Mapping)
+        and item.get("Username") == username
+        and isinstance(item.get("Arn"), str)
+        and isinstance(item.get("Id"), str)
+        and RESOURCE_ID.fullmatch(item["Id"])
+        and item["Arn"] == f"{instance_arn}/agent/{item['Id']}"
+    ]
+    status_matches = [
+        item
+        for item in status_summaries
+        if isinstance(item, Mapping)
+        and item.get("Name") == "Available"
+        and item.get("Type") == "ROUTABLE"
+        and isinstance(item.get("Arn"), str)
+        and isinstance(item.get("Id"), str)
+        and RESOURCE_ID.fullmatch(item["Id"])
+        and item["Arn"] == f"{instance_arn}/agent-state/{item['Id']}"
+    ]
+    if len(user_matches) != 1 or len(status_matches) != 1:
+        raise QualificationError("Connect availability lookup was not exact")
+    status, _, stderr = aws.runner.probe(
+        [
+            "aws",
+            "connect",
+            "put-user-status",
+            "--instance-id",
+            instance_id,
+            "--user-id",
+            user_matches[0]["Id"],
+            "--agent-status-id",
+            status_matches[0]["Id"],
+            "--region",
+            aws.region,
+            "--output",
+            "json",
+            "--no-cli-pager",
+        ],
+        timeout=60,
+    )
+    already_available = (
+        status != 0
+        and "InvalidRequestException" in stderr
+        and "User already in requested status" in stderr
+    )
+    if status != 0 and not already_available:
+        raise QualificationError(
+            "Connect could not set the generated agent Available: "
+            + sanitize_diagnostic(stderr)
+        )
+
+
+def wait_for_ssm_command(
+    aws: Aws,
+    command_id: str,
+    instance_id: str,
+    *,
+    timeout: int,
+    poll_seconds: float = 2.0,
+) -> None:
+    """Wait for the exact invocation without the AWS CLI waiter's short cap."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            invocation = aws.json(
+                [
+                    "ssm",
+                    "get-command-invocation",
+                    "--command-id",
+                    command_id,
+                    "--instance-id",
+                    instance_id,
+                ]
+            )
+        except QualificationError as error:
+            # SSM acknowledges SendCommand before the per-instance invocation
+            # is guaranteed readable. Only that exact eventual-consistency
+            # response is retryable; authorization and transport errors fail.
+            if "InvocationDoesNotExist" not in str(error):
+                raise
+            invocation = {"Status": "Pending"}
+        status = invocation.get("Status") if isinstance(invocation, Mapping) else None
+        if status == "Success":
+            return
+        if status in {"Cancelled", "Cancelling", "Failed", "TimedOut"}:
+            detail = sanitize_diagnostic(invocation.get("StandardErrorContent"))
+            raise QualificationError(
+                f"qualification SSM command ended with {status}: {detail}"
+            )
+        if status not in {"Pending", "InProgress", "Delayed"}:
+            raise QualificationError("qualification SSM command status is invalid")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise QualificationError("qualification SSM command timed out")
+        time.sleep(min(poll_seconds, remaining))
+
+
+def read_ssm_output(
+    aws: Aws, command_id: str, instance_id: str, *, maximum: int = 16 * 1024
+) -> str:
+    invocation = aws.json(
+        [
+            "ssm",
+            "get-command-invocation",
+            "--command-id",
+            command_id,
+            "--instance-id",
+            instance_id,
+        ]
+    )
+    raw = (
+        invocation.get("StandardOutputContent")
+        if isinstance(invocation, Mapping)
+        else None
+    )
+    if (
+        not isinstance(invocation, Mapping)
+        or invocation.get("Status") != "Success"
+        or not isinstance(raw, str)
+        or not 2 <= len(raw.encode("utf-8")) <= maximum
+    ):
+        raise QualificationError("qualification SSM output is unavailable")
+    return raw
+
+
+def read_ssm_json_output(
+    aws: Aws, command_id: str, instance_id: str, *, maximum: int = 16 * 1024
+) -> Mapping[str, Any]:
+    raw = read_ssm_output(aws, command_id, instance_id, maximum=maximum)
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise QualificationError("qualification SSM JSON output is invalid") from error
+    if not isinstance(value, Mapping):
+        raise QualificationError("qualification SSM JSON output shape is invalid")
+    return value
+
+
+def cancel_and_wait_ssm_terminal(
+    aws: Aws,
+    command_id: str,
+    instance_id: str,
+    *,
+    timeout: int = 90,
+    poll_seconds: float = 1.0,
+) -> bool:
+    """Cancel an owned active command and prove its exact invocation terminal."""
+    terminal = {"Success", "Cancelled", "Failed", "TimedOut"}
+    active = {"Pending", "InProgress", "Delayed", "Cancelling"}
+    deadline = time.monotonic() + timeout
+    cancellation_ok = True
+    cancellation_attempted = False
+    while True:
+        try:
+            invocation = aws.json(
+                [
+                    "ssm",
+                    "get-command-invocation",
+                    "--command-id",
+                    command_id,
+                    "--instance-id",
+                    instance_id,
+                ]
+            )
+            status = (
+                invocation.get("Status") if isinstance(invocation, Mapping) else None
+            )
+        except QualificationError as error:
+            if "InvocationDoesNotExist" not in str(error):
+                return False
+            status = "Pending"
+        if status in terminal:
+            return cancellation_ok
+        if status not in active:
+            return False
+        if status != "Cancelling" and not cancellation_attempted:
+            cancellation_attempted = True
+            try:
+                aws.text(["ssm", "cancel-command", "--command-id", command_id])
+            except QualificationError:
+                cancellation_ok = False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(poll_seconds, remaining))
+
+
+def wait_for_vapi_phone_active(
+    vapi: Vapi,
+    phone_id: str,
+    sip_uri: str,
+    assistant_id: str,
+    *,
+    timeout: int = 60,
+    poll_seconds: float = 0.5,
+) -> Mapping[str, Any]:
+    """Poll the exact transient endpoint instead of assuming propagation time."""
+    if not all(
+        isinstance(value, str) and RESOURCE_ID.fullmatch(value)
+        for value in (phone_id, assistant_id)
+    ):
+        raise QualificationError("temporary Vapi SIP endpoint identity is invalid")
+    deadline = time.monotonic() + timeout
+    while True:
+        phone = vapi.get("phone-number", phone_id)
+        if phone is not None:
+            if (
+                phone.get("id") != phone_id
+                or phone.get("sipUri") != sip_uri
+                or phone.get("assistantId") != assistant_id
+            ):
+                raise QualificationError(
+                    "temporary Vapi SIP endpoint changed identity while provisioning"
+                )
+            status = phone.get("status")
+            if status == "active":
+                return phone
+            if status not in {"pending", "provisioning", "creating"}:
+                raise QualificationError(
+                    "temporary Vapi SIP endpoint entered terminal status: "
+                    + sanitize_diagnostic(status, 128)
+                )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise QualificationError("temporary Vapi SIP endpoint activation timed out")
+        time.sleep(min(poll_seconds, remaining))
 
 
 class Controller:
@@ -600,11 +1734,20 @@ class Controller:
         self.outputs: dict[str, str] = {}
         self.vapi: Vapi | None = None
         self.temp_phone_id: str | None = None
+        self.temp_sip_auth_object: str | None = None
+        self.temp_phone_journal_object: str | None = None
         self.created_stack = False
         self.processes: list[subprocess.Popen[str]] = []
         self.ssm_commands: list[str] = []
         self.started_at = utc_now()
+        self.phase = "initialization"
         self.scenario_evidence: list[dict[str, Any]] = []
+        self.secure_preflight_evidence: dict[str, Any] | None = None
+        self.secure_preflight_binary_sha256: str | None = None
+        self.secure_preflight_object_key: str | None = None
+        self.secure_preflight_cleanup_required = False
+        self.secure_preflight_restoration_passed = False
+        self.secure_preflight_cleanup_passed = False
         self.bridgefu_lock = read_json(ROOT / "bridgefu.lock.json")
 
     def validate_inputs(self) -> None:
@@ -629,6 +1772,9 @@ class Controller:
             raise QualificationError("qualification template URL must be HTTPS")
         if not self.args.sip_client.is_file() or self.args.sip_client.is_symlink():
             raise QualificationError("release SIP client binary is unavailable")
+        self.secure_preflight_binary_sha256 = executable_sha256(
+            self.args.direct_secure_probe
+        )
         commit = self.bridgefu_lock.get("commit")
         lock_digest = self.bridgefu_lock.get("cargo_lock_sha256")
         if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
@@ -651,18 +1797,28 @@ class Controller:
         }
         if f"{self.args.execution_id}-connect" in aliases:
             raise QualificationError("execution Connect instance already exists")
+
+    def initialize_vapi(self) -> None:
+        """Read and bind the Vapi credential only after secure runtime restoration."""
         private_key = extract_vapi_key(self.aws.secret(self.args.vapi_secret_arn))
         self.vapi = Vapi(private_key)
+        owned_assistants = []
         for assistant in self.vapi.list("assistant"):
             metadata = assistant.get("metadata")
             if (
                 isinstance(metadata, Mapping)
                 and metadata.get("bridgefu_deployment") == self.args.execution_id
             ):
-                raise QualificationError("execution Vapi assistant already exists")
-        phone_name = f"Bridgefu qualification {self.args.execution_id}"
+                owned_assistants.append(assistant)
+        if len(owned_assistants) != 1 or owned_assistants[0].get(
+            "id"
+        ) != self.outputs.get("VapiAssistantId"):
+            raise QualificationError("execution Vapi assistant identity is not exact")
+        phone_name_prefix = f"BFQ {self.args.execution_id} "
         if any(
-            phone.get("name") == phone_name for phone in self.vapi.list("phone-number")
+            isinstance(phone.get("name"), str)
+            and phone["name"].startswith(phone_name_prefix)
+            for phone in self.vapi.list("phone-number")
         ):
             raise QualificationError("execution Vapi SIP endpoint already exists")
 
@@ -726,16 +1882,10 @@ class Controller:
                 "Command.CommandId",
             ]
         )
-        self.aws.text(
-            [
-                "ssm",
-                "wait",
-                "command-executed",
-                "--command-id",
-                command_id,
-                "--instance-id",
-                self.outputs["BridgefuInstanceId"],
-            ],
+        wait_for_ssm_command(
+            self.aws,
+            command_id,
+            self.outputs["BridgefuInstanceId"],
             timeout=300,
         )
 
@@ -807,13 +1957,16 @@ class Controller:
             ]
         )
         self.processes.append(process)
-        stdout, _ = process.communicate(json.dumps(parsed), timeout=240)
+        stdout, stderr = process.communicate(json.dumps(parsed), timeout=240)
         if (
             process.returncode != 0
             or not storage.is_file()
             or stdout.strip() != os.fspath(storage)
         ):
-            raise QualificationError("Amazon Connect agent authentication failed")
+            raise QualificationError(
+                "Amazon Connect agent authentication failed: "
+                + sanitize_diagnostic(stderr)
+            )
         self.processes.remove(process)
         return storage
 
@@ -821,13 +1974,14 @@ class Controller:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if path.is_file():
-                return read_json(path)
+                return read_private_json(path)
             time.sleep(0.25)
         raise QualificationError("qualification browser handshake timed out")
 
     def start_agent(
         self, session: Path, storage: Path, scenario: str
-    ) -> tuple[subprocess.Popen[str], Path, Path]:
+    ) -> tuple[subprocess.Popen[str], Path, Path, Path]:
+        ready = self.work / f"{scenario}-agent-ready.json"
         observation = self.work / f"{scenario}-agent.json"
         screenshot = self.args.output / f"{scenario}-screen.png"
         process = self.runner.popen(
@@ -837,12 +1991,18 @@ class Controller:
                 "observe",
                 "--session",
                 os.fspath(session),
+                "--execution-id",
+                self.args.execution_id,
+                "--scenario-id",
+                scenario,
                 "--storage-state",
                 os.fspath(storage),
                 "--connect-url",
                 self.outputs["ConnectLoginUrl"],
                 "--screenshot",
                 os.fspath(screenshot),
+                "--ready",
+                os.fspath(ready),
                 "--observation",
                 os.fspath(observation),
                 "--timeout-seconds",
@@ -850,21 +2010,258 @@ class Controller:
             ]
         )
         self.processes.append(process)
-        return process, observation, screenshot
+        return process, observation, screenshot, ready
+
+    def wait_for_agent_readiness(self, ready: Path, scenario: str) -> None:
+        validate_agent_readiness(
+            self.wait_for_file(ready, 90), self.args.execution_id, scenario
+        )
+
+    def start_direct_secure_agent(
+        self, storage: Path
+    ) -> tuple[subprocess.Popen[str], Path]:
+        """Launch the session-free observer and wait for its private readiness."""
+        ready = self.work / "direct-secure-agent-ready.json"
+        observation = self.work / "direct-secure-agent.json"
+        process = self.runner.popen(
+            [
+                "node",
+                os.fspath(QUALIFICATION / "browser" / "agent-workspace-playwright.mjs"),
+                "observe-direct-secure",
+                "--storage-state",
+                os.fspath(storage),
+                "--connect-url",
+                self.outputs["ConnectLoginUrl"],
+                "--ready",
+                os.fspath(ready),
+                "--observation",
+                os.fspath(observation),
+                "--timeout-seconds",
+                "180",
+            ]
+        )
+        self.processes.append(process)
+        readiness = self.wait_for_file(ready, 90)
+        validate_direct_agent_readiness(readiness)
+        return process, observation
 
     def complete_process(
         self, process: subprocess.Popen[str], label: str, timeout: int = 300
     ) -> None:
         try:
-            process.communicate(timeout=timeout)
+            _, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             process.kill()
             process.communicate()
             raise QualificationError(f"{label} timed out")
         if process.returncode != 0:
-            raise QualificationError(f"{label} failed")
+            raise QualificationError(f"{label} failed: {sanitize_diagnostic(stderr)}")
         if process in self.processes:
             self.processes.remove(process)
+
+    def send_owned_shell(self, instance_id: str, script: str) -> str:
+        command_id = self.aws.text(
+            [
+                "ssm",
+                "send-command",
+                "--instance-ids",
+                instance_id,
+                "--document-name",
+                "AWS-RunShellScript",
+                "--parameters",
+                "commands=" + json.dumps([script], separators=(",", ":")),
+                "--query",
+                "Command.CommandId",
+            ]
+        )
+        if not RESOURCE_ID.fullmatch(command_id):
+            raise QualificationError("qualification SSM command ID is invalid")
+        self.ssm_commands.append(command_id)
+        return command_id
+
+    def direct_secure_preflight(self, storage: Path) -> None:
+        """Gate both release smokes on a restored direct SIPS/SDES-SRTP call."""
+        digest = self.secure_preflight_binary_sha256
+        bucket = self.outputs.get("ArtifactBucket")
+        instance = self.outputs.get("BridgefuInstanceId")
+        if (
+            not isinstance(digest, str)
+            or not SHA256.fullmatch(digest)
+            or not isinstance(bucket, str)
+            or not S3_BUCKET.fullmatch(bucket)
+            or not isinstance(instance, str)
+            or not RESOURCE_ID.fullmatch(instance)
+        ):
+            raise QualificationError("direct secure preflight target is invalid")
+        if executable_sha256(self.args.direct_secure_probe) != digest:
+            raise QualificationError(
+                "direct secure probe binary changed after input validation"
+            )
+
+        unique = secrets.token_hex(16)
+        key = (
+            f"qualification/{self.args.execution_id}/direct-secure-preflight/"
+            f"{unique}/bridgefu-direct-secure-probe"
+        )
+        paths = direct_secure_preflight.remote_paths(self.args.execution_id)
+        try:
+            probe_program = direct_secure_preflight.probe_script(
+                self.args.execution_id,
+                self.args.region,
+                bucket,
+                key,
+                digest,
+            )
+            cleanup_program = direct_secure_preflight.cleanup_script(
+                self.args.execution_id, paths.probe
+            )
+        except direct_secure_preflight.DirectSecurePreflightError as error:
+            raise QualificationError(
+                "direct secure preflight contract is invalid"
+            ) from error
+
+        self.secure_preflight_cleanup_required = True
+        ensure_connect_agent_available(self.aws, self.outputs)
+        agent_process, agent_observation = self.start_direct_secure_agent(storage)
+
+        self.secure_preflight_object_key = key
+        object_uri = f"s3://{bucket}/{key}"
+        probe_command_id: str | None = None
+        probe_dispatch_attempted = False
+        probe_result: dict[str, Any] | None = None
+        primary_error: BaseException | None = None
+        cleanup_failures: list[str] = []
+        receipt: dict[str, Any] | None = None
+        object_versions_removed = False
+
+        try:
+            self.aws.text(
+                [
+                    "s3",
+                    "cp",
+                    os.fspath(self.args.direct_secure_probe),
+                    object_uri,
+                    "--sse",
+                    "AES256",
+                    "--only-show-errors",
+                ],
+                timeout=120,
+            )
+            probe_dispatch_attempted = True
+            probe_command_id = self.send_owned_shell(instance, probe_program)
+            wait_for_ssm_command(
+                self.aws,
+                probe_command_id,
+                instance,
+                timeout=360,
+            )
+            raw = read_ssm_output(self.aws, probe_command_id, instance)
+            probe_result = direct_secure_preflight.parse_probe_result(raw)
+        except BaseException as error:
+            primary_error = error
+        finally:
+            if probe_command_id is None:
+                probe_command_terminal = not probe_dispatch_attempted
+            else:
+                probe_command_terminal = cancel_and_wait_ssm_terminal(
+                    self.aws, probe_command_id, instance
+                )
+                if probe_command_terminal and probe_command_id in self.ssm_commands:
+                    self.ssm_commands.remove(probe_command_id)
+
+            remote_cleanup = {
+                name: False for name in direct_secure_preflight.CLEANUP_FIELDS
+            }
+            cleanup_command_id: str | None = None
+            cleanup_command_terminal = False
+            try:
+                cleanup_command_id = self.send_owned_shell(instance, cleanup_program)
+                wait_for_ssm_command(
+                    self.aws,
+                    cleanup_command_id,
+                    instance,
+                    timeout=240,
+                )
+                raw_cleanup = read_ssm_output(self.aws, cleanup_command_id, instance)
+                remote_cleanup = direct_secure_preflight.parse_cleanup_receipt(
+                    raw_cleanup
+                )
+                cleanup_command_terminal = True
+                self.ssm_commands.remove(cleanup_command_id)
+            except BaseException:
+                cleanup_failures.append("direct secure remote cleanup failed")
+                if cleanup_command_id is not None:
+                    cleanup_command_terminal = cancel_and_wait_ssm_terminal(
+                        self.aws, cleanup_command_id, instance
+                    )
+                    if (
+                        cleanup_command_terminal
+                        and cleanup_command_id in self.ssm_commands
+                    ):
+                        self.ssm_commands.remove(cleanup_command_id)
+
+            try:
+                receipt = direct_cleanup_receipt(
+                    self.args.execution_id,
+                    probe_command_terminal=probe_command_terminal,
+                    cleanup_command_terminal=cleanup_command_terminal,
+                    remote=remote_cleanup,
+                )
+                self.secure_preflight_restoration_passed = receipt["passed"] is True
+                if not self.secure_preflight_restoration_passed:
+                    cleanup_failures.append(
+                        "direct secure runtime restoration proof failed"
+                    )
+            except QualificationError:
+                self.secure_preflight_restoration_passed = False
+                cleanup_failures.append("direct secure cleanup receipt failed")
+
+            try:
+                purge_object_versions_exact(self.aws, bucket, key, exact_key=True)
+                self.secure_preflight_object_key = None
+                object_versions_removed = True
+            except QualificationError:
+                cleanup_failures.append(
+                    "direct secure executable version cleanup failed"
+                )
+            self.secure_preflight_cleanup_passed = (
+                self.secure_preflight_restoration_passed and object_versions_removed
+            )
+
+        if primary_error is not None or cleanup_failures:
+            if agent_process.poll() is None:
+                agent_process.terminate()
+                try:
+                    agent_process.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    agent_process.kill()
+                    agent_process.communicate()
+            if agent_process in self.processes:
+                self.processes.remove(agent_process)
+            parts = []
+            if primary_error is not None:
+                parts.append(sanitize_diagnostic(str(primary_error), 512))
+            parts.extend(cleanup_failures)
+            raise QualificationError("; ".join(parts)) from primary_error
+
+        if probe_result is None or receipt is None:
+            raise QualificationError("direct secure preflight result is unavailable")
+        self.complete_process(
+            agent_process, "Amazon Connect direct secure observer", 240
+        )
+        agent = read_private_json(agent_observation)
+        validate_schema(agent, "direct-secure-agent-observation-v1.schema.json")
+        checks = derive_direct_secure_checks(probe_result, agent, receipt)
+        if receipt.get("passed") is not True or not all(checks.values()):
+            raise QualificationError("direct secure preflight evidence did not pass")
+        self.secure_preflight_evidence = {
+            "binary_sha256": digest,
+            "probe_result_sha256": canonical_sha256(probe_result),
+            "agent_observation_sha256": sha256_file(agent_observation),
+            "cleanup_receipt_sha256": canonical_sha256(receipt),
+            "checks": checks,
+            "passed": True,
+        }
 
     def wait_for_vapi_call(
         self,
@@ -880,7 +2277,15 @@ class Controller:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             matches: list[Mapping[str, Any]] = []
-            for call in self.vapi.list("call"):
+            # Use Vapi's server-side identity/time filters. An unfiltered page
+            # is neither guaranteed newest-first nor small once call artifacts
+            # are attached.
+            for call in self.vapi.list_calls(
+                assistant_id=assistant_id,
+                created_at_ge=started_after - dt.timedelta(seconds=5),
+                phone_number_id=phone_id,
+                call_id=call_id,
+            ):
                 created = call.get("createdAt")
                 try:
                     created_at = dt.datetime.fromisoformat(
@@ -910,6 +2315,9 @@ class Controller:
         self, site: Path, site_digest: str, storage: Path, correlation_key: str
     ) -> None:
         scenario = "vapi-web-transfer"
+        # Make the disposable agent routable before even starting the source;
+        # the observer will only confirm the API-selected status.
+        ensure_connect_agent_available(self.aws, self.outputs)
         session_path = self.work / f"{scenario}-session.json"
         ready = self.work / f"{scenario}-ready.json"
         trigger = self.work / f"{scenario}-trigger.json"
@@ -944,12 +2352,8 @@ class Controller:
             env=env,
         )
         self.processes.append(source_process)
-        ready_value = self.wait_for_file(ready, 120)
-        call_id = (
-            ready_value.get("call_id") if isinstance(ready_value, Mapping) else None
-        )
-        if not isinstance(call_id, str):
-            raise QualificationError("Vapi browser did not report its call ID")
+        ready_value = validate_web_source_readiness(self.wait_for_file(ready, 120))
+        call_id = str(ready_value["call_id"])
         call = self.wait_for_vapi_call(
             assistant_id=self.outputs["VapiAssistantId"],
             started_after=started,
@@ -965,31 +2369,135 @@ class Controller:
             sip_uri=None,
         )
         private_json(session_path, session)
-        agent_process, agent_observation, _ = self.start_agent(
+        agent_process, agent_observation, _, agent_ready = self.start_agent(
             session_path, storage, scenario
         )
+        self.wait_for_agent_readiness(agent_ready, scenario)
         private_json(trigger, {"schema_version": 1, "execute": True})
         self.complete_process(source_process, "Vapi Web smoke source", 360)
         self.complete_process(agent_process, "Amazon Connect Web smoke observer", 360)
         self.verify_scenario(scenario, session, source_observation, agent_observation)
 
+    def cleanup_sip_transients(self) -> list[str]:
+        errors: list[str] = []
+        phone_absent = self.temp_phone_id is None
+        if self.vapi is not None and self.temp_phone_id is not None:
+            try:
+                self.vapi.delete("phone-number", self.temp_phone_id)
+                self.temp_phone_id = None
+                phone_absent = True
+            except QualificationError:
+                errors.append("temporary Vapi SIP endpoint deletion failed")
+        if phone_absent and self.temp_phone_journal_object is not None:
+            try:
+                self.aws.text(
+                    [
+                        "s3",
+                        "rm",
+                        self.temp_phone_journal_object,
+                        "--only-show-errors",
+                    ]
+                )
+                self.temp_phone_journal_object = None
+            except QualificationError:
+                errors.append("temporary Vapi endpoint journal deletion failed")
+        if self.temp_sip_auth_object is not None:
+            try:
+                self.aws.text(
+                    [
+                        "s3",
+                        "rm",
+                        self.temp_sip_auth_object,
+                        "--only-show-errors",
+                    ]
+                )
+                self.temp_sip_auth_object = None
+            except QualificationError:
+                errors.append("temporary Vapi SIP authentication deletion failed")
+        return errors
+
+    def write_phone_ownership_journal(self, phone_id: str, assistant_id: str) -> None:
+        bucket = self.outputs.get("ArtifactBucket")
+        if not isinstance(bucket, str) or not S3_BUCKET.fullmatch(bucket):
+            raise QualificationError("qualification artifact bucket is invalid")
+        journal = vapi_phone_ownership_journal(
+            self.args.execution_id,
+            self.args.region,
+            phone_id,
+            assistant_id,
+        )
+        target = (
+            f"s3://{bucket}/qualification/{self.args.execution_id}/"
+            "ownership/vapi-phone.json"
+        )
+        self.temp_phone_journal_object = target
+        self.runner.run(
+            [
+                "aws",
+                "s3",
+                "cp",
+                "-",
+                target,
+                "--sse",
+                "AES256",
+                "--only-show-errors",
+                "--region",
+                self.args.region,
+            ],
+            input_text=json.dumps(journal, separators=(",", ":"), sort_keys=True),
+            timeout=120,
+        )
+
     def sip_smoke(self, storage: Path, correlation_key: str) -> None:
+        primary_error: BaseException | None = None
+        try:
+            self._sip_smoke(storage, correlation_key)
+        except BaseException as error:
+            primary_error = error
+        cleanup_errors = self.cleanup_sip_transients()
+        if primary_error is not None:
+            if cleanup_errors:
+                raise QualificationError(
+                    sanitize_diagnostic(str(primary_error))
+                    + "; "
+                    + "; ".join(cleanup_errors)
+                ) from primary_error
+            raise primary_error
+        if cleanup_errors:
+            raise QualificationError("; ".join(cleanup_errors))
+
+    def _sip_smoke(self, storage: Path, correlation_key: str) -> None:
         if self.vapi is None:
             raise QualificationError("Vapi client is unavailable")
         scenario = "vapi-sip-transfer"
+        # Unlike the Web smoke, this source can ask Vapi to transfer as soon as
+        # its prompt arrives, so status selection must precede SSM dispatch.
+        ensure_connect_agent_available(self.aws, self.outputs)
+        authentication = {
+            "realm": "sip.vapi.ai",
+            "username": f"bfq_{secrets.token_hex(8)}",
+            "password": secrets.token_urlsafe(24),
+        }
         phone = self.vapi.create_phone(
-            self.args.execution_id, self.outputs["VapiAssistantId"]
+            self.args.execution_id,
+            self.outputs["VapiAssistantId"],
+            authentication,
         )
         phone_id = phone.get("id")
         sip_uri = phone.get("sipUri")
-        if (
-            not isinstance(phone_id, str)
-            or not RESOURCE_ID.fullmatch(phone_id)
-            or not isinstance(sip_uri, str)
-            or not re.fullmatch(r"sip:[A-Za-z0-9_-]{8,128}@sip\.vapi\.ai", sip_uri)
-        ):
+        expected_sip_uri = f"sip:{authentication['username']}@sip.vapi.ai"
+        if not isinstance(phone_id, str) or not RESOURCE_ID.fullmatch(phone_id):
             raise QualificationError("temporary Vapi SIP endpoint is invalid")
         self.temp_phone_id = phone_id
+        self.write_phone_ownership_journal(phone_id, self.outputs["VapiAssistantId"])
+        if sip_uri != expected_sip_uri:
+            raise QualificationError("temporary Vapi SIP endpoint is invalid")
+        wait_for_vapi_phone_active(
+            self.vapi,
+            phone_id,
+            sip_uri,
+            self.outputs["VapiAssistantId"],
+        )
         prompt = self.work / "sip-prompt.pcm"
         speech = (
             "This is an automated Bridgefu qualification. My customer name is Bridgefu Synthetic Caller. "
@@ -1018,6 +2526,23 @@ class Controller:
         )
         prefix = f"qualification/{self.args.execution_id}"
         bucket = self.outputs["ArtifactBucket"]
+        self.temp_sip_auth_object = f"s3://{bucket}/{prefix}/sip-auth.json"
+        self.runner.run(
+            [
+                "aws",
+                "s3",
+                "cp",
+                "-",
+                self.temp_sip_auth_object,
+                "--sse",
+                "AES256",
+                "--only-show-errors",
+                "--region",
+                self.args.region,
+            ],
+            input_text=json.dumps(authentication, separators=(",", ":")),
+            timeout=120,
+        )
         self.aws.text(
             [
                 "s3",
@@ -1051,6 +2576,11 @@ class Controller:
         remote_client = f"{remote_directory}/sip-client"
         remote_prompt = f"{remote_directory}/prompt.pcm"
         remote_observation = f"{remote_directory}/sip-source.json"
+        session_path = self.work / f"{scenario}-session.json"
+        agent_process, agent_observation, _, agent_ready = self.start_agent(
+            session_path, storage, scenario
+        )
+        self.wait_for_agent_readiness(agent_ready, scenario)
         commands = [
             "set -euo pipefail",
             f"install -d -m 0700 {remote_directory}",
@@ -1058,7 +2588,8 @@ class Controller:
             f"aws s3 cp s3://{bucket}/{prefix}/prompt.pcm {remote_prompt}",
             f"chmod 0700 {remote_client}",
             (
-                f"{remote_client} --sip-uri {sip_uri} --prompt-pcm {remote_prompt} "
+                f"aws s3 cp {self.temp_sip_auth_object} - --only-show-errors | "
+                f"{remote_client} --auth-stdin --sip-uri {sip_uri} --prompt-pcm {remote_prompt} "
                 f"--public-ip {public_ip} --execution-id {self.args.execution_id} "
                 f"--output {remote_observation} --timeout-seconds 240"
             ),
@@ -1066,6 +2597,10 @@ class Controller:
             f"rm -f {remote_client} {remote_prompt} {remote_observation}",
             f"rmdir {remote_directory}",
         ]
+        # Establish the discovery window before dispatching the remote client.
+        # SSM can start the SIP call before send-command returns, so taking this
+        # timestamp afterward races Vapi's server-side createdAtGe filter.
+        started = dt.datetime.now(dt.UTC)
         command_id = self.aws.text(
             [
                 "ssm",
@@ -1081,7 +2616,6 @@ class Controller:
             ]
         )
         self.ssm_commands.append(command_id)
-        started = dt.datetime.now(dt.UTC)
         call = self.wait_for_vapi_call(
             assistant_id=self.outputs["VapiAssistantId"],
             started_after=started,
@@ -1097,21 +2631,11 @@ class Controller:
             release=self.args.release,
             sip_uri=sip_uri,
         )
-        session_path = self.work / f"{scenario}-session.json"
         private_json(session_path, session)
-        agent_process, agent_observation, _ = self.start_agent(
-            session_path, storage, scenario
-        )
-        self.aws.text(
-            [
-                "ssm",
-                "wait",
-                "command-executed",
-                "--command-id",
-                command_id,
-                "--instance-id",
-                instance,
-            ],
+        wait_for_ssm_command(
+            self.aws,
+            command_id,
+            instance,
             timeout=360,
         )
         self.ssm_commands.remove(command_id)
@@ -1119,8 +2643,6 @@ class Controller:
         source_observation = self.work / f"{scenario}-source.json"
         self.aws.text(["s3", "cp", remote_output, os.fspath(source_observation)])
         self.verify_scenario(scenario, session, source_observation, agent_observation)
-        self.vapi.delete("phone-number", phone_id)
-        self.temp_phone_id = None
 
     def verify_scenario(
         self,
@@ -1172,7 +2694,7 @@ class Controller:
                 "--consistent-read",
             ]
         )
-        verify_handoff_item(
+        handoff = verify_handoff_item(
             item.get("Item") if isinstance(item, Mapping) else None, session
         )
         start_time = str(max(0, int(session["started_epoch_ms"]) - 60_000))
@@ -1204,19 +2726,43 @@ class Controller:
                 ]
             )
             try:
-                verify_log_evidence(runtime, lookup, fingerprint)
+                log_proof = verify_log_evidence(runtime, lookup, fingerprint)
                 break
             except QualificationError:
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(3)
+        checks = derive_scenario_checks(
+            scenario, source, agent, latest, handoff, log_proof
+        )
+        passed = all(checks.values())
+        if not passed:
+            failed = ", ".join(key for key, value in checks.items() if not value)
+            raise QualificationError(
+                f"scenario evidence did not converge: {sanitize_diagnostic(failed, 512)}"
+            )
         self.scenario_evidence.append(
             {
                 "id": scenario,
                 "source_observation_sha256": sha256_file(source_path),
                 "agent_observation_sha256": sha256_file(agent_path),
-                "checks": dict(CHECKS),
-                "passed": True,
+                "runtime_security_evidence_sha256": log_proof[
+                    "vapi_destination_security_evidence_sha256"
+                ],
+                "runtime_security_media_profile": log_proof[
+                    "vapi_destination_media_profile"
+                ],
+                "runtime_security_media_keying": log_proof[
+                    "vapi_destination_media_keying"
+                ],
+                "runtime_security_media_suite": log_proof[
+                    "vapi_destination_media_suite"
+                ],
+                "runtime_security_srtp_negotiated": log_proof[
+                    "vapi_destination_srtp_negotiated"
+                ],
+                "checks": checks,
+                "passed": passed,
             }
         )
 
@@ -1254,27 +2800,89 @@ class Controller:
             },
         )
 
+    def record_failure_evidence(self, error: BaseException) -> None:
+        """Persist bounded stack diagnostics before any disposable cleanup."""
+        stack_status: str | None = None
+        failed_events: list[dict[str, Any]] = []
+        capture_errors: list[str] = []
+        if self.created_stack:
+            try:
+                description = self.aws.json(
+                    [
+                        "cloudformation",
+                        "describe-stacks",
+                        "--stack-name",
+                        self.stack_name,
+                    ],
+                    timeout=120,
+                )
+                stacks = (
+                    description.get("Stacks")
+                    if isinstance(description, Mapping)
+                    else None
+                )
+                if isinstance(stacks, list) and len(stacks) == 1:
+                    observed_status = stacks[0].get("StackStatus")
+                    if isinstance(observed_status, str):
+                        stack_status = sanitize_diagnostic(observed_status, 128)
+            except QualificationError as capture:
+                capture_errors.append(sanitize_diagnostic(str(capture), 256))
+            failed_events, event_error = collect_cloudformation_failure_events(
+                self.aws, self.stack_name
+            )
+            if event_error is not None:
+                capture_errors.append(event_error)
+        capture_error = (
+            sanitize_diagnostic("; ".join(capture_errors), 512)
+            if capture_errors
+            else None
+        )
+        value: dict[str, Any] = {
+            "schema_version": 1,
+            "producer": PRODUCER,
+            "producer_revision_sha256": sha256_file(Path(__file__)),
+            "execution_id": self.args.execution_id,
+            "region": self.args.region,
+            "stack_name": self.stack_name,
+            "observed_at": utc_now(),
+            "phase": self.phase,
+            "summary": sanitize_diagnostic(str(error)),
+            "cloudformation": {
+                "observed": stack_status is not None or bool(failed_events),
+                "stack_status": stack_status,
+                "failed_events": failed_events,
+                "capture_error": capture_error,
+            },
+            "redacted": True,
+        }
+        validate_schema(value, "failure-evidence-v1.schema.json")
+        private_json(self.args.output / "failure-evidence.json", value)
+
     def cleanup(self) -> dict[str, Any]:
         errors = self.stop_active_work()
-        if self.vapi is not None and self.temp_phone_id is not None:
+        errors.extend(self.cleanup_sip_transients())
+        ownership_recovery_required = (
+            self.temp_phone_id is not None or self.temp_phone_journal_object is not None
+        )
+        if ownership_recovery_required and not any(
+            "Vapi" in error or "journal" in error for error in errors
+        ):
+            errors.append("temporary Vapi endpoint ownership cleanup is incomplete")
+        if self.outputs.get("ArtifactBucket") and not ownership_recovery_required:
             try:
-                self.vapi.delete("phone-number", self.temp_phone_id)
-            except QualificationError:
-                errors.append("temporary Vapi SIP endpoint deletion failed")
-        if self.outputs.get("ArtifactBucket"):
-            try:
-                self.aws.text(
-                    [
-                        "s3",
-                        "rm",
-                        f"s3://{self.outputs['ArtifactBucket']}/qualification/{self.args.execution_id}/",
-                        "--recursive",
-                    ]
+                purge_object_versions_exact(
+                    self.aws,
+                    self.outputs["ArtifactBucket"],
+                    f"qualification/{self.args.execution_id}/",
                 )
             except QualificationError:
-                errors.append("qualification object cleanup failed")
-        if self.created_stack and self.aws.exists(
-            ["cloudformation", "describe-stacks", "--stack-name", self.stack_name]
+                errors.append("qualification object version cleanup failed")
+        if (
+            self.created_stack
+            and not ownership_recovery_required
+            and self.aws.exists(
+                ["cloudformation", "describe-stacks", "--stack-name", self.stack_name]
+            )
         ):
             try:
                 self.aws.text(
@@ -1317,27 +2925,39 @@ class Controller:
             )
         objects_absent = True
         if self.outputs.get("ArtifactBucket"):
-            listed = self.aws.json(
-                [
-                    "s3api",
-                    "list-objects-v2",
-                    "--bucket",
+            try:
+                objects_absent = not list_object_versions_exact(
+                    self.aws,
                     self.outputs["ArtifactBucket"],
-                    "--prefix",
                     f"qualification/{self.args.execution_id}/",
-                    "--max-keys",
-                    "1",
-                ]
-            )
-            objects_absent = isinstance(listed, Mapping) and listed.get("KeyCount") == 0
-        vapi_absent = True
+                )
+            except QualificationError:
+                objects_absent = False
+                errors.append("qualification object version proof failed")
+        private_dns_absent = True
+        if self.outputs.get("QualificationSipPrivateHostedZoneId"):
+            try:
+                private_dns_absent = not self.aws.exists(
+                    [
+                        "route53",
+                        "get-hosted-zone",
+                        "--id",
+                        self.outputs["QualificationSipPrivateHostedZoneId"],
+                    ]
+                )
+            except QualificationError:
+                private_dns_absent = False
+                errors.append("qualification private DNS proof failed")
+        ids = [
+            ("assistant", self.outputs.get("VapiAssistantId")),
+            ("tool", self.outputs.get("VapiPrepareToolId")),
+            ("credential", self.outputs.get("VapiWebhookCredentialId")),
+            ("phone-number", self.temp_phone_id),
+        ]
+        vapi_absent = self.vapi is not None or not any(
+            isinstance(resource_id, str) for _, resource_id in ids
+        )
         if self.vapi is not None:
-            ids = [
-                ("assistant", self.outputs.get("VapiAssistantId")),
-                ("tool", self.outputs.get("VapiPrepareToolId")),
-                ("credential", self.outputs.get("VapiWebhookCredentialId")),
-                ("phone-number", self.temp_phone_id),
-            ]
             for resource, resource_id in ids:
                 if (
                     isinstance(resource_id, str)
@@ -1355,7 +2975,7 @@ class Controller:
             "temporary_vapi_resources_absent": vapi_absent,
             "test_credentials_absent": secret_absent,
             "qualification_objects_absent": objects_absent,
-            "preexisting_connect_resources_mutated": False,
+            "qualification_private_dns_absent": private_dns_absent,
             "redacted": True,
         }
         private_json(self.args.output / "zero-state.json", zero)
@@ -1371,25 +2991,51 @@ class Controller:
         primary_error: BaseException | None = None
         zero: dict[str, Any] | None = None
         try:
+            self.phase = "input_validation"
             self.validate_inputs()
+            self.phase = "preflight"
             self.preflight()
+            self.phase = "cloudformation_deploy"
             self.deploy()
+            self.phase = "web_site_build"
             site, site_digest = self.build_site()
+            self.phase = "connect_authentication"
             storage = self.authenticate_agent()
+            self.phase = "direct_secure_preflight"
+            self.direct_secure_preflight(storage)
+            self.phase = "credential_initialization"
+            self.initialize_vapi()
             correlation_key = self.aws.secret(self.outputs["CorrelationKeySecretArn"])
+            self.phase = "vapi_web_transfer"
             self.web_smoke(site, site_digest, storage, correlation_key)
+            self.phase = "vapi_sip_transfer"
             self.sip_smoke(storage, correlation_key)
         except BaseException as error:
             primary_error = error
+            try:
+                self.record_failure_evidence(error)
+            except BaseException as capture_error:
+                if isinstance(primary_error, QualificationError):
+                    primary_error = QualificationError(
+                        f"{primary_error}; failure evidence capture failed: "
+                        + sanitize_diagnostic(str(capture_error), 512)
+                    )
         try:
             retain_environment = (
-                primary_error is not None and self.args.retain_on_failure
+                primary_error is not None
+                and self.args.retain_on_failure
+                and (
+                    not self.secure_preflight_cleanup_required
+                    or self.secure_preflight_cleanup_passed
+                )
             )
             if retain_environment:
+                self.phase = "retained_after_failure"
                 self.stop_active_work()
                 self.record_retained_environment()
             else:
                 try:
+                    self.phase = "cleanup"
                     zero = self.cleanup()
                 except BaseException as error:
                     if primary_error is None:
@@ -1402,18 +3048,24 @@ class Controller:
             raise QualificationError(
                 "qualification failed unexpectedly"
             ) from primary_error
-        if zero is None or {item["id"] for item in self.scenario_evidence} != set(
-            SCENARIOS
+        if (
+            zero is None
+            or self.secure_preflight_evidence is None
+            or {item["id"] for item in self.scenario_evidence} != set(SCENARIOS)
+            or len(self.scenario_evidence) != len(SCENARIOS)
         ):
-            raise QualificationError("both release smokes did not pass")
+            raise QualificationError(
+                "secure preflight and both release smokes did not pass"
+            )
         evidence = {
-            "schema_version": 1,
+            "schema_version": 2,
             "release": self.args.release,
             "execution_id": self.args.execution_id,
             "region": self.args.region,
             "started_at": self.started_at,
             "ended_at": utc_now(),
             "bridgefu_commit": self.bridgefu_lock["commit"],
+            "secure_preflight": self.secure_preflight_evidence,
             "scenarios": sorted(self.scenario_evidence, key=lambda item: item["id"]),
             "teardown": {
                 "customer_stack_absent": zero["customer_stack_absent"],
@@ -1423,10 +3075,13 @@ class Controller:
                 ],
                 "test_credentials_absent": zero["test_credentials_absent"],
                 "qualification_objects_absent": zero["qualification_objects_absent"],
+                "qualification_private_dns_absent": zero[
+                    "qualification_private_dns_absent"
+                ],
             },
             "redacted": True,
         }
-        validate_schema(evidence, "evidence-v1.schema.json")
+        validate_schema(evidence, "evidence-v2.schema.json")
         private_json(self.args.output / "evidence.json", evidence)
 
 
@@ -1446,6 +3101,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--cloudformation-role-arn", required=True)
     value.add_argument("--bridgefu-checkout", required=True, type=Path)
     value.add_argument("--sip-client", required=True, type=Path)
+    value.add_argument("--direct-secure-probe", required=True, type=Path)
     value.add_argument("--instance-type", default="t4g.large")
     value.add_argument(
         "--retain-on-failure",

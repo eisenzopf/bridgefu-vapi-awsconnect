@@ -1,0 +1,16 @@
+[Unit]
+Description=Rotate Bridgefu runtime logs
+Documentation=https://github.com/eisenzopf/bridgefu
+ConditionPathExists=/var/log/bridgefu/bridgefu.log
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/logrotate --state /var/lib/bridgefu/logrotate.status /etc/logrotate.d/bridgefu
+User=root
+Group=root
+UMask=0027
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/bridgefu /var/log/bridgefu
