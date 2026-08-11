@@ -11,8 +11,12 @@ aws secretsmanager get-secret-value \
   --region "$AWS_REGION" \
   --secret-id "$CERTIFICATE_PASSPHRASE_SECRET_ARN" \
   --query SecretString \
-  --output text > "$work/passphrase"
-if (( $(wc -c < "$work/passphrase") < 32 )); then
+  --output json \
+  | jq -erj \
+    'if type == "string" and (test("[\\r\\n]") | not) then . else error("invalid certificate passphrase") end' \
+    > "$work/passphrase"
+passphrase_length="$(wc -c < "$work/passphrase")"
+if (( passphrase_length < 32 || passphrase_length > 128 )); then
   echo "ACM export passphrase is invalid" >&2
   exit 1
 fi

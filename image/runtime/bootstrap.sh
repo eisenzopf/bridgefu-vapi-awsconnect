@@ -71,6 +71,7 @@ chown root:haproxy /etc/haproxy/haproxy.cfg
 
 systemctl daemon-reload
 if [[ "$BRIDGEFU_SIP_SECURITY" == sips_srtp ]]; then
+  record_step certificate-refresh
   /usr/local/sbin/bridgefu-cert-refresh
 fi
 record_step proxy-start

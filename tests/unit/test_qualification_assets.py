@@ -107,6 +107,20 @@ class QualificationAssetTests(unittest.TestCase):
             "cargo build --locked --release --jobs 4 --bin bridgefu", install
         )
 
+    def test_certificate_passphrase_preserves_exact_secret_bytes(self):
+        refresh = (ROOT / "image" / "runtime" / "bridgefu-cert-refresh").read_text()
+        self.assertIn("--output json", refresh)
+        self.assertIn("jq -erj", refresh)
+        self.assertNotIn('--output text > "$work/passphrase"', refresh)
+        self.assertIn('passphrase_length="$(wc -c < "$work/passphrase")"', refresh)
+
+    def test_bootstrap_reports_certificate_refresh_failures_exactly(self):
+        bootstrap = (ROOT / "image" / "runtime" / "bootstrap.sh").read_text()
+        marker = "record_step certificate-refresh"
+        refresh = "/usr/local/sbin/bridgefu-cert-refresh"
+        self.assertIn(marker, bootstrap)
+        self.assertLess(bootstrap.index(marker), bootstrap.index(refresh))
+
     def test_image_installs_and_verifies_opus_build_and_runtime_dependencies(self):
         install = (ROOT / "image" / "install.sh").read_text()
         package_block = install.split("sudo dnf install -y", 1)[1].split(
@@ -141,6 +155,7 @@ class QualificationAssetTests(unittest.TestCase):
         )[0]
         self.assertIn("qualification/controller.py run", qualification)
         self.assertIn("bridgefu-vapi-sip-smoke", qualification)
+        self.assertNotIn("--retain-on-failure", qualification)
 
     def test_controller_proves_and_removes_every_disposable_resource_class(self):
         controller = (QUALIFICATION / "controller.py").read_text()
