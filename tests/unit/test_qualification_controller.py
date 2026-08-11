@@ -16,6 +16,14 @@ SPEC.loader.exec_module(CONTROLLER)
 
 
 class QualificationControllerTests(unittest.TestCase):
+    def test_failed_environment_retention_must_be_explicit(self):
+        self.assertEqual(
+            CONTROLLER.create_failure_arguments(False), ["--on-failure", "DELETE"]
+        )
+        self.assertEqual(
+            CONTROLLER.create_failure_arguments(True), ["--disable-rollback"]
+        )
+
     def test_correlation_is_exact_deterministic_bf1_hmac(self):
         value = CONTROLLER.derive_correlation_id(
             "k" * 32, "bfq-test1234", "org_1234", "call_1234"

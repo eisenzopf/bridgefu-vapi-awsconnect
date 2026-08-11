@@ -581,6 +581,12 @@ def call_contains_transfer(value: Any) -> bool:
     )
 
 
+def create_failure_arguments(retain_on_failure: bool) -> list[str]:
+    if retain_on_failure:
+        return ["--disable-rollback"]
+    return ["--on-failure", "DELETE"]
+
+
 class Controller:
     def __init__(
         self, args: argparse.Namespace, runner: CommandRunner | None = None
@@ -680,8 +686,7 @@ class Controller:
             "CAPABILITY_NAMED_IAM",
             "--role-arn",
             self.args.cloudformation_role_arn,
-            "--on-failure",
-            "DELETE",
+            *create_failure_arguments(self.args.retain_on_failure),
             "--parameters",
             *[
                 f"ParameterKey={key},ParameterValue={value}"
@@ -1215,7 +1220,7 @@ class Controller:
             }
         )
 
-    def cleanup(self) -> dict[str, Any]:
+    def stop_active_work(self) -> list[str]:
         errors: list[str] = []
         for process in self.processes:
             if process.poll() is None:
@@ -1232,6 +1237,25 @@ class Controller:
             except QualificationError:
                 errors.append("qualification SSM command cancellation failed")
         self.ssm_commands.clear()
+        return errors
+
+    def record_retained_environment(self) -> None:
+        private_json(
+            self.args.output / "retained-state.json",
+            {
+                "schema_version": 1,
+                "producer": PRODUCER,
+                "producer_revision_sha256": sha256_file(Path(__file__)),
+                "execution_id": self.args.execution_id,
+                "region": self.args.region,
+                "stack_name": self.stack_name,
+                "observed_at": utc_now(),
+                "redacted": True,
+            },
+        )
+
+    def cleanup(self) -> dict[str, Any]:
+        errors = self.stop_active_work()
         if self.vapi is not None and self.temp_phone_id is not None:
             try:
                 self.vapi.delete("phone-number", self.temp_phone_id)
@@ -1358,10 +1382,18 @@ class Controller:
         except BaseException as error:
             primary_error = error
         try:
-            zero = self.cleanup()
-        except BaseException as error:
-            if primary_error is None:
-                primary_error = error
+            retain_environment = (
+                primary_error is not None and self.args.retain_on_failure
+            )
+            if retain_environment:
+                self.stop_active_work()
+                self.record_retained_environment()
+            else:
+                try:
+                    zero = self.cleanup()
+                except BaseException as error:
+                    if primary_error is None:
+                        primary_error = error
         finally:
             shutil.rmtree(self.work, ignore_errors=True)
         if primary_error is not None:
@@ -1415,6 +1447,14 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--bridgefu-checkout", required=True, type=Path)
     value.add_argument("--sip-client", required=True, type=Path)
     value.add_argument("--instance-type", default="t4g.large")
+    value.add_argument(
+        "--retain-on-failure",
+        action="store_true",
+        help=(
+            "disable CloudFormation rollback and retain disposable AWS and Vapi "
+            "resources after a failed troubleshooting run"
+        ),
+    )
     value.add_argument("--output", type=Path, default=Path("target/qualification"))
     return value
 
