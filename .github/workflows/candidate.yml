@@ -29,12 +29,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: qualification/package-lock.json
       - uses: hashicorp/setup-packer@main
         with: {version: '1.12.0'}
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_CANDIDATE_ROLE_ARN }}
-          aws-region: us-west-2
       - name: Resolve immutable candidate inputs
         id: inputs
         env:
@@ -58,6 +59,23 @@ jobs:
             echo "bridgefu_commit=$bridgefu_commit"
             echo "bridgefu_lock=$bridgefu_lock"
           } >> "$GITHUB_OUTPUT"
+      - name: Build the immutable qualification demo site before AWS mutation
+        run: |
+          set -euo pipefail
+          python qualification/build_demo_site.py \
+            --output target/candidate/qualification-demo-site
+          jq -e '
+            .schema_version == 1 and
+            .producer == "bridgefu-vapi-awsconnect-qualification-site@1" and
+            (.archive_sha256 | test("^[0-9a-f]{64}$"))' \
+            target/candidate/qualification-demo-site/manifest.json >/dev/null
+          test "$(sha256sum target/candidate/qualification-demo-site/demo-site.zip |
+            awk '{print $1}')" = "$(jq -r .archive_sha256 \
+            target/candidate/qualification-demo-site/manifest.json)"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CANDIDATE_ROLE_ARN }}
+          aws-region: us-west-2
       - name: Journal ownership and prove the version is unused
         env:
           VERSION: ${{ steps.inputs.outputs.version }}
@@ -445,6 +463,12 @@ jobs:
             bridgefu-vapi-sip-smoke
           upload_candidate_object target/candidate/bridgefu-direct-secure-probe \
             bridgefu-direct-secure-probe
+          upload_candidate_object \
+            target/candidate/qualification-demo-site/demo-site.zip \
+            qualification/demo-site.zip
+          upload_candidate_object \
+            target/candidate/qualification-demo-site/manifest.json \
+            qualification/demo-site-manifest.json
           upload_candidate_object target/candidate/region-release.json \
             region-release.json
           upload_candidate_object target/candidate/staged-objects.json \
@@ -520,6 +544,7 @@ jobs:
           VAPI_PUBLIC_KEY: ${{ secrets.VAPI_PUBLIC_KEY }}
           VAPI_SECRET_WEST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_WEST_2 || vars.VAPI_API_KEY_SECRET_ARN }}
           VAPI_SECRET_EAST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_EAST_1 }}
+          CANDIDATE_ID: ${{ needs.build-private-candidate.outputs.candidate_id }}
         run: |
           set -euo pipefail
           chmod 0700 \
@@ -534,6 +559,34 @@ jobs:
           esac
           test -n "$vapi_secret_arn"
           execution_id="bfq-${short_region}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          download_candidate_asset() {
+            relative="$1"
+            destination="$2"
+            key="candidates/$CANDIDATE_ID/$relative"
+            record="$(jq -cer --arg key "$key" \
+              '[.candidate_objects[] | select(.region == "us-east-1" and
+                .key == $key)] | if length == 1 then .[0] else error(
+                "candidate asset is not uniquely journaled") end' \
+              target/candidate/state.json)"
+            aws s3api get-object --region us-east-1 \
+              --bucket "$(jq -r .bucket <<<"$record")" --key "$key" \
+              --version-id "$(jq -r .version_id <<<"$record")" \
+              "$destination" >/dev/null
+            test "$(sha256sum "$destination" | awk '{print $1}')" = \
+              "$(jq -r .sha256 <<<"$record")"
+            test "$(wc -c < "$destination" | tr -d ' ')" = \
+              "$(jq -r .size_bytes <<<"$record")"
+          }
+          mkdir -p target/qualification-inputs
+          download_candidate_asset qualification/demo-site.zip \
+            target/qualification-inputs/demo-site.zip
+          download_candidate_asset qualification/demo-site-manifest.json \
+            target/qualification-inputs/demo-site-manifest.json
+          demo_site_sha256="$(jq -er '.archive_sha256 |
+            select(test("^[0-9a-f]{64}$"))' \
+            target/qualification-inputs/demo-site-manifest.json)"
+          test "$(sha256sum target/qualification-inputs/demo-site.zip |
+            awk '{print $1}')" = "$demo_site_sha256"
           template_version="$(jq -er --arg key \
             "releases/$VERSION/qualification/cloudformation/template.yaml" \
             '[.objects[] | select(.region == "us-east-1" and .key == $key)] |
@@ -555,6 +608,8 @@ jobs:
             --bridgefu-checkout target/pinned-bridgefu \
             --sip-client target/candidate/bridgefu-vapi-sip-smoke \
             --direct-secure-probe target/candidate/bridgefu-direct-secure-probe \
+            --demo-site-archive target/qualification-inputs/demo-site.zip \
+            --demo-site-sha256 "$demo_site_sha256" \
             --output "target/live-qualification-$REGION"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -672,14 +727,17 @@ jobs:
                  "temporary_vapi_resources_absent",
                  "test_credentials_absent",
                  "qualification_objects_absent",
-                 "qualification_private_dns_absent"
+                 "qualification_private_dns_absent",
+                 "qualification_acm_validation_records_absent"
                ]))' "$evidence" >/dev/null
             jq -e '(.customer_stack_absent == true and
               .connect_instance_absent == true and
               .temporary_vapi_resources_absent == true and
               .test_credentials_absent == true and
               .qualification_objects_absent == true and
-              .qualification_private_dns_absent == true and .redacted == true)' \
+              .qualification_private_dns_absent == true and
+              .qualification_acm_validation_records_absent == true and
+              .redacted == true)' \
               "$zero" >/dev/null
           done
           account_id="$(aws sts get-caller-identity --query Account --output text)"
@@ -759,6 +817,12 @@ jobs:
           test -n "$manifest_record"
           west_evidence_sha="$(sha256sum target/qualification/us-west-2/evidence.json | awk '{print $1}')"
           east_evidence_sha="$(sha256sum target/qualification/us-east-1/evidence.json | awk '{print $1}')"
+          qualification_assets="$(jq -cer --arg prefix \
+            "candidates/$CANDIDATE_ID/qualification/" \
+            '[.candidate_objects[] | select(.key | startswith($prefix))] |
+             if length == 2 then . else error(
+               "immutable qualification assets are incomplete") end' \
+            target/candidate/state.json)"
           jq -n \
             --arg schema bridgefu-qualified-candidate-receipt/v1 \
             --arg candidate_id "$CANDIDATE_ID" \
@@ -773,6 +837,7 @@ jobs:
             --argjson manifest "$manifest_record" \
             --argjson regional_amis "$(cat target/candidate/region-release.json)" \
             --argjson release_objects "$(jq '.objects' target/candidate/staged-objects.json)" \
+            --argjson qualification_assets "$qualification_assets" \
             --arg west_evidence_sha "$west_evidence_sha" \
             --arg east_evidence_sha "$east_evidence_sha" \
             --arg west_execution "$(jq -r .execution_id target/qualification/us-west-2/evidence.json)" \
@@ -791,6 +856,7 @@ jobs:
               workflow: {run_id: $workflow_run_id, run_attempt: $workflow_run_attempt},
               signing_key_arn: $signing_key_arn, manifest: $manifest,
               regional_amis: $regional_amis, release_objects: $release_objects,
+              qualification_assets: $qualification_assets,
               qualification: {
                 "us-west-2": {execution_id: $west_execution,
                   evidence_sha256: $west_evidence_sha,
@@ -807,6 +873,15 @@ jobs:
               }}' > target/candidate/qualified-receipt.json
           jq -e '
             .schema == "bridgefu-qualified-candidate-receipt/v1" and
+            (.qualification_assets | type == "array" and length == 2) and
+            ([.qualification_assets[].key | split("/")[-1]] | sort) ==
+              ["demo-site-manifest.json","demo-site.zip"] and
+            ([.qualification_assets[] |
+              .region == "us-east-1" and
+              (.sha256 | test("^[0-9a-f]{64}$")) and
+              (.size_bytes | type == "number" and . > 0)] | all) and
+            ([.qualification_assets[] | [.region, .bucket, .key, .version_id] |
+              join("\u0000")] | length == (unique | length)) and
             (.qualification | keys | sort) == ["us-east-1","us-west-2"] and
             ([.qualification[] |
               .evidence_schema_version == 2 and

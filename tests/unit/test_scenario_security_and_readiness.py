@@ -308,6 +308,7 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
             "test_credentials_absent": True,
             "qualification_objects_absent": True,
             "qualification_private_dns_absent": True,
+            "qualification_acm_validation_records_absent": True,
             "redacted": True,
         }
         CONTROLLER.validate_schema(value, "zero-state-observation-v1.schema.json")

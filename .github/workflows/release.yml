@@ -73,6 +73,15 @@ jobs:
              .signing_key_arn == $key and
              (.candidate_id | test("^candidate-[A-Za-z0-9.-]{8,96}$")) and
              (.regional_amis | keys | sort) == ["us-east-1","us-west-2"] and
+             (.qualification_assets | type == "array" and length == 2) and
+             ([.qualification_assets[].key | split("/")[-1]] | sort) ==
+               ["demo-site-manifest.json","demo-site.zip"] and
+             ([.qualification_assets[] |
+               .region == "us-east-1" and
+               (.sha256 | test("^[0-9a-f]{64}$")) and
+               (.size_bytes | type == "number" and . > 0)] | all) and
+             ([.qualification_assets[] | [.region, .bucket, .key, .version_id] |
+               join("\u0000")] | length == (unique | length)) and
              (.qualification | keys | sort) == ["us-east-1","us-west-2"] and
              (.release_objects | length > 0) and
              ([.release_objects[] | [.region, .bucket, .key, .version_id] |

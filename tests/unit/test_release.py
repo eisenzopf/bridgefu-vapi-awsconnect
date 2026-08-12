@@ -34,7 +34,6 @@ class ReleaseContractTests(unittest.TestCase):
                 "PublicHostedZoneId",
                 "SipHostname",
                 "VapiApiKeySecretArn",
-                "VapiRegion",
                 "VapiModel",
                 "VapiVoiceId",
                 "ScreenPopFieldsJson",
@@ -43,7 +42,6 @@ class ReleaseContractTests(unittest.TestCase):
                 "MaxConcurrentCalls",
                 "LogRetentionDays",
                 "AlarmEmail",
-                "VpcCidr",
                 "DataRetentionMode",
                 "SipSecurity",
             },
@@ -261,7 +259,11 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("!Equals [!Ref SipSecurity, sips_optional_srtp]", safety_rule)
         self.assertIn("!Equals [!Ref SipSecurity, sips_srtp]", safety_rule)
         self.assertIn("!Equals [!Ref DataRetentionMode, TestDelete]", safety_rule)
-        self.assertEqual(root.count("SipSecurity: !Ref SipSecurity"), 3)
+        self.assertEqual(root.count("SipSecurity: !Ref SipSecurity"), 1)
+        self.assertEqual(
+            root.count("SipSecurity: !GetAtt Configuration.Outputs.SipSecurity"),
+            3,
+        )
         self.assertIn("Default: sips_optional_srtp", qualification)
         self.assertIn(
             "AllowedValues: [sips_optional_srtp, sips_srtp, sip_rtp]",
@@ -630,6 +632,7 @@ class ReleaseContractTests(unittest.TestCase):
             "test_credentials_absent": True,
             "qualification_objects_absent": True,
             "qualification_private_dns_absent": True,
+            "qualification_acm_validation_records_absent": True,
             "redacted": True,
         }
         valid_zero = subprocess.run(  # noqa: S603
@@ -834,8 +837,8 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn(".name == $name", reaper)
         self.assertIn("--request DELETE", reaper)
         self.assertIn('test "$status" = 404', reaper)
-        self.assertNotIn("/phone-number?", reaper)
-        self.assertNotIn("list phone", reaper.lower())
+        self.assertIn("/phone-number?limit=100", reaper)
+        self.assertIn('type == "array" and length < 100', reaper)
         self.assertNotIn('echo "$vapi_key"', reaper)
         policy = (ROOT / "publisher" / "oidc-role.yaml").read_text()
         recovery = policy.split("  RecoveryRole:\n", 1)[1].split("\nOutputs:\n", 1)[0]
@@ -876,7 +879,7 @@ class ReleaseContractTests(unittest.TestCase):
         root = (ROOT / "cloudformation" / "template.yaml").read_text()
         nested = (ROOT / "cloudformation" / "nested" / "vapi.yaml").read_text()
         self.assertIn(
-            "RetainVapiResourcesOnDelete: !If [RetainCustomerData, 'true', 'false']",
+            "RetainVapiResourcesOnDelete: !GetAtt Configuration.Outputs.RetainVapiResourcesOnDelete",
             root,
         )
         self.assertIn(

@@ -161,10 +161,13 @@ class SecurePreflightGateTests(unittest.TestCase):
             region="us-west-2",
             release="1.2.3",
             hosted_zone_id="Z1234",
+            hosted_zone_name="example.test",
             cloudformation_role_arn=("arn:aws:iam::123456789012:role/qualification"),
             template_url="https://example.test/template.yaml",
             sip_client=sip,
             direct_secure_probe=probe,
+            demo_site_archive=probe,
+            demo_site_sha256=CONTROLLER.sha256_file(probe),
             bridgefu_checkout=checkout,
         )
         controller.bridgefu_lock = {
@@ -487,6 +490,7 @@ class SecurePreflightGateTests(unittest.TestCase):
                 "test_credentials_absent": True,
                 "qualification_objects_absent": True,
                 "qualification_private_dns_absent": True,
+                "qualification_acm_validation_records_absent": True,
             },
             "redacted": True,
         }

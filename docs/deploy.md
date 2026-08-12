@@ -5,7 +5,8 @@ assistant and leaves every existing assistant and customer contact flow alone.
 
 ## 1. Choose the AWS region
 
-The first release supports the two US Amazon Connect regions:
+The first release supports Vapi's US service and the two US Amazon Connect
+regions:
 
 - US West (Oregon), `us-west-2`
 - US East (N. Virginia), `us-east-1`
@@ -15,6 +16,9 @@ Lambda, DynamoDB, and the stack are all created there. If you are creating a
 new Connect instance for a Vapi US organization, prefer **US West (Oregon)**.
 Vapi's published US SIP signaling addresses are in AWS's Oregon region, so that
 choice avoids an additional cross-region network leg.
+
+There is no Vapi-region option in this release. The stack always uses Vapi's US
+API and its two published US signaling addresses.
 
 This integration uses Vapi's public SIP service. The template does not create
 VPC peering to Vapi. If Vapi offers private connectivity for your organization,
@@ -47,9 +51,10 @@ can read the key, and no stack output or log contains it.
 
 ## 4. Launch CloudFormation
 
-The public release link will be enabled after the first signed release:
+The public release link is updated only after a signed release passes live
+qualification in both supported AWS regions:
 
-- **[Launch Bridgefu with CloudFormation](https://console.aws.amazon.com/cloudformation/home#/stacks/create/review?stackName=bridgefu-vapi-connect&templateURL=https%3A%2F%2Fbridgefu-vapi-awsconnect-us-east-1.s3.us-east-1.amazonaws.com%2Flatest%2Fcloudformation%2Ftemplate.yaml)**
+- **[Launch Bridgefu with CloudFormation](https://console.aws.amazon.com/cloudformation/home#/stacks/create/review?templateURL=https%3A%2F%2Fbridgefu-vapi-awsconnect-225478700523-us-east-1.s3.us-east-1.amazonaws.com%2Flatest%2Fcloudformation%2Ftemplate.yaml&stackName=bridgefu-vapi-connect&param_DeploymentId=support&param_InstanceType=t4g.large)**
 
 Use the normal AWS region selector to choose the region containing your Connect
 instance before creating the stack. The template reads that selection through
@@ -88,18 +93,28 @@ used with production retention.
 | Vapi | Private-key secret ARN | Model `gpt-4.1-mini`, voice `Elliot` |
 | Screen pop | — | Four fields, no alternate routing, one-hour TTL |
 | Operations | — | 100 calls, 30-day logs, no alarm email |
-| Network | — | Dedicated `10.42.0.0/16` VPC, SIPS/TLS with SRTP preferred, and region-matched Vapi firewall rules |
-| Retention | — | Retain DynamoDB, audit data, and Vapi resources on deletion |
+| Network | SIP security mode | Dedicated fixed `10.42.0.0/16` VPC and Vapi US firewall rules |
+| Retention | Production or disposable mode | Retain DynamoDB context, the runtime data volume, backups, and Vapi resources on deletion |
 
 The EC2 choices are `t4g.medium`, `t4g.large`, `t4g.xlarge`,
 `c7g.large`, `c7g.xlarge`, `m7g.large`, and `m7g.xlarge`. Use
 `TestDelete` retention only for disposable qualification stacks; it removes the
 Vapi template resources and retained AWS data during cleanup.
 
+The dedicated VPC CIDR is fixed in v1 and is not a customer parameter. This
+avoids accepting a VPC value that does not match the template's four bounded
+subnets. `DataRetentionMode` is also fixed for the lifetime of a stack; create a
+different stack instead of changing an existing production stack to
+`TestDelete`.
+
 ## 5. Customize the new Vapi assistant
 
 Open the stack **Outputs** and copy `VapiAssistantId`. Find that assistant in
 Vapi and replace its placeholder business instructions.
+
+The stack creates the new assistant, its Bridgefu preparation tool, and its
+webhook credential. It deliberately does **not** create, reassign, or delete a
+customer Vapi phone number or SIP endpoint.
 
 Keep these rules in the prompt:
 
@@ -113,9 +128,34 @@ The preparation tool and destination-less transfer tool are already attached.
 Do not add a telephone or SIP destination to the transfer tool; the authenticated
 AWS transfer endpoint supplies a one-time destination.
 
-## 6. Verify the deployment
+## 6. Choose how calls enter Vapi
 
-1. Place a test call to the new Vapi assistant.
+For a quick prompt-and-tool check, use the assistant's test-call control in the
+Vapi dashboard. This does not prove that your production SIP ingress reaches
+the assistant.
+
+For the complete SIP path, use an existing Vapi phone number or Vapi SIP
+endpoint:
+
+1. In Vapi, open a nonproduction phone number or SIP endpoint that you control.
+2. Record its currently assigned assistant so you can restore it.
+3. Assign it to the assistant identified by the stack's `VapiAssistantId`
+   output.
+4. Call that number or SIP URI from your SIP client and verify the transfer.
+
+If you do not already have an endpoint, create one in Vapi first, then assign
+the new Bridgefu template assistant. Keep endpoint creation and ownership in
+Vapi; CloudFormation will not remove it when this stack is deleted.
+
+After the nonproduction call passes, move production traffic by assigning the
+intended existing Vapi phone number or SIP endpoint to the same assistant.
+Reassign the prior assistant to roll back. Reassigning an in-use endpoint
+changes where its next calls go, so make that cutover in a reviewed maintenance
+window.
+
+## 7. Verify the deployment
+
+1. Place a test call through the entry method chosen above.
 2. Ask for a person and provide the four default fields.
 3. Confirm the transfer.
 4. Verify the Amazon Connect agent sees the screen pop before the wrapper sends

@@ -126,6 +126,15 @@ jobs:
             '.schema == "bridgefu-qualified-candidate-receipt/v1" and
              .version == $version and .repository.commit == $commit and
              .signing_key_arn == $signing_key and
+             (.qualification_assets | type == "array" and length == 2) and
+             ([.qualification_assets[].key | split("/")[-1]] | sort) ==
+               ["demo-site-manifest.json","demo-site.zip"] and
+             ([.qualification_assets[] |
+               .region == "us-east-1" and
+               (.sha256 | test("^[0-9a-f]{64}$")) and
+               (.size_bytes | type == "number" and . > 0)] | all) and
+             ([.qualification_assets[] | [.region, .bucket, .key, .version_id] |
+               join("\u0000")] | length == (unique | length)) and
              (.qualification | keys | sort) == ["us-east-1","us-west-2"] and
              ([.qualification[] |
                .evidence_schema_version == 2 and
@@ -154,6 +163,34 @@ jobs:
           test "$(jq -r .Metadata.sha256 <<<"$head")" = "$expected_sha"
           test "$(jq -r '.Metadata["candidate-id"]' <<<"$head")" = \
             "$(jq -r .candidate_id target/candidate-receipt.json)"
+          mkdir -p target/qualification-inputs
+          download_qualification_asset() {
+            filename="$1"
+            key="candidates/$(jq -r .candidate_id \
+              target/candidate-receipt.json)/qualification/$filename"
+            record="$(jq -cer --arg key "$key" \
+              '[.qualification_assets[] | select(.region == "us-east-1" and
+                .key == $key)] | if length == 1 then .[0] else error(
+                "qualification asset is not uniquely bound") end' \
+              target/candidate-receipt.json)"
+            destination="target/qualification-inputs/$filename"
+            aws s3api get-object --region us-east-1 \
+              --bucket "$(jq -r .bucket <<<"$record")" --key "$key" \
+              --version-id "$(jq -r .version_id <<<"$record")" \
+              "$destination" >/dev/null
+            test "$(sha256sum "$destination" | awk '{print $1}')" = \
+              "$(jq -r .sha256 <<<"$record")"
+            test "$(wc -c < "$destination" | tr -d ' ')" = \
+              "$(jq -r .size_bytes <<<"$record")"
+          }
+          download_qualification_asset demo-site.zip
+          download_qualification_asset demo-site-manifest.json
+          demo_site_sha256="$(jq -er '.archive_sha256 |
+            select(test("^[0-9a-f]{64}$"))' \
+            target/qualification-inputs/demo-site-manifest.json)"
+          test "$(sha256sum target/qualification-inputs/demo-site.zip |
+            awk '{print $1}')" = "$demo_site_sha256"
+          echo "DEMO_SITE_SHA256=$demo_site_sha256" >> "$GITHUB_ENV"
           encoded_version="$(python -c \
             'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' \
             "$template_version")"
@@ -203,6 +240,8 @@ jobs:
             --bridgefu-checkout target/pinned-bridgefu \
             --sip-client target/qualification-client/bridgefu-vapi-sip-smoke \
             --direct-secure-probe target/qualification-client/bridgefu-direct-secure-probe \
+            --demo-site-archive target/qualification-inputs/demo-site.zip \
+            --demo-site-sha256 "$DEMO_SITE_SHA256" \
             --output target/live-qualification
       - uses: actions/upload-artifact@v4
         if: always()

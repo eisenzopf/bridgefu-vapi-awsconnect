@@ -171,7 +171,7 @@ def lambda_handler(event, _context):
         api_key = load_secret(properties["VapiApiKeySecretArn"])
         client = VapiHttpClient(
             api_key,
-            properties.get("VapiApiBaseUrl", "https://api.vapi.ai"),
+            "https://api.vapi.ai",
             request_timeout=lambda: _vapi_request_timeout(_context),
         )
         config = _config(

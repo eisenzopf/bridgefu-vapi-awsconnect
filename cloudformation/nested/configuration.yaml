@@ -10,8 +10,20 @@ Parameters:
   TargetContactFlowArn: {Type: String}
   PublicHostedZoneId: {Type: String}
   SipHostname: {Type: String}
+  SipSecurity:
+    Type: String
+    AllowedValues: [sips_optional_srtp, sips_srtp, sip_rtp]
+  MaxConcurrentCalls:
+    Type: Number
+    MinValue: 1
+    MaxValue: 1000
+  VapiApiKeySecretArn: {Type: String}
+  RuntimeImageId: {Type: String, AllowedPattern: '^ami-[0-9a-f]+$'}
   ScreenPopFieldsJson: {Type: String, MaxLength: 4096}
   RoutingJson: {Type: String, Default: '{}', MaxLength: 4096}
+  DataRetentionMode:
+    Type: String
+    AllowedValues: [ProductionRetain, TestDelete]
   LogRetentionDays:
     Type: Number
     Default: 30
@@ -71,12 +83,19 @@ Resources:
     Properties:
       ServiceToken: !GetAtt Function.Arn
       AccountId: !Ref 'AWS::AccountId'
+      Partition: !Ref 'AWS::Partition'
+      DeploymentId: !Ref DeploymentId
       ConnectInstanceArn: !Ref ConnectInstanceArn
       TargetContactFlowArn: !Ref TargetContactFlowArn
       PublicHostedZoneId: !Ref PublicHostedZoneId
       SipHostname: !Ref SipHostname
+      SipSecurity: !Ref SipSecurity
+      MaxConcurrentCalls: !Ref MaxConcurrentCalls
+      VapiApiKeySecretArn: !Ref VapiApiKeySecretArn
+      RuntimeImageId: !Ref RuntimeImageId
       ScreenPopFieldsJson: !Ref ScreenPopFieldsJson
       RoutingJson: !Ref RoutingJson
+      DataRetentionMode: !Ref DataRetentionMode
 
 Outputs:
   AgentGuideTemplateString: {Value: !GetAtt Configuration.AgentGuideTemplateString}
@@ -85,4 +104,13 @@ Outputs:
   RoutingDecisionActionJson: {Value: !GetAtt Configuration.RoutingDecisionActionJson}
   RoutingTransferActionsJson: {Value: !GetAtt Configuration.RoutingTransferActionsJson}
   SchemaHash: {Value: !GetAtt Configuration.SchemaHash}
+  DeploymentId: {Value: !GetAtt Configuration.DeploymentId}
+  ConnectInstanceArn: {Value: !GetAtt Configuration.ConnectInstanceArn}
+  PublicHostedZoneId: {Value: !GetAtt Configuration.PublicHostedZoneId}
+  SipHostname: {Value: !GetAtt Configuration.SipHostname}
+  SipSecurity: {Value: !GetAtt Configuration.SipSecurity}
+  MaxConcurrentCalls: {Value: !GetAtt Configuration.MaxConcurrentCalls}
+  DataRetentionMode: {Value: !GetAtt Configuration.DataRetentionMode}
+  RuntimeImageId: {Value: !GetAtt Configuration.RuntimeImageId}
+  RetainVapiResourcesOnDelete: {Value: !GetAtt Configuration.RetainVapiResourcesOnDelete}
   FunctionName: {Value: !Ref Function}

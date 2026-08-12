@@ -12,7 +12,7 @@ from typing import Any
 MAX_FIELDS = 8
 MAX_CONFIG_BYTES = 4_096
 MAX_CONTEXT_BYTES = 8_192
-MAX_TOTAL_VALUE_BYTES = 8_192
+MAX_TOTAL_VALUE_CHARACTERS = 8_192
 KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 RESERVED_KEYS = frozenset(
     {
@@ -98,7 +98,7 @@ def fields_json(fields: Sequence[ScreenPopField]) -> str:
 
 
 def _plain_text(value: Any, field: str, maximum: int) -> str:
-    if not isinstance(value, str) or not value or len(value.encode("utf-8")) > maximum:
+    if not isinstance(value, str) or not value or len(value) > maximum:
         raise ScreenPopConfigError(f"invalid_{field}")
     if (
         any(ord(character) < 0x20 for character in value)
@@ -183,7 +183,7 @@ def parse_fields(
                 normalized_choices.add(choice)
                 parsed_choices.append(choice)
             choices = tuple(parsed_choices)
-            max_length = max(len(choice.encode("utf-8")) for choice in choices)
+            max_length = max(len(choice) for choice in choices)
         required = item.get("required", True)
         if not isinstance(required, bool):
             raise ScreenPopConfigError("screen_pop_field_required_invalid")
@@ -201,7 +201,7 @@ def parse_fields(
                 choices,
             )
         )
-    if total > MAX_TOTAL_VALUE_BYTES:
+    if total > MAX_TOTAL_VALUE_CHARACTERS:
         raise ScreenPopConfigError("screen_pop_fields_too_large")
     return tuple(fields)
 
@@ -222,7 +222,10 @@ def validate_values(
     values: dict[str, str] = {}
     for field in fields:
         value = raw.get(field.key, "")
-        if not isinstance(value, str) or len(value.encode("utf-8")) > field.max_length:
+        # JSON Schema's maxLength is defined in Unicode characters. Keep this
+        # check identical to the Vapi tool schema, then apply the independent
+        # serialized UTF-8 context limit below.
+        if not isinstance(value, str) or len(value) > field.max_length:
             raise ScreenPopConfigError("screen_pop_value_invalid")
         if (
             field.field_type == "choice"

@@ -58,6 +58,7 @@ CONTEXT = {
 }
 DIAGNOSTIC_LIMIT = 2048
 PHONE_OWNERSHIP_PRODUCER = "bridgefu-vapi-phone-ownership@1"
+PHONE_INTENT_PRODUCER = "bridgefu-vapi-phone-intent@1"
 AGENT_OBSERVER_PRODUCER = "bridgefu-agent-workspace-playwright@1"
 MAX_OBJECT_VERSION_PAGES = 100
 MAX_OBJECT_VERSIONS = 10_000
@@ -90,10 +91,30 @@ VAPI_DESTINATION_MEDIA_SUITES = {
     "AES_CM_128_HMAC_SHA1_32",
 }
 VAPI_DESTINATION_MEDIA_PROFILES = {"RTP/AVP", "RTP/SAVP"}
+DEMO_SITE_FILES = {
+    "index.html",
+    "style.css",
+    "app.js",
+    "app.js.LEGAL.txt",
+    "third-party-licenses.json",
+}
+MAX_DEMO_SITE_FILE_BYTES = 16 * 1024 * 1024
+MAX_DEMO_SITE_BYTES = 32 * 1024 * 1024
+ACM_OWNERSHIP_PRODUCER = "bridgefu-acm-validation-ownership@1"
+MAX_NESTED_STACKS = 16
+MAX_ACM_VALIDATION_RECORDS = 8
 
 
 class QualificationError(RuntimeError):
     """Expected qualification failure with a non-sensitive message."""
+
+
+class VapiAmbiguousWriteError(QualificationError):
+    """A Vapi write may have completed even though its response was lost."""
+
+
+class VapiPhoneReconciliationError(QualificationError):
+    """A transient Vapi endpoint may exist but cannot yet be identified safely."""
 
 
 def utc_now() -> str:
@@ -121,6 +142,149 @@ def vapi_phone_owned_name(execution_id: str) -> str:
     if len(name) > 40:
         raise QualificationError("temporary Vapi endpoint name is invalid")
     return name
+
+
+def vapi_phone_intent(
+    execution_id: str,
+    assistant_id: str,
+    authentication: Mapping[str, str],
+) -> dict[str, str]:
+    """Build the non-secret identity used to reconcile one transient endpoint."""
+    if set(authentication) != {"realm", "username", "password"}:
+        raise QualificationError("Vapi SIP authentication has an invalid shape")
+    username = authentication["username"]
+    password = authentication["password"]
+    if (
+        not RESOURCE_ID.fullmatch(assistant_id)
+        or authentication["realm"] != "sip.vapi.ai"
+        or re.fullmatch(r"bfq_[a-f0-9]{16}", username) is None
+        or not 16 <= len(password) <= 40
+        or re.search(r"[\x00-\x20\x7f]", password)
+    ):
+        raise QualificationError("Vapi SIP authentication is invalid")
+    return {
+        "name": vapi_phone_owned_name(execution_id),
+        "assistant_id": assistant_id,
+        "sip_uri": f"sip:{username}@sip.vapi.ai",
+        "authentication_realm": authentication["realm"],
+        "authentication_username": username,
+    }
+
+
+def vapi_phone_matches_intent(
+    phone: Mapping[str, Any], intent: Mapping[str, str]
+) -> bool:
+    """Match every stable identity field Vapi returns without retaining secrets."""
+    phone_id = phone.get("id")
+    if (
+        not isinstance(phone_id, str)
+        or not RESOURCE_ID.fullmatch(phone_id)
+        or phone.get("provider") != "vapi"
+        or phone.get("name") != intent.get("name")
+        or phone.get("assistantId") != intent.get("assistant_id")
+        or phone.get("sipUri") != intent.get("sip_uri")
+    ):
+        return False
+    remote_authentication = phone.get("authentication")
+    if remote_authentication is None:
+        return True
+    if not isinstance(remote_authentication, Mapping):
+        return False
+    expected_authentication = {
+        "realm": intent.get("authentication_realm"),
+        "username": intent.get("authentication_username"),
+    }
+    return all(
+        key not in remote_authentication
+        or remote_authentication.get(key) == expected_value
+        for key, expected_value in expected_authentication.items()
+    )
+
+
+def vapi_phone_intent_journal(
+    execution_id: str,
+    region: str,
+    intent: Mapping[str, str],
+    *,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    owned = {
+        "execution_id": execution_id,
+        "region": region,
+        "resource_type": "phone-number",
+        "owned_name": intent.get("name"),
+        "assistant_id": intent.get("assistant_id"),
+        "sip_uri": intent.get("sip_uri"),
+        "authentication_realm": intent.get("authentication_realm"),
+        "authentication_username": intent.get("authentication_username"),
+    }
+    value: dict[str, Any] = {
+        "schema_version": 1,
+        "producer": PHONE_INTENT_PRODUCER,
+        **owned,
+        "intent_sha256": canonical_sha256(owned),
+        "created_at": created_at or utc_now(),
+        "redacted": True,
+    }
+    return dict(validate_vapi_phone_intent_journal(value))
+
+
+def validate_vapi_phone_intent_journal(value: Any) -> Mapping[str, Any]:
+    keys = {
+        "schema_version",
+        "producer",
+        "execution_id",
+        "region",
+        "resource_type",
+        "owned_name",
+        "assistant_id",
+        "sip_uri",
+        "authentication_realm",
+        "authentication_username",
+        "intent_sha256",
+        "created_at",
+        "redacted",
+    }
+    if not isinstance(value, Mapping) or set(value) != keys:
+        raise QualificationError("temporary Vapi endpoint intent shape is invalid")
+    execution_id = value.get("execution_id")
+    region = value.get("region")
+    assistant_id = value.get("assistant_id")
+    username = value.get("authentication_username")
+    if (
+        value.get("schema_version") != 1
+        or value.get("producer") != PHONE_INTENT_PRODUCER
+        or value.get("resource_type") != "phone-number"
+        or value.get("redacted") is not True
+        or not isinstance(execution_id, str)
+        or not EXECUTION_ID.fullmatch(execution_id)
+        or region not in REGIONS
+        or value.get("owned_name") != vapi_phone_owned_name(execution_id)
+        or not isinstance(assistant_id, str)
+        or not RESOURCE_ID.fullmatch(assistant_id)
+        or value.get("authentication_realm") != "sip.vapi.ai"
+        or not isinstance(username, str)
+        or re.fullmatch(r"bfq_[a-f0-9]{16}", username) is None
+        or value.get("sip_uri") != f"sip:{username}@sip.vapi.ai"
+        or not isinstance(value.get("created_at"), str)
+        or not re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z", value["created_at"]
+        )
+    ):
+        raise QualificationError("temporary Vapi endpoint intent is invalid")
+    owned = {
+        "execution_id": execution_id,
+        "region": region,
+        "resource_type": "phone-number",
+        "owned_name": value["owned_name"],
+        "assistant_id": assistant_id,
+        "sip_uri": value["sip_uri"],
+        "authentication_realm": value["authentication_realm"],
+        "authentication_username": username,
+    }
+    if value.get("intent_sha256") != canonical_sha256(owned):
+        raise QualificationError("temporary Vapi endpoint intent hash is invalid")
+    return value
 
 
 def vapi_phone_ownership_journal(
@@ -227,6 +391,76 @@ def executable_sha256(path: Path) -> str:
             "direct secure probe must be an executable regular non-symlink file"
         )
     return sha256_file(path)
+
+
+def prepare_demo_site_archive(
+    archive: Path, expected_sha256: str, destination: Path
+) -> tuple[Path, str]:
+    """Validate and privately extract the immutable qualification Web bundle."""
+    if not isinstance(expected_sha256, str) or not SHA256.fullmatch(expected_sha256):
+        raise QualificationError("demo site archive digest is invalid")
+    try:
+        details = archive.lstat()
+    except OSError as error:
+        raise QualificationError("demo site archive is unavailable") from error
+    if not stat.S_ISREG(details.st_mode) or archive.is_symlink():
+        raise QualificationError("demo site archive must be a regular file")
+    if details.st_size < 1 or details.st_size > MAX_DEMO_SITE_BYTES:
+        raise QualificationError("demo site archive size is invalid")
+    actual_sha256 = sha256_file(archive)
+    if not hmac.compare_digest(actual_sha256, expected_sha256):
+        raise QualificationError("demo site archive digest does not match candidate")
+    try:
+        destination.mkdir(mode=0o700)
+        with zipfile.ZipFile(archive) as bundle:
+            entries = bundle.infolist()
+            names = [entry.filename for entry in entries]
+            if set(names) != DEMO_SITE_FILES or len(names) != len(DEMO_SITE_FILES):
+                raise QualificationError("demo site archive contents are invalid")
+            total_size = 0
+            for entry in entries:
+                mode = (entry.external_attr >> 16) & 0o170000
+                if (
+                    entry.is_dir()
+                    or entry.flag_bits & 0x1
+                    or entry.file_size < 1
+                    or entry.file_size > MAX_DEMO_SITE_FILE_BYTES
+                    or mode not in (0, stat.S_IFREG)
+                    or Path(entry.filename).name != entry.filename
+                ):
+                    raise QualificationError("demo site archive entry is unsafe")
+                total_size += entry.file_size
+                if total_size > MAX_DEMO_SITE_BYTES:
+                    raise QualificationError("demo site archive expands past its bound")
+                payload = bundle.read(entry)
+                if len(payload) != entry.file_size:
+                    raise QualificationError("demo site archive entry is truncated")
+                target = destination / entry.filename
+                descriptor = os.open(
+                    target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+                )
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(payload)
+    except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as error:
+        raise QualificationError("demo site archive is invalid") from error
+    return destination, actual_sha256
+
+
+def combine_failures(
+    primary: BaseException | None, cleanup: BaseException, *, label: str = "cleanup"
+) -> QualificationError:
+    """Preserve both bounded failure categories without leaking raw diagnostics."""
+    if primary is None:
+        if isinstance(cleanup, QualificationError):
+            return cleanup
+        return QualificationError(f"{label} failed unexpectedly")
+    primary_summary = (
+        sanitize_diagnostic(str(primary))
+        if isinstance(primary, QualificationError)
+        else "qualification failed unexpectedly"
+    )
+    cleanup_summary = sanitize_diagnostic(str(cleanup))
+    return QualificationError(f"{primary_summary}; {label} failed: {cleanup_summary}")
 
 
 def private_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -580,13 +814,21 @@ class Aws:
         )
         if status == 0:
             return True
-        missing = (
-            "does not exist",
-            "ResourceNotFoundException",
-            "not found",
-            "not exist",
-        )
-        if any(marker.lower() in error.lower() for marker in missing):
+        operation = tuple(arguments[:2])
+        code_match = re.search(r"\(([A-Za-z0-9.]+)\)", error)
+        code = code_match.group(1) if code_match else None
+        missing_codes = {
+            ("route53", "get-hosted-zone"): {"NoSuchHostedZone"},
+            ("connect", "describe-instance"): {"ResourceNotFoundException"},
+            ("secretsmanager", "describe-secret"): {"ResourceNotFoundException"},
+        }
+        if code in missing_codes.get(operation, set()):
+            return False
+        if (
+            operation == ("cloudformation", "describe-stacks")
+            and code == "ValidationError"
+            and re.search(r"Stack with id .+ does not exist", error, re.I)
+        ):
             return False
         raise QualificationError("AWS existence check failed")
 
@@ -737,6 +979,380 @@ def purge_object_versions_exact(
         raise QualificationError("qualification object versions remain after cleanup")
 
 
+def _normalized_dns_name(value: Any) -> str:
+    if not isinstance(value, str):
+        raise QualificationError("ACM validation record name is invalid")
+    normalized = value.rstrip(".").lower() + "."
+    if (
+        len(normalized) > 254
+        or re.fullmatch(
+            r"(?:_[a-z0-9]{1,64}\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+",
+            normalized,
+        )
+        is None
+    ):
+        raise QualificationError("ACM validation record name is invalid")
+    return normalized
+
+
+def _validate_acm_record_scope(name: str, sip_hostname: str) -> None:
+    base = _normalized_dns_name(sip_hostname)
+    allowed_suffixes = (f".{base}", f".control.{base}")
+    if not name.startswith("_") or not any(
+        name.endswith(suffix) for suffix in allowed_suffixes
+    ):
+        raise QualificationError("ACM validation record is outside qualification scope")
+
+
+def route53_record_set(
+    aws: Aws, hosted_zone_id: str, name: str
+) -> dict[str, Any] | None:
+    if not re.fullmatch(r"[A-Z0-9]{1,64}", hosted_zone_id):
+        raise QualificationError("ACM validation hosted zone is invalid")
+    normalized_name = _normalized_dns_name(name)
+    value = aws.json(
+        [
+            "route53",
+            "list-resource-record-sets",
+            "--hosted-zone-id",
+            hosted_zone_id,
+            "--start-record-name",
+            normalized_name,
+            "--start-record-type",
+            "CNAME",
+            "--max-items",
+            "1",
+        ],
+        timeout=120,
+    )
+    record_sets = (
+        value.get("ResourceRecordSets") if isinstance(value, Mapping) else None
+    )
+    if not isinstance(record_sets, list):
+        raise QualificationError("Route53 record-set response is invalid")
+    if not record_sets:
+        return None
+    candidate = record_sets[0]
+    if not isinstance(candidate, Mapping):
+        raise QualificationError("Route53 record-set response is invalid")
+    candidate_name = _normalized_dns_name(candidate.get("Name"))
+    candidate_type = candidate.get("Type")
+    if candidate_name != normalized_name or candidate_type != "CNAME":
+        return None
+    ttl = candidate.get("TTL")
+    resources = candidate.get("ResourceRecords")
+    if (
+        not isinstance(ttl, int)
+        or not 1 <= ttl <= 2_147_483_647
+        or not isinstance(resources, list)
+        or not 1 <= len(resources) <= 20
+    ):
+        raise QualificationError("Route53 ACM validation record is invalid")
+    values: list[str] = []
+    for resource in resources:
+        record_value = resource.get("Value") if isinstance(resource, Mapping) else None
+        if (
+            not isinstance(record_value, str)
+            or not 1 <= len(record_value) <= 1024
+            or re.search(r"[\x00-\x1f\x7f]", record_value)
+        ):
+            raise QualificationError("Route53 ACM validation value is invalid")
+        values.append(record_value)
+    if len(values) != len(set(values)):
+        raise QualificationError("Route53 ACM validation values are duplicated")
+    return {
+        "name": candidate_name,
+        "type": "CNAME",
+        "ttl": ttl,
+        "resource_records": sorted(values),
+    }
+
+
+def _nested_stack_resources(aws: Aws, root_stack: str) -> list[Mapping[str, Any]]:
+    queue = [root_stack]
+    seen: set[str] = set()
+    resources: list[Mapping[str, Any]] = []
+    while queue:
+        stack = queue.pop(0)
+        if stack in seen or len(seen) >= MAX_NESTED_STACKS:
+            raise QualificationError("qualification nested-stack topology is invalid")
+        seen.add(stack)
+        value = aws.json(
+            ["cloudformation", "list-stack-resources", "--stack-name", stack],
+            timeout=120,
+        )
+        summaries = (
+            value.get("StackResourceSummaries") if isinstance(value, Mapping) else None
+        )
+        if not isinstance(summaries, list) or len(summaries) > 500:
+            raise QualificationError("qualification stack resources are invalid")
+        for resource in summaries:
+            if not isinstance(resource, Mapping):
+                raise QualificationError("qualification stack resource is invalid")
+            resources.append(resource)
+            if resource.get("ResourceType") == "AWS::CloudFormation::Stack":
+                nested = resource.get("PhysicalResourceId")
+                if nested is None:
+                    continue
+                if not isinstance(nested, str) or not nested.startswith("arn:aws"):
+                    raise QualificationError("qualification nested stack ID is invalid")
+                queue.append(nested)
+    return resources
+
+
+def discover_stack_output(aws: Aws, root_stack: str, output_key: str) -> str | None:
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,127}", output_key):
+        raise QualificationError("qualification output key is invalid")
+    queue = [root_stack]
+    seen: set[str] = set()
+    values: set[str] = set()
+    while queue:
+        stack = queue.pop(0)
+        if stack in seen or len(seen) >= MAX_NESTED_STACKS:
+            raise QualificationError("qualification nested-stack topology is invalid")
+        seen.add(stack)
+        response = aws.json(
+            ["cloudformation", "describe-stacks", "--stack-name", stack], timeout=120
+        )
+        stacks = response.get("Stacks") if isinstance(response, Mapping) else None
+        if not isinstance(stacks, list) or len(stacks) != 1:
+            raise QualificationError("qualification stack description is invalid")
+        outputs = stacks[0].get("Outputs", [])
+        if not isinstance(outputs, list):
+            raise QualificationError("qualification stack outputs are invalid")
+        for output in outputs:
+            if (
+                isinstance(output, Mapping)
+                and output.get("OutputKey") == output_key
+                and isinstance(output.get("OutputValue"), str)
+            ):
+                values.add(output["OutputValue"])
+        resources = aws.json(
+            ["cloudformation", "list-stack-resources", "--stack-name", stack],
+            timeout=120,
+        )
+        summaries = (
+            resources.get("StackResourceSummaries")
+            if isinstance(resources, Mapping)
+            else None
+        )
+        if not isinstance(summaries, list) or len(summaries) > 500:
+            raise QualificationError("qualification stack resources are invalid")
+        for resource in summaries:
+            if (
+                isinstance(resource, Mapping)
+                and resource.get("ResourceType") == "AWS::CloudFormation::Stack"
+                and isinstance(resource.get("PhysicalResourceId"), str)
+            ):
+                queue.append(resource["PhysicalResourceId"])
+    if len(values) > 1:
+        raise QualificationError("qualification stack output is ambiguous")
+    return next(iter(values), None)
+
+
+def discover_acm_validation_ownership(
+    aws: Aws,
+    stack_name: str,
+    execution_id: str,
+    hosted_zone_id: str,
+    sip_hostname: str,
+) -> dict[str, Any] | None:
+    """Discover only the certificate tagged for this exact disposable stack."""
+    certificate_arns = {
+        str(resource["PhysicalResourceId"])
+        for resource in _nested_stack_resources(aws, stack_name)
+        if resource.get("ResourceType") == "AWS::CertificateManager::Certificate"
+        and isinstance(resource.get("PhysicalResourceId"), str)
+    }
+    if not certificate_arns:
+        return None
+    if len(certificate_arns) != 1:
+        raise QualificationError("qualification ACM certificate identity is ambiguous")
+    certificate_arn = next(iter(certificate_arns))
+    if (
+        re.fullmatch(
+            rf"arn:aws[-a-z0-9]*:acm:{re.escape(aws.region)}:[0-9]{{12}}:certificate/[A-Za-z0-9-]+",
+            certificate_arn,
+        )
+        is None
+    ):
+        raise QualificationError("qualification ACM certificate ARN is invalid")
+    tag_response = aws.json(
+        ["acm", "list-tags-for-certificate", "--certificate-arn", certificate_arn],
+        timeout=120,
+    )
+    tag_items = tag_response.get("Tags") if isinstance(tag_response, Mapping) else None
+    if not isinstance(tag_items, list):
+        raise QualificationError("qualification ACM certificate tags are invalid")
+    tags = {
+        item.get("Key"): item.get("Value")
+        for item in tag_items
+        if isinstance(item, Mapping)
+        and isinstance(item.get("Key"), str)
+        and isinstance(item.get("Value"), str)
+    }
+    if (
+        tags.get("Project") != "bridgefu-vapi-awsconnect"
+        or tags.get("ManagedBy") != "bridgefu-cloudformation"
+        or tags.get("BridgefuExecutionId") != execution_id
+        or tags.get("BridgefuRecipe") != RECIPE
+    ):
+        raise QualificationError("qualification ACM certificate ownership is invalid")
+    response = aws.json(
+        ["acm", "describe-certificate", "--certificate-arn", certificate_arn],
+        timeout=120,
+    )
+    certificate = response.get("Certificate") if isinstance(response, Mapping) else None
+    validation_options = (
+        certificate.get("DomainValidationOptions")
+        if isinstance(certificate, Mapping)
+        else None
+    )
+    if not isinstance(validation_options, list):
+        raise QualificationError("qualification ACM validation options are invalid")
+    expected: dict[str, str] = {}
+    for option in validation_options:
+        resource = option.get("ResourceRecord") if isinstance(option, Mapping) else None
+        if resource is None:
+            continue
+        name = _normalized_dns_name(
+            resource.get("Name") if isinstance(resource, Mapping) else None
+        )
+        record_type = resource.get("Type") if isinstance(resource, Mapping) else None
+        record_value = resource.get("Value") if isinstance(resource, Mapping) else None
+        _validate_acm_record_scope(name, sip_hostname)
+        if (
+            record_type != "CNAME"
+            or not isinstance(record_value, str)
+            or not 1 <= len(record_value) <= 1024
+            or re.search(r"[\x00-\x1f\x7f]", record_value)
+        ):
+            raise QualificationError("qualification ACM validation value is invalid")
+        if name in expected and expected[name] != record_value:
+            raise QualificationError("qualification ACM validation record is ambiguous")
+        expected[name] = record_value
+    if not 1 <= len(expected) <= MAX_ACM_VALIDATION_RECORDS:
+        raise QualificationError("qualification ACM validation records are unavailable")
+    record_sets: list[dict[str, Any]] = []
+    for name, expected_value in sorted(expected.items()):
+        current = route53_record_set(aws, hosted_zone_id, name)
+        if current is None or current["resource_records"] != [expected_value]:
+            raise QualificationError(
+                "qualification ACM validation record ownership conflicts"
+            )
+        record_sets.append(current)
+    owned = {
+        "execution_id": execution_id,
+        "region": aws.region,
+        "public_hosted_zone_id": hosted_zone_id,
+        "certificate_arn": certificate_arn,
+        "record_sets": record_sets,
+    }
+    journal = {
+        "schema_version": 1,
+        "producer": ACM_OWNERSHIP_PRODUCER,
+        **owned,
+        "ownership_sha256": canonical_sha256(owned),
+        "created_at": utc_now(),
+        "redacted": True,
+    }
+    validate_acm_validation_ownership(journal)
+    return journal
+
+
+def validate_acm_validation_ownership(value: Any) -> Mapping[str, Any]:
+    validate_schema(value, "acm-validation-ownership-v1.schema.json")
+    if not isinstance(value, Mapping):
+        raise QualificationError("ACM validation ownership journal is invalid")
+    owned = {
+        key: value[key]
+        for key in (
+            "execution_id",
+            "region",
+            "public_hosted_zone_id",
+            "certificate_arn",
+            "record_sets",
+        )
+    }
+    if value.get("ownership_sha256") != canonical_sha256(owned):
+        raise QualificationError("ACM validation ownership journal hash is invalid")
+    records = value["record_sets"]
+    names = [record["name"] for record in records]
+    if names != sorted(names) or len(names) != len(set(names)):
+        raise QualificationError("ACM validation ownership records are not canonical")
+    for record in records:
+        values = record["resource_records"]
+        if (
+            record.get("type") != "CNAME"
+            or values != sorted(values)
+            or len(values) != len(set(values))
+        ):
+            raise QualificationError("ACM validation ownership record is invalid")
+    return value
+
+
+def delete_acm_validation_records_exact(aws: Aws, journal: Mapping[str, Any]) -> None:
+    journal = validate_acm_validation_ownership(journal)
+    hosted_zone_id = str(journal["public_hosted_zone_id"])
+    for record in journal["record_sets"]:
+        current = route53_record_set(aws, hosted_zone_id, record["name"])
+        if current is None:
+            continue
+        if current != record:
+            raise QualificationError(
+                "ACM validation record changed after ownership seal"
+            )
+        response = aws.json(
+            [
+                "route53",
+                "change-resource-record-sets",
+                "--hosted-zone-id",
+                hosted_zone_id,
+                "--change-batch",
+                json.dumps(
+                    {
+                        "Changes": [
+                            {
+                                "Action": "DELETE",
+                                "ResourceRecordSet": {
+                                    "Name": record["name"],
+                                    "Type": "CNAME",
+                                    "TTL": record["ttl"],
+                                    "ResourceRecords": [
+                                        {"Value": item}
+                                        for item in record["resource_records"]
+                                    ],
+                                },
+                            }
+                        ]
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            ],
+            timeout=120,
+        )
+        change = response.get("ChangeInfo") if isinstance(response, Mapping) else None
+        change_id = change.get("Id") if isinstance(change, Mapping) else None
+        if not isinstance(change_id, str) or not change_id.startswith("/change/"):
+            raise QualificationError("Route53 deletion change ID is invalid")
+        deadline = time.monotonic() + 300
+        while True:
+            status = aws.json(["route53", "get-change", "--id", change_id], timeout=120)
+            info = status.get("ChangeInfo") if isinstance(status, Mapping) else None
+            state = info.get("Status") if isinstance(info, Mapping) else None
+            if state == "INSYNC":
+                break
+            if state != "PENDING" or time.monotonic() >= deadline:
+                raise QualificationError(
+                    "Route53 validation-record deletion did not converge"
+                )
+            time.sleep(2)
+    for record in journal["record_sets"]:
+        if route53_record_set(aws, hosted_zone_id, record["name"]) is not None:
+            raise QualificationError("ACM validation record remains after cleanup")
+
+
 class Vapi:
     def __init__(self, private_key: str, base_url: str = VAPI_BASE_URL) -> None:
         if not isinstance(private_key, str) or not 8 <= len(private_key) <= 1024:
@@ -772,18 +1388,34 @@ class Vapi:
         except urllib.error.HTTPError as error:
             if allow_missing and error.code == 404:
                 return None
+            if method in {"POST", "PUT", "PATCH"} and error.code >= 500:
+                raise VapiAmbiguousWriteError(
+                    f"Vapi API {method} write outcome is ambiguous"
+                ) from error
             raise QualificationError(
                 f"Vapi API {method} failed with HTTP {error.code}"
             ) from error
         except (OSError, TimeoutError) as error:
+            if method in {"POST", "PUT", "PATCH"}:
+                raise VapiAmbiguousWriteError(
+                    f"Vapi API {method} write outcome is ambiguous"
+                ) from error
             raise QualificationError(f"Vapi API {method} request failed") from error
         if len(raw) > 4 * 1024 * 1024:
+            if method in {"POST", "PUT", "PATCH"}:
+                raise VapiAmbiguousWriteError(
+                    f"Vapi API {method} write outcome is ambiguous"
+                )
             raise QualificationError("Vapi API response exceeded its bound")
         if not raw:
             return None
         try:
             return json.loads(raw)
         except json.JSONDecodeError as error:
+            if method in {"POST", "PUT", "PATCH"}:
+                raise VapiAmbiguousWriteError(
+                    f"Vapi API {method} write outcome is ambiguous"
+                ) from error
             raise QualificationError("Vapi API returned invalid JSON") from error
 
     def get(self, resource: str, resource_id: str) -> Mapping[str, Any] | None:
@@ -842,32 +1474,131 @@ class Vapi:
         execution_id: str,
         assistant_id: str,
         authentication: Mapping[str, str],
+        *,
+        reconcile_timeout: int = 10,
+        poll_seconds: float = 0.5,
     ) -> Mapping[str, Any]:
-        if set(authentication) != {"realm", "username", "password"}:
-            raise QualificationError("Vapi SIP authentication has an invalid shape")
-        username = authentication["username"]
-        if (
-            authentication["realm"] != "sip.vapi.ai"
-            or re.fullmatch(r"bfq_[a-f0-9]{16}", username) is None
-            or not 16 <= len(authentication["password"]) <= 40
-        ):
-            raise QualificationError("Vapi SIP authentication is invalid")
-        value = self.request(
-            "POST",
-            "/phone-number",
-            {
-                "provider": "vapi",
-                "name": vapi_phone_owned_name(execution_id),
-                "sipUri": f"sip:{username}@sip.vapi.ai",
-                "assistantId": assistant_id,
-                "authentication": dict(authentication),
-            },
-        )
-        if not isinstance(value, Mapping):
-            raise QualificationError(
+        if reconcile_timeout < 0 or poll_seconds < 0:
+            raise QualificationError("Vapi SIP reconciliation bound is invalid")
+        intent = vapi_phone_intent(execution_id, assistant_id, authentication)
+        existing = self.find_phone_for_intent(intent)
+        if existing is not None:
+            return existing
+        payload = {
+            "provider": "vapi",
+            "name": intent["name"],
+            "sipUri": intent["sip_uri"],
+            "assistantId": assistant_id,
+            "authentication": dict(authentication),
+        }
+        try:
+            value = self.request("POST", "/phone-number", payload)
+        except VapiAmbiguousWriteError as error:
+            try:
+                reconciled = self._wait_for_phone_intent(
+                    intent, timeout=reconcile_timeout, poll_seconds=poll_seconds
+                )
+            except QualificationError as reconciliation_error:
+                raise VapiPhoneReconciliationError(
+                    "Vapi SIP endpoint creation could not be safely reconciled"
+                ) from reconciliation_error
+            if reconciled is None:
+                raise VapiPhoneReconciliationError(
+                    "Vapi SIP endpoint creation could not be safely reconciled"
+                ) from error
+            return reconciled
+        if isinstance(value, Mapping) and vapi_phone_matches_intent(value, intent):
+            return value
+        response_id = value.get("id") if isinstance(value, Mapping) else None
+        if isinstance(response_id, str) and RESOURCE_ID.fullmatch(response_id):
+            try:
+                exact = self.get("phone-number", response_id)
+            except QualificationError as error:
+                raise VapiPhoneReconciliationError(
+                    "Vapi SIP endpoint creation could not be safely reconciled"
+                ) from error
+            if exact is not None:
+                if not vapi_phone_matches_intent(exact, intent):
+                    raise VapiPhoneReconciliationError(
+                        "Vapi SIP endpoint creation returned a foreign identity"
+                    )
+                return exact
+        try:
+            reconciled = self._wait_for_phone_intent(
+                intent, timeout=reconcile_timeout, poll_seconds=poll_seconds
+            )
+        except QualificationError as error:
+            raise VapiPhoneReconciliationError(
+                "Vapi SIP endpoint creation could not be safely reconciled"
+            ) from error
+        if reconciled is None:
+            raise VapiPhoneReconciliationError(
                 "Vapi SIP endpoint creation returned an invalid shape"
             )
-        return value
+        return reconciled
+
+    def find_phone_for_intent(
+        self, intent: Mapping[str, str]
+    ) -> Mapping[str, Any] | None:
+        phones = self.list("phone-number", limit=100)
+        # A full bounded page cannot prove another same-name endpoint is absent.
+        if len(phones) == 100:
+            raise QualificationError(
+                "Vapi SIP endpoint reconciliation exceeded its safe bound"
+            )
+        named = [phone for phone in phones if phone.get("name") == intent.get("name")]
+        if not named:
+            return None
+        if len(named) != 1:
+            raise QualificationError("Vapi SIP endpoint ownership is ambiguous")
+        if not vapi_phone_matches_intent(named[0], intent):
+            raise QualificationError("Vapi SIP endpoint name is already in use")
+        return named[0]
+
+    def _wait_for_phone_intent(
+        self,
+        intent: Mapping[str, str],
+        *,
+        timeout: int,
+        poll_seconds: float,
+    ) -> Mapping[str, Any] | None:
+        deadline = time.monotonic() + timeout
+        while True:
+            phone = self.find_phone_for_intent(intent)
+            if phone is not None:
+                return phone
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            time.sleep(min(poll_seconds, remaining))
+
+    def delete_phone(
+        self,
+        resource_id: str,
+        intent: Mapping[str, str],
+        *,
+        timeout: int = 30,
+        poll_seconds: float = 0.5,
+    ) -> None:
+        if not RESOURCE_ID.fullmatch(resource_id):
+            raise QualificationError("Vapi resource ID is invalid")
+        existing = self.get("phone-number", resource_id)
+        if existing is None:
+            return
+        if not vapi_phone_matches_intent(existing, intent):
+            raise QualificationError("Vapi phone deletion target is not owned")
+        self.request("DELETE", f"/phone-number/{resource_id}", allow_missing=True)
+        deadline = time.monotonic() + timeout
+        while True:
+            current = self.get("phone-number", resource_id)
+            if current is None:
+                return
+            if not vapi_phone_matches_intent(current, intent):
+                raise QualificationError("Vapi phone deletion target identity changed")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise QualificationError("Vapi exact-resource deletion timed out")
+            time.sleep(min(poll_seconds, remaining))
 
     def delete(
         self,
@@ -877,6 +1608,10 @@ class Vapi:
         timeout: int = 30,
         poll_seconds: float = 0.5,
     ) -> None:
+        if resource == "phone-number":
+            raise QualificationError(
+                "Vapi phone deletion requires an exact ownership intent"
+            )
         existing = self.get(resource, resource_id)
         if existing is None:
             return
@@ -1166,13 +1901,10 @@ def verify_log_evidence(runtime: Any, lookup: Any, fingerprint: str) -> dict[str
         and inbound_srtp is False
         and outbound_srtp is False
     )
-    security = (
-        all(
-            security_event.get(name) == expected
-            for name, expected in expected_security.items()
-        )
-        and (secure_media or plain_media)
-    )
+    security = all(
+        security_event.get(name) == expected
+        for name, expected in expected_security.items()
+    ) and (secure_media or plain_media)
     if not header or not available or not security:
         raise QualificationError(
             "correlated Bridgefu, destination security, and Connect log evidence did not converge"
@@ -1734,8 +2466,16 @@ class Controller:
         self.outputs: dict[str, str] = {}
         self.vapi: Vapi | None = None
         self.temp_phone_id: str | None = None
+        self.temp_phone_intent: dict[str, str] | None = None
+        self.temp_phone_creation_ambiguous = False
         self.temp_sip_auth_object: str | None = None
+        self.temp_phone_intent_journal_object: str | None = None
         self.temp_phone_journal_object: str | None = None
+        self.acm_validation_journal: dict[str, Any] | None = None
+        self.acm_validation_journal_object: str | None = None
+        self.acm_validation_discovery_complete = False
+        self.demo_site: Path | None = None
+        self.demo_site_sha256: str | None = None
         self.created_stack = False
         self.processes: list[subprocess.Popen[str]] = []
         self.ssm_commands: list[str] = []
@@ -1757,6 +2497,17 @@ class Controller:
             raise QualificationError("release version or region is invalid")
         if not re.fullmatch(r"[A-Z0-9]{1,64}", self.args.hosted_zone_id):
             raise QualificationError("hosted zone ID is invalid")
+        hosted_zone_name = self.args.hosted_zone_name.rstrip(".").lower()
+        if (
+            len(hosted_zone_name) > 253
+            or re.fullmatch(
+                r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+                r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?",
+                hosted_zone_name,
+            )
+            is None
+        ):
+            raise QualificationError("hosted zone name is invalid")
         if not re.fullmatch(
             r"arn:aws[-a-z0-9]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}",
             self.args.cloudformation_role_arn,
@@ -1772,6 +2523,12 @@ class Controller:
             raise QualificationError("qualification template URL must be HTTPS")
         if not self.args.sip_client.is_file() or self.args.sip_client.is_symlink():
             raise QualificationError("release SIP client binary is unavailable")
+        if not isinstance(self.args.demo_site_archive, Path):
+            raise QualificationError("demo site archive is unavailable")
+        if not isinstance(self.args.demo_site_sha256, str) or not SHA256.fullmatch(
+            self.args.demo_site_sha256
+        ):
+            raise QualificationError("demo site archive digest is invalid")
         self.secure_preflight_binary_sha256 = executable_sha256(
             self.args.direct_secure_probe
         )
@@ -1822,6 +2579,101 @@ class Controller:
         ):
             raise QualificationError("execution Vapi SIP endpoint already exists")
 
+    def initialize_cleanup_vapi_verifier(self) -> None:
+        """Bind a read-only exact-ID verifier even after an early run failure."""
+        ids = (
+            self.outputs.get("VapiAssistantId"),
+            self.outputs.get("VapiPrepareToolId"),
+            self.outputs.get("VapiWebhookCredentialId"),
+            self.temp_phone_id,
+        )
+        phone_intent_exists = (
+            getattr(self, "temp_phone_intent", None) is not None
+            or getattr(self, "temp_phone_creation_ambiguous", False)
+            or getattr(self, "temp_phone_intent_journal_object", None) is not None
+        )
+        if self.vapi is None and (
+            any(isinstance(item, str) for item in ids) or phone_intent_exists
+        ):
+            private_key = extract_vapi_key(self.aws.secret(self.args.vapi_secret_arn))
+            self.vapi = Vapi(private_key)
+
+    def ensure_acm_validation_journal(self) -> None:
+        """Seal exact public DNS ownership before deleting any stack resource."""
+        if self.acm_validation_discovery_complete:
+            return
+        if not self.created_stack:
+            self.acm_validation_discovery_complete = True
+            return
+        if not self.aws.exists(
+            ["cloudformation", "describe-stacks", "--stack-name", self.stack_name]
+        ):
+            raise QualificationError(
+                "qualification stack disappeared before ACM ownership was sealed"
+            )
+        description = self.aws.json(
+            ["cloudformation", "describe-stacks", "--stack-name", self.stack_name],
+            timeout=120,
+        )
+        stacks = description.get("Stacks") if isinstance(description, Mapping) else None
+        stack_status = (
+            stacks[0].get("StackStatus")
+            if isinstance(stacks, list)
+            and len(stacks) == 1
+            and isinstance(stacks[0], Mapping)
+            else None
+        )
+        if not isinstance(stack_status, str):
+            raise QualificationError("qualification stack status is invalid")
+        sip_hostname = (
+            f"{self.args.execution_id}.{self.args.hosted_zone_name.rstrip('.')}"
+        )
+        journal = discover_acm_validation_ownership(
+            self.aws,
+            self.stack_name,
+            self.args.execution_id,
+            self.args.hosted_zone_id,
+            sip_hostname,
+        )
+        if journal is None:
+            if stack_status.endswith("_IN_PROGRESS"):
+                raise QualificationError(
+                    "qualification ACM ownership is not stable while stack changes"
+                )
+            self.acm_validation_discovery_complete = True
+            return
+        bucket = self.outputs.get("ArtifactBucket") or discover_stack_output(
+            self.aws, self.stack_name, "ArtifactBucket"
+        )
+        if not isinstance(bucket, str) or not S3_BUCKET.fullmatch(bucket):
+            raise QualificationError(
+                "qualification artifact bucket is unavailable for ACM ownership"
+            )
+        target = (
+            f"s3://{bucket}/qualification/{self.args.execution_id}/"
+            "ownership/acm-validation-records.json"
+        )
+        self.acm_validation_journal = dict(journal)
+        self.acm_validation_journal_object = target
+        private_json(self.args.output / "acm-validation-ownership.json", journal)
+        self.runner.run(
+            [
+                "aws",
+                "s3",
+                "cp",
+                "-",
+                target,
+                "--sse",
+                "AES256",
+                "--only-show-errors",
+                "--region",
+                self.args.region,
+            ],
+            input_text=json.dumps(journal, separators=(",", ":"), sort_keys=True),
+            timeout=120,
+        )
+        self.acm_validation_discovery_complete = True
+
     def deploy(self) -> None:
         hostname = f"{self.args.execution_id}.{self.args.hosted_zone_name.rstrip('.')}"
         parameters = [
@@ -1865,6 +2717,7 @@ class Controller:
             ["cloudformation", "describe-stacks", "--stack-name", self.stack_name]
         )
         self.outputs = stack_outputs(description)
+        self.ensure_acm_validation_journal()
         self.wait_for_runtime()
 
     def wait_for_runtime(self) -> None:
@@ -1890,6 +2743,7 @@ class Controller:
         )
 
     def build_site(self) -> tuple[Path, str]:
+        """Verify all local immutable inputs before the first AWS API call."""
         checkout = self.args.bridgefu_checkout.resolve()
         expected_commit = self.bridgefu_lock["commit"]
         actual_commit = self.runner.run(
@@ -1904,29 +2758,13 @@ class Controller:
             raise QualificationError(
                 "Bridgefu Cargo.lock does not match the source lock"
             )
-        output = (
-            checkout / "target" / f"qualification-demo-site-{self.args.execution_id}"
+        site, digest = prepare_demo_site_archive(
+            self.args.demo_site_archive.resolve(),
+            self.args.demo_site_sha256,
+            self.work / "site",
         )
-        self.runner.run(
-            [
-                "python3",
-                "scripts/build-recipe-demo-site.py",
-                "--output",
-                os.fspath(output),
-            ],
-            cwd=checkout,
-            timeout=600,
-        )
-        archive = output / "demo-site.zip"
-        digest = sha256_file(archive)
-        site = self.work / "site"
-        site.mkdir(mode=0o700)
-        with zipfile.ZipFile(archive) as bundle:
-            for info in bundle.infolist():
-                destination = (site / info.filename).resolve()
-                if site.resolve() not in destination.parents or info.is_dir():
-                    raise QualificationError("demo site bundle contains an unsafe path")
-            bundle.extractall(site)
+        self.demo_site = site
+        self.demo_site_sha256 = digest
         return site, digest
 
     def authenticate_agent(self) -> Path:
@@ -2380,14 +3218,49 @@ class Controller:
 
     def cleanup_sip_transients(self) -> list[str]:
         errors: list[str] = []
-        phone_absent = self.temp_phone_id is None
-        if self.vapi is not None and self.temp_phone_id is not None:
+        intent = getattr(self, "temp_phone_intent", None)
+        intent_journal = getattr(self, "temp_phone_intent_journal_object", None)
+        creation_ambiguous = getattr(self, "temp_phone_creation_ambiguous", False)
+        phone_absent = (
+            self.temp_phone_id is None
+            and intent is None
+            and self.temp_phone_journal_object is None
+            and intent_journal is None
+        )
+        if self.vapi is not None and intent is not None:
             try:
-                self.vapi.delete("phone-number", self.temp_phone_id)
-                self.temp_phone_id = None
+                if self.temp_phone_id is None:
+                    reconciled = self.vapi.find_phone_for_intent(intent)
+                    if reconciled is not None:
+                        phone_id = reconciled.get("id")
+                        if not isinstance(phone_id, str) or not RESOURCE_ID.fullmatch(
+                            phone_id
+                        ):
+                            raise QualificationError(
+                                "temporary Vapi SIP endpoint identity is invalid"
+                            )
+                        self.temp_phone_id = phone_id
+                        self.write_phone_ownership_journal(
+                            phone_id, intent["assistant_id"]
+                        )
+                    elif creation_ambiguous:
+                        raise QualificationError(
+                            "temporary Vapi SIP endpoint creation remains ambiguous"
+                        )
+                if self.temp_phone_id is not None:
+                    self.vapi.delete_phone(self.temp_phone_id, intent)
+                    self.temp_phone_id = None
+                self.temp_phone_creation_ambiguous = False
                 phone_absent = True
             except QualificationError:
                 errors.append("temporary Vapi SIP endpoint deletion failed")
+        elif (
+            self.temp_phone_id is not None
+            or intent is not None
+            or self.temp_phone_journal_object is not None
+            or intent_journal is not None
+        ):
+            errors.append("temporary Vapi SIP endpoint ownership proof is unavailable")
         if phone_absent and self.temp_phone_journal_object is not None:
             try:
                 self.aws.text(
@@ -2401,6 +3274,30 @@ class Controller:
                 self.temp_phone_journal_object = None
             except QualificationError:
                 errors.append("temporary Vapi endpoint journal deletion failed")
+        if (
+            phone_absent
+            and self.temp_phone_journal_object is None
+            and intent_journal is not None
+        ):
+            try:
+                self.aws.text(
+                    [
+                        "s3",
+                        "rm",
+                        intent_journal,
+                        "--only-show-errors",
+                    ]
+                )
+                self.temp_phone_intent_journal_object = None
+                intent_journal = None
+            except QualificationError:
+                errors.append("temporary Vapi endpoint intent journal deletion failed")
+        if (
+            phone_absent
+            and self.temp_phone_journal_object is None
+            and intent_journal is None
+        ):
+            self.temp_phone_intent = None
         if self.temp_sip_auth_object is not None:
             try:
                 self.aws.text(
@@ -2448,6 +3345,37 @@ class Controller:
             timeout=120,
         )
 
+    def write_phone_intent_journal(self, intent: Mapping[str, str]) -> None:
+        bucket = self.outputs.get("ArtifactBucket")
+        if not isinstance(bucket, str) or not S3_BUCKET.fullmatch(bucket):
+            raise QualificationError("qualification artifact bucket is invalid")
+        journal = vapi_phone_intent_journal(
+            self.args.execution_id,
+            self.args.region,
+            intent,
+        )
+        target = (
+            f"s3://{bucket}/qualification/{self.args.execution_id}/"
+            "ownership/vapi-phone-intent.json"
+        )
+        self.runner.run(
+            [
+                "aws",
+                "s3",
+                "cp",
+                "-",
+                target,
+                "--sse",
+                "AES256",
+                "--only-show-errors",
+                "--region",
+                self.args.region,
+            ],
+            input_text=json.dumps(journal, separators=(",", ":"), sort_keys=True),
+            timeout=120,
+        )
+        self.temp_phone_intent_journal_object = target
+
     def sip_smoke(self, storage: Path, correlation_key: str) -> None:
         primary_error: BaseException | None = None
         try:
@@ -2478,14 +3406,25 @@ class Controller:
             "username": f"bfq_{secrets.token_hex(8)}",
             "password": secrets.token_urlsafe(24),
         }
-        phone = self.vapi.create_phone(
+        phone_intent = vapi_phone_intent(
             self.args.execution_id,
             self.outputs["VapiAssistantId"],
             authentication,
         )
+        self.temp_phone_intent = phone_intent
+        self.write_phone_intent_journal(phone_intent)
+        try:
+            phone = self.vapi.create_phone(
+                self.args.execution_id,
+                self.outputs["VapiAssistantId"],
+                authentication,
+            )
+        except VapiPhoneReconciliationError:
+            self.temp_phone_creation_ambiguous = True
+            raise
         phone_id = phone.get("id")
         sip_uri = phone.get("sipUri")
-        expected_sip_uri = f"sip:{authentication['username']}@sip.vapi.ai"
+        expected_sip_uri = phone_intent["sip_uri"]
         if not isinstance(phone_id, str) or not RESOURCE_ID.fullmatch(phone_id):
             raise QualificationError("temporary Vapi SIP endpoint is invalid")
         self.temp_phone_id = phone_id
@@ -2860,23 +3799,32 @@ class Controller:
 
     def cleanup(self) -> dict[str, Any]:
         errors = self.stop_active_work()
+        try:
+            self.initialize_cleanup_vapi_verifier()
+        except QualificationError:
+            errors.append("Vapi cleanup verifier initialization failed")
         errors.extend(self.cleanup_sip_transients())
-        ownership_recovery_required = (
-            self.temp_phone_id is not None or self.temp_phone_journal_object is not None
+        try:
+            self.ensure_acm_validation_journal()
+        except QualificationError:
+            errors.append("qualification ACM ownership sealing failed")
+        phone_recovery_required = (
+            self.temp_phone_id is not None
+            or getattr(self, "temp_phone_intent", None) is not None
+            or getattr(self, "temp_phone_creation_ambiguous", False)
+            or self.temp_phone_journal_object is not None
+            or getattr(self, "temp_phone_intent_journal_object", None) is not None
         )
-        if ownership_recovery_required and not any(
+        acm_recovery_required = (
+            self.created_stack and not self.acm_validation_discovery_complete
+        )
+        ownership_recovery_required = phone_recovery_required or acm_recovery_required
+        if phone_recovery_required and not any(
             "Vapi" in error or "journal" in error for error in errors
         ):
             errors.append("temporary Vapi endpoint ownership cleanup is incomplete")
-        if self.outputs.get("ArtifactBucket") and not ownership_recovery_required:
-            try:
-                purge_object_versions_exact(
-                    self.aws,
-                    self.outputs["ArtifactBucket"],
-                    f"qualification/{self.args.execution_id}/",
-                )
-            except QualificationError:
-                errors.append("qualification object version cleanup failed")
+        if acm_recovery_required and not any("ACM" in error for error in errors):
+            errors.append("qualification ACM ownership cleanup is incomplete")
         if (
             self.created_stack
             and not ownership_recovery_required
@@ -2903,6 +3851,35 @@ class Controller:
         stack_absent = not self.aws.exists(
             ["cloudformation", "describe-stacks", "--stack-name", self.stack_name]
         )
+        acm_validation_absent = self.acm_validation_journal is None
+        if self.acm_validation_journal is not None:
+            if not stack_absent:
+                acm_validation_absent = False
+                errors.append("qualification ACM cleanup requires an absent stack")
+            else:
+                try:
+                    delete_acm_validation_records_exact(
+                        self.aws, self.acm_validation_journal
+                    )
+                    acm_validation_absent = True
+                except QualificationError:
+                    acm_validation_absent = False
+                    errors.append("qualification ACM validation-record cleanup failed")
+        artifact_bucket = self.outputs.get("ArtifactBucket")
+        if (
+            isinstance(artifact_bucket, str)
+            and not ownership_recovery_required
+            and acm_validation_absent
+        ):
+            try:
+                purge_object_versions_exact(
+                    self.aws,
+                    artifact_bucket,
+                    f"qualification/{self.args.execution_id}/",
+                )
+                self.acm_validation_journal_object = None
+            except QualificationError:
+                errors.append("qualification object version cleanup failed")
         connect_absent = True
         if self.outputs.get("ConnectInstanceId"):
             connect_absent = not self.aws.exists(
@@ -2964,6 +3941,8 @@ class Controller:
                     and self.vapi.get(resource, resource_id) is not None
                 ):
                     vapi_absent = False
+        if phone_recovery_required:
+            vapi_absent = False
         zero = {
             "schema_version": 1,
             "producer": PRODUCER,
@@ -2976,6 +3955,7 @@ class Controller:
             "test_credentials_absent": secret_absent,
             "qualification_objects_absent": objects_absent,
             "qualification_private_dns_absent": private_dns_absent,
+            "qualification_acm_validation_records_absent": acm_validation_absent,
             "redacted": True,
         }
         private_json(self.args.output / "zero-state.json", zero)
@@ -2993,12 +3973,12 @@ class Controller:
         try:
             self.phase = "input_validation"
             self.validate_inputs()
+            self.phase = "web_site_validation"
+            site, site_digest = self.build_site()
             self.phase = "preflight"
             self.preflight()
             self.phase = "cloudformation_deploy"
             self.deploy()
-            self.phase = "web_site_build"
-            site, site_digest = self.build_site()
             self.phase = "connect_authentication"
             storage = self.authenticate_agent()
             self.phase = "direct_secure_preflight"
@@ -3031,15 +4011,33 @@ class Controller:
             )
             if retain_environment:
                 self.phase = "retained_after_failure"
-                self.stop_active_work()
-                self.record_retained_environment()
+                retention_errors = self.stop_active_work()
+                try:
+                    self.ensure_acm_validation_journal()
+                except BaseException as error:
+                    retention_errors.append(
+                        "qualification ACM ownership sealing failed: "
+                        + sanitize_diagnostic(str(error), 512)
+                    )
+                try:
+                    self.record_retained_environment()
+                except BaseException as error:
+                    retention_errors.append(
+                        "retained environment receipt failed: "
+                        + sanitize_diagnostic(str(error), 512)
+                    )
+                if retention_errors:
+                    primary_error = combine_failures(
+                        primary_error,
+                        QualificationError("; ".join(retention_errors)),
+                        label="retention",
+                    )
             else:
                 try:
                     self.phase = "cleanup"
                     zero = self.cleanup()
                 except BaseException as error:
-                    if primary_error is None:
-                        primary_error = error
+                    primary_error = combine_failures(primary_error, error)
         finally:
             shutil.rmtree(self.work, ignore_errors=True)
         if primary_error is not None:
@@ -3078,6 +4076,9 @@ class Controller:
                 "qualification_private_dns_absent": zero[
                     "qualification_private_dns_absent"
                 ],
+                "qualification_acm_validation_records_absent": zero[
+                    "qualification_acm_validation_records_absent"
+                ],
             },
             "redacted": True,
         }
@@ -3102,6 +4103,8 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--bridgefu-checkout", required=True, type=Path)
     value.add_argument("--sip-client", required=True, type=Path)
     value.add_argument("--direct-secure-probe", required=True, type=Path)
+    value.add_argument("--demo-site-archive", required=True, type=Path)
+    value.add_argument("--demo-site-sha256", required=True)
     value.add_argument("--instance-type", default="t4g.large")
     value.add_argument(
         "--retain-on-failure",
