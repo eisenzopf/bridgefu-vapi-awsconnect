@@ -23,7 +23,7 @@ class FakeConnect:
         return {"Instance": {"InstanceStatus": "ACTIVE"}}
 
     def describe_contact_flow(self, **_kwargs):
-        return {"ContactFlow": {"State": "ACTIVE"}}
+        return {"ContactFlow": {"State": "ACTIVE", "Status": "PUBLISHED"}}
 
 
 class FakeRoute53:
@@ -45,6 +45,8 @@ class ConfigurationTests(unittest.TestCase):
     def properties(self):
         return {
             "AccountId": "123456789012",
+            "Partition": "aws",
+            "DeploymentId": "support",
             "ConnectInstanceArn": (
                 "arn:aws:connect:us-west-2:123456789012:instance/instance-1"
             ),
@@ -54,6 +56,13 @@ class ConfigurationTests(unittest.TestCase):
             ),
             "PublicHostedZoneId": "Z123",
             "SipHostname": "bridgefu.example.com",
+            "SipSecurity": "sips_optional_srtp",
+            "MaxConcurrentCalls": "100",
+            "VapiApiKeySecretArn": (
+                "arn:aws:secretsmanager:us-west-2:123456789012:secret:vapi-key-AbCdEf"
+            ),
+            "RuntimeImageId": "ami-0123456789abcdef0",
+            "DataRetentionMode": "ProductionRetain",
             "ScreenPopFieldsJson": json.dumps(
                 [
                     {
@@ -117,6 +126,46 @@ class ConfigurationTests(unittest.TestCase):
             self.assertRaisesRegex(handler.ConfigurationError, "connect_arn_scope"),
         ):
             handler.render(properties, boto3_module=FakeBoto3())
+
+    def test_rejects_saved_target_flow_even_when_active(self):
+        class SavedTargetConnect(FakeConnect):
+            def describe_contact_flow(self, **kwargs):
+                flow = super().describe_contact_flow(**kwargs)["ContactFlow"]
+                if kwargs["ContactFlowId"] == "default-flow":
+                    flow["Status"] = "SAVED"
+                return {"ContactFlow": flow}
+
+        class SavedTargetBoto3(FakeBoto3):
+            def client(self, service):
+                return SavedTargetConnect() if service == "connect" else FakeRoute53()
+
+        with (
+            mock.patch.dict(os.environ, {"AWS_REGION": "us-west-2"}),
+            self.assertRaisesRegex(
+                handler.ConfigurationError, "target_flow_not_published"
+            ),
+        ):
+            handler.render(self.properties(), boto3_module=SavedTargetBoto3())
+
+    def test_rejects_saved_routing_flow_even_when_active(self):
+        class SavedRouteConnect(FakeConnect):
+            def describe_contact_flow(self, **kwargs):
+                flow = super().describe_contact_flow(**kwargs)["ContactFlow"]
+                if kwargs["ContactFlowId"] == "billing-flow":
+                    flow["Status"] = "SAVED"
+                return {"ContactFlow": flow}
+
+        class SavedRouteBoto3(FakeBoto3):
+            def client(self, service):
+                return SavedRouteConnect() if service == "connect" else FakeRoute53()
+
+        with (
+            mock.patch.dict(os.environ, {"AWS_REGION": "us-west-2"}),
+            self.assertRaisesRegex(
+                handler.ConfigurationError, "routing_flow_not_published"
+            ),
+        ):
+            handler.render(self.properties(), boto3_module=SavedRouteBoto3())
 
 
 if __name__ == "__main__":

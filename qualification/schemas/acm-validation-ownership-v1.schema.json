@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bridgefu.dev/vapi-awsconnect/qualification/acm-validation-ownership-v1.schema.json",
+  "title": "Exact disposable ACM DNS-validation ownership",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "producer", "execution_id", "region", "public_hosted_zone_id", "certificate_arn", "record_sets", "ownership_sha256", "created_at", "redacted"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "producer": {"const": "bridgefu-acm-validation-ownership@1"},
+    "execution_id": {"type": "string", "pattern": "^bfq-[a-z0-9-]{4,20}$"},
+    "region": {"enum": ["us-west-2", "us-east-1"]},
+    "public_hosted_zone_id": {"type": "string", "pattern": "^[A-Z0-9]{1,64}$"},
+    "certificate_arn": {"type": "string", "pattern": "^arn:aws[-a-z0-9]*:acm:(us-west-2|us-east-1):[0-9]{12}:certificate/[A-Za-z0-9-]+$"},
+    "record_sets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "type", "ttl", "resource_records"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^_[a-z0-9]{1,64}\\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+$", "maxLength": 254},
+          "type": {"const": "CNAME"},
+          "ttl": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+          "resource_records": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^[^\\u0000-\\u001f\\u007f]+$"}
+          }
+        }
+      }
+    },
+    "ownership_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "redacted": {"const": true}
+  }
+}

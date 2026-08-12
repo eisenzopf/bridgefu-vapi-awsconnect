@@ -49,13 +49,16 @@ class QualificationAssetTests(unittest.TestCase):
     def test_vapi_web_demo_site_is_owned_and_built_by_this_repository(self):
         controller = (QUALIFICATION / "controller.py").read_text()
         package = json.loads((QUALIFICATION / "package.json").read_text())
-        self.assertIn('os.fspath(QUALIFICATION / "build_demo_site.py")', controller)
         self.assertNotIn("build-recipe-demo-site.py", controller)
         build_site = controller.split("    def build_site", 1)[1].split(
             "\n    def authenticate_agent", 1
         )[0]
-        self.assertIn(
-            'os.fspath(output),\n            ],\n            cwd=ROOT', build_site
+        self.assertIn("prepare_demo_site_archive(", build_site)
+        self.assertIn("self.args.demo_site_sha256", build_site)
+        run = controller.split("    def run(self)", 1)[1].split("\ndef parser()", 1)[0]
+        self.assertLess(
+            run.index('self.phase = "web_site_validation"'),
+            run.index('self.phase = "preflight"'),
         )
         self.assertEqual(package["dependencies"]["@vapi-ai/web"], "2.5.2")
         self.assertEqual(package["devDependencies"]["esbuild"], "0.28.1")
@@ -280,9 +283,7 @@ class QualificationAssetTests(unittest.TestCase):
             "=0.3.7",
         )
         lock = (QUALIFICATION / "sdp-observer" / "Cargo.lock").read_text()
-        package = lock.split('name = "rvoip-sip-core"', 1)[1].split(
-            "[[package]]", 1
-        )[0]
+        package = lock.split('name = "rvoip-sip-core"', 1)[1].split("[[package]]", 1)[0]
         self.assertIn('version = "0.3.7"', package)
         self.assertIn(
             'source = "registry+https://github.com/rust-lang/crates.io-index"',
@@ -426,6 +427,7 @@ class QualificationAssetTests(unittest.TestCase):
             "test_credentials_absent",
             "qualification_objects_absent",
             "qualification_private_dns_absent",
+            "qualification_acm_validation_records_absent",
             "bridgefu_sip_invite_evidence",
             "bridgefu_correlation_evidence",
         ):

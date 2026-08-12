@@ -131,11 +131,19 @@ class QualificationControllerTests(unittest.TestCase):
 
             def request(self, method, path, payload=None, *, allow_missing=False):
                 self.observed = (method, path, payload, allow_missing)
+                if method == "GET":
+                    return []
                 return {
                     "id": "phone_1234",
                     "provider": "vapi",
+                    "name": payload["name"],
+                    "assistantId": payload["assistantId"],
                     "status": "active",
                     "sipUri": payload["sipUri"],
+                    "authentication": {
+                        "realm": payload["authentication"]["realm"],
+                        "username": payload["authentication"]["username"],
+                    },
                 }
 
         authentication = {
@@ -162,6 +170,86 @@ class QualificationControllerTests(unittest.TestCase):
                 "assistant_1234",
                 {**authentication, "password": "too-short"},
             )
+
+    def test_vapi_sip_phone_lost_create_response_reconciles_exact_owner(self):
+        authentication = {
+            "realm": "sip.vapi.ai",
+            "username": "bfq_0123456789abcdef",
+            "password": "0123456789abcdef0123456789abcdef",
+        }
+        intent = CONTROLLER.vapi_phone_intent(
+            "bfq-test1234", "assistant_1234", authentication
+        )
+        owned = {
+            "id": "phone_1234",
+            "provider": "vapi",
+            "name": intent["name"],
+            "assistantId": intent["assistant_id"],
+            "sipUri": intent["sip_uri"],
+            "authentication": {
+                "realm": "sip.vapi.ai",
+                "username": "bfq_0123456789abcdef",
+            },
+        }
+
+        class FakeVapi(CONTROLLER.Vapi):
+            def __init__(self):
+                super().__init__("private-test-key")
+                self.listings = iter([[], [owned]])
+                self.posts = 0
+
+            def list(self, resource, *, limit=100):
+                self.asserted = (resource, limit)
+                return next(self.listings)
+
+            def request(self, method, path, payload=None, *, allow_missing=False):
+                self.posts += 1
+                raise CONTROLLER.VapiAmbiguousWriteError("response lost")
+
+        client = FakeVapi()
+        phone = client.create_phone(
+            "bfq-test1234",
+            "assistant_1234",
+            authentication,
+            reconcile_timeout=0,
+            poll_seconds=0,
+        )
+        self.assertEqual(phone["id"], "phone_1234")
+        self.assertEqual(client.posts, 1)
+        self.assertEqual(client.asserted, ("phone-number", 100))
+
+    def test_vapi_sip_phone_reconciliation_fails_closed_on_name_collision(self):
+        authentication = {
+            "realm": "sip.vapi.ai",
+            "username": "bfq_0123456789abcdef",
+            "password": "0123456789abcdef0123456789abcdef",
+        }
+        name = CONTROLLER.vapi_phone_owned_name("bfq-test1234")
+
+        class FakeVapi(CONTROLLER.Vapi):
+            def __init__(self):
+                super().__init__("private-test-key")
+                self.posted = False
+
+            def list(self, resource, *, limit=100):
+                return [
+                    {
+                        "id": "customer_phone",
+                        "provider": "vapi",
+                        "name": name,
+                        "assistantId": "assistant_customer",
+                        "sipUri": "sip:customer@sip.vapi.ai",
+                    }
+                ]
+
+            def request(self, method, path, payload=None, *, allow_missing=False):
+                self.posted = True
+                raise AssertionError("a colliding intent must not be created")
+
+        client = FakeVapi()
+        with self.assertRaisesRegex(CONTROLLER.QualificationError, "already in use"):
+            client.create_phone("bfq-test1234", "assistant_1234", authentication)
+        self.assertFalse(client.posted)
 
     def test_vapi_sip_phone_activation_is_bounded_and_exact(self):
         class FakeVapi:
@@ -200,14 +288,14 @@ class QualificationControllerTests(unittest.TestCase):
                 poll_seconds=0,
             )
 
-    def test_vapi_transient_deletion_targets_and_verifies_one_exact_id(self):
+    def test_vapi_generic_deletion_targets_and_verifies_one_exact_id(self):
         class FakeVapi(CONTROLLER.Vapi):
             def __init__(self):
                 super().__init__("private-test-key")
                 self.values = iter(
                     [
-                        {"id": "phone_1234"},
-                        {"id": "phone_1234"},
+                        {"id": "tool_1234"},
+                        {"id": "tool_1234"},
                         None,
                     ]
                 )
@@ -222,9 +310,57 @@ class QualificationControllerTests(unittest.TestCase):
                 return None
 
         client = FakeVapi()
-        client.delete("phone-number", "phone_1234", timeout=1, poll_seconds=0)
-        self.assertEqual(client.observed, ("phone-number", "phone_1234"))
-        self.assertEqual(client.deleted, ("DELETE", "/phone-number/phone_1234", True))
+        client.delete("tool", "tool_1234", timeout=1, poll_seconds=0)
+        self.assertEqual(client.observed, ("tool", "tool_1234"))
+        self.assertEqual(client.deleted, ("DELETE", "/tool/tool_1234", True))
+
+    def test_vapi_generic_delete_refuses_phone_without_ownership_intent(self):
+        client = CONTROLLER.Vapi("private-test-key")
+        with self.assertRaisesRegex(
+            CONTROLLER.QualificationError, "exact ownership intent"
+        ):
+            client.delete("phone-number", "phone_1234")
+
+    def test_vapi_phone_delete_refuses_foreign_exact_id(self):
+        authentication = {
+            "realm": "sip.vapi.ai",
+            "username": "bfq_0123456789abcdef",
+            "password": "0123456789abcdef0123456789abcdef",
+        }
+        intent = CONTROLLER.vapi_phone_intent(
+            "bfq-test1234", "assistant_1234", authentication
+        )
+
+        class FakeVapi(CONTROLLER.Vapi):
+            def __init__(self, foreign):
+                super().__init__("private-test-key")
+                self.foreign = foreign
+                self.deleted = False
+
+            def get(self, resource, resource_id):
+                return self.foreign
+
+            def request(self, method, path, payload=None, *, allow_missing=False):
+                self.deleted = True
+                raise AssertionError("foreign phone must not be deleted")
+
+        owned_shape = {
+            "id": "phone_1234",
+            "provider": "vapi",
+            "name": intent["name"],
+            "assistantId": intent["assistant_id"],
+            "sipUri": intent["sip_uri"],
+        }
+        for changed in (
+            {**owned_shape, "name": "Customer phone"},
+            {**owned_shape, "assistantId": "assistant_customer"},
+            {**owned_shape, "sipUri": "sip:customer@sip.vapi.ai"},
+        ):
+            with self.subTest(changed=changed):
+                client = FakeVapi(changed)
+                with self.assertRaisesRegex(CONTROLLER.QualificationError, "not owned"):
+                    client.delete_phone("phone_1234", intent)
+                self.assertFalse(client.deleted)
 
     def test_vapi_phone_ownership_journal_is_strict_hashed_and_non_secret(self):
         journal = CONTROLLER.vapi_phone_ownership_journal(
@@ -250,6 +386,39 @@ class QualificationControllerTests(unittest.TestCase):
             changed[field] = replacement
             with self.assertRaises(CONTROLLER.QualificationError):
                 CONTROLLER.validate_vapi_phone_ownership_journal(changed)
+
+    def test_vapi_phone_intent_journal_is_strict_hashed_and_non_secret(self):
+        authentication = {
+            "realm": "sip.vapi.ai",
+            "username": "bfq_0123456789abcdef",
+            "password": "not-retained-password-value",
+        }
+        intent = CONTROLLER.vapi_phone_intent(
+            "bfq-test1234", "assistant_1234", authentication
+        )
+        journal = CONTROLLER.vapi_phone_intent_journal(
+            "bfq-test1234",
+            "us-west-2",
+            intent,
+            created_at="2026-08-11T04:20:00Z",
+        )
+        self.assertEqual(journal["producer"], "bridgefu-vapi-phone-intent@1")
+        self.assertEqual(journal["owned_name"], "BFQ bfq-test1234 SIP smoke")
+        self.assertEqual(journal["sip_uri"], "sip:bfq_0123456789abcdef@sip.vapi.ai")
+        serialized = json.dumps(journal)
+        self.assertNotIn(authentication["password"], serialized)
+        self.assertNotIn("password", serialized.lower())
+        CONTROLLER.validate_vapi_phone_intent_journal(journal)
+        for field, replacement in (
+            ("assistant_id", "assistant_other"),
+            ("sip_uri", "sip:foreign@sip.vapi.ai"),
+            ("authentication_username", "bfq_ffffffffffffffff"),
+            ("intent_sha256", "0" * 64),
+        ):
+            changed = dict(journal)
+            changed[field] = replacement
+            with self.assertRaises(CONTROLLER.QualificationError):
+                CONTROLLER.validate_vapi_phone_intent_journal(changed)
 
     def test_vapi_phone_journal_is_uploaded_from_memory_to_exact_key(self):
         class Runner:
@@ -281,17 +450,62 @@ class QualificationControllerTests(unittest.TestCase):
         self.assertNotIn("password", retained)
         self.assertNotIn("authentication", retained)
 
-    def test_vapi_phone_journal_precedes_uri_and_activation_validation(self):
+    def test_vapi_phone_intent_journal_upload_is_exact_and_non_secret(self):
+        class Runner:
+            def run(self, arguments, **kwargs):
+                self.arguments = arguments
+                self.kwargs = kwargs
+                return ""
+
+        authentication = {
+            "realm": "sip.vapi.ai",
+            "username": "bfq_0123456789abcdef",
+            "password": "not-retained-password-value",
+        }
+        intent = CONTROLLER.vapi_phone_intent(
+            "bfq-test1234", "assistant_1234", authentication
+        )
         controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
-        controller.args = SimpleNamespace(execution_id="bfq-test1234")
+        controller.args = SimpleNamespace(
+            execution_id="bfq-test1234", region="us-west-2"
+        )
+        controller.outputs = {"ArtifactBucket": "bridgefu-artifacts-test"}
+        controller.runner = Runner()
+        controller.temp_phone_intent_journal_object = None
+        controller.write_phone_intent_journal(intent)
+        expected = (
+            "s3://bridgefu-artifacts-test/qualification/bfq-test1234/"
+            "ownership/vapi-phone-intent.json"
+        )
+        self.assertEqual(controller.temp_phone_intent_journal_object, expected)
+        self.assertEqual(controller.runner.arguments[0:4], ["aws", "s3", "cp", "-"])
+        self.assertIn("--sse", controller.runner.arguments)
+        journal = json.loads(controller.runner.kwargs["input_text"])
+        self.assertEqual(journal["assistant_id"], "assistant_1234")
+        retained = controller.runner.kwargs["input_text"]
+        self.assertNotIn(authentication["password"], retained)
+        self.assertNotIn("password", retained.lower())
+
+    def test_vapi_phone_journal_precedes_uri_and_activation_validation(self):
+        order = []
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.args = SimpleNamespace(
+            execution_id="bfq-test1234", region="us-west-2"
+        )
         controller.outputs = {"VapiAssistantId": "assistant_1234"}
         controller.aws = mock.Mock()
         controller.temp_phone_id = None
         controller.vapi = mock.Mock()
-        controller.vapi.create_phone.return_value = {
-            "id": "phone_1234",
-            "sipUri": "sip:unexpected@sip.vapi.ai",
-        }
+        controller.vapi.create_phone.side_effect = lambda *args, **kwargs: (
+            order.append("post")
+            or {
+                "id": "phone_1234",
+                "sipUri": "sip:unexpected@sip.vapi.ai",
+            }
+        )
+        controller.write_phone_intent_journal = mock.Mock(
+            side_effect=lambda intent: order.append("intent-journal")
+        )
         controller.write_phone_ownership_journal = mock.Mock()
         with mock.patch.object(CONTROLLER, "ensure_connect_agent_available"):
             with self.assertRaisesRegex(
@@ -299,15 +513,132 @@ class QualificationControllerTests(unittest.TestCase):
             ):
                 controller._sip_smoke(Path("unused"), "unused")
         self.assertEqual(controller.temp_phone_id, "phone_1234")
+        self.assertEqual(order, ["intent-journal", "post"])
+        controller.write_phone_intent_journal.assert_called_once()
         controller.write_phone_ownership_journal.assert_called_once_with(
             "phone_1234", "assistant_1234"
         )
+        controller.vapi.create_phone.reset_mock()
+        controller.write_phone_intent_journal.side_effect = (
+            CONTROLLER.QualificationError("intent upload failed")
+        )
+        with mock.patch.object(CONTROLLER, "ensure_connect_agent_available"):
+            with self.assertRaisesRegex(
+                CONTROLLER.QualificationError, "intent upload failed"
+            ):
+                controller._sip_smoke(Path("unused"), "unused")
+        controller.vapi.create_phone.assert_not_called()
+
+    def test_cleanup_reconciles_lost_phone_id_from_intent_before_delete(self):
+        authentication = {
+            "realm": "sip.vapi.ai",
+            "username": "bfq_0123456789abcdef",
+            "password": "not-retained-password-value",
+        }
+        intent = CONTROLLER.vapi_phone_intent(
+            "bfq-test1234", "assistant_1234", authentication
+        )
+        owned = {
+            "id": "phone_1234",
+            "provider": "vapi",
+            "name": intent["name"],
+            "assistantId": intent["assistant_id"],
+            "sipUri": intent["sip_uri"],
+        }
+
+        class Vapi:
+            def __init__(self):
+                self.matches = iter([owned, None])
+                self.deleted = None
+
+            def find_phone_for_intent(self, observed_intent):
+                self.observed_intent = observed_intent
+                return next(self.matches)
+
+            def delete_phone(self, resource_id, observed_intent):
+                self.deleted = (resource_id, observed_intent)
+
+        class Aws:
+            def __init__(self):
+                self.removed = []
+
+            def text(self, arguments, timeout=900):
+                self.removed.append(arguments)
+                return ""
+
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.args = SimpleNamespace(
+            execution_id="bfq-test1234", region="us-west-2"
+        )
+        controller.outputs = {"ArtifactBucket": "bridgefu-artifacts-test"}
+        controller.vapi = Vapi()
+        controller.aws = Aws()
+        controller.temp_phone_id = None
+        controller.temp_phone_intent = intent
+        controller.temp_phone_intent_journal_object = (
+            "s3://bridgefu-artifacts-test/qualification/bfq-test1234/"
+            "ownership/vapi-phone-intent.json"
+        )
+        controller.temp_phone_journal_object = None
+        controller.temp_sip_auth_object = None
+
+        def write_ownership(phone_id, assistant_id):
+            self.assertEqual((phone_id, assistant_id), ("phone_1234", "assistant_1234"))
+            controller.temp_phone_journal_object = (
+                "s3://bridgefu-artifacts-test/qualification/bfq-test1234/"
+                "ownership/vapi-phone.json"
+            )
+
+        controller.write_phone_ownership_journal = write_ownership
+        self.assertEqual(controller.cleanup_sip_transients(), [])
+        self.assertEqual(controller.vapi.deleted, ("phone_1234", intent))
+        self.assertIsNone(controller.temp_phone_id)
+        self.assertIsNone(controller.temp_phone_intent)
+        self.assertIsNone(controller.temp_phone_journal_object)
+        self.assertIsNone(controller.temp_phone_intent_journal_object)
+        removed = [item for call in controller.aws.removed for item in call]
+        self.assertIn("ownership/vapi-phone.json", " ".join(removed))
+        self.assertIn("ownership/vapi-phone-intent.json", " ".join(removed))
+
+    def test_cleanup_retains_intent_when_ambiguous_create_is_not_visible(self):
+        authentication = {
+            "realm": "sip.vapi.ai",
+            "username": "bfq_0123456789abcdef",
+            "password": "not-retained-password-value",
+        }
+        intent = CONTROLLER.vapi_phone_intent(
+            "bfq-test1234", "assistant_1234", authentication
+        )
+
+        class Vapi:
+            def find_phone_for_intent(self, observed_intent):
+                self.observed_intent = observed_intent
+                return None
+
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.vapi = Vapi()
+        controller.aws = mock.Mock()
+        controller.temp_phone_id = None
+        controller.temp_phone_intent = intent
+        controller.temp_phone_creation_ambiguous = True
+        controller.temp_phone_intent_journal_object = (
+            "s3://bridgefu-artifacts-test/qualification/bfq-test1234/"
+            "ownership/vapi-phone-intent.json"
+        )
+        controller.temp_phone_journal_object = None
+        controller.temp_sip_auth_object = None
+        errors = controller.cleanup_sip_transients()
+        self.assertIn("temporary Vapi SIP endpoint deletion failed", errors)
+        self.assertTrue(controller.temp_phone_creation_ambiguous)
+        self.assertEqual(controller.temp_phone_intent, intent)
+        self.assertIsNotNone(controller.temp_phone_intent_journal_object)
+        controller.aws.text.assert_not_called()
 
     def test_failed_phone_delete_retains_journal_and_skips_stack_deletion(self):
         output = Path(tempfile.mkdtemp(prefix="qualification-ownership-test-"))
 
         class Vapi:
-            def delete(self, resource, resource_id):
+            def delete_phone(self, resource_id, intent):
                 raise CONTROLLER.QualificationError("delete failed")
 
             def get(self, resource, resource_id):
@@ -354,11 +685,21 @@ class QualificationControllerTests(unittest.TestCase):
             }
             controller.vapi = Vapi()
             controller.temp_phone_id = "phone_1234"
+            controller.temp_phone_intent = {
+                "name": "BFQ bfq-test1234 SIP smoke",
+                "assistant_id": "assistant_1234",
+                "sip_uri": "sip:bfq_0123456789abcdef@sip.vapi.ai",
+                "authentication_realm": "sip.vapi.ai",
+                "authentication_username": "bfq_0123456789abcdef",
+            }
             controller.temp_phone_journal_object = (
                 "s3://bridgefu-artifacts-test/qualification/bfq-test1234/"
                 "ownership/vapi-phone.json"
             )
             controller.temp_sip_auth_object = None
+            controller.acm_validation_journal = None
+            controller.acm_validation_journal_object = None
+            controller.acm_validation_discovery_complete = True
             controller.processes = []
             controller.ssm_commands = []
             controller.created_stack = True

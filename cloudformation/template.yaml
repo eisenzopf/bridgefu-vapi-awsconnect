@@ -14,7 +14,7 @@ Metadata:
       - Label: {default: Public SIP DNS}
         Parameters: [PublicHostedZoneId, SipHostname]
       - Label: {default: Vapi template assistant}
-        Parameters: [VapiRegion, VapiApiKeySecretArn, VapiModel, VapiVoiceId]
+        Parameters: [VapiApiKeySecretArn, VapiModel, VapiVoiceId]
       - Label: {default: Agent screen pop}
         Parameters: [ScreenPopFieldsJson, RoutingJson, ContextTtlSeconds]
       - Label: {default: Capacity and operations}
@@ -22,12 +22,11 @@ Metadata:
       - Label: {default: Retention}
         Parameters: [DataRetentionMode]
       - Label: {default: Advanced network controls}
-        Parameters: [VpcCidr, SipSecurity]
+        Parameters: [SipSecurity]
     ParameterLabels:
       DeploymentId: {default: Deployment name}
       InstanceType: {default: Bridgefu EC2 size}
       VapiApiKeySecretArn: {default: Vapi private-key secret ARN}
-      VapiRegion: {default: Vapi organization region}
       VapiModel: {default: Initial Vapi model}
       VapiVoiceId: {default: Initial Vapi voice}
       ConnectInstanceArn: {default: Existing Amazon Connect instance ARN}
@@ -40,7 +39,6 @@ Metadata:
       MaxConcurrentCalls: {default: Maximum concurrent calls}
       LogRetentionDays: {default: CloudWatch log retention in days}
       AlarmEmail: {default: Optional alarm email}
-      VpcCidr: {default: Dedicated Bridgefu VPC CIDR}
       DataRetentionMode: {default: Deletion behavior}
       SipSecurity: {default: SIP transport and media security}
 
@@ -79,11 +77,6 @@ Parameters:
     Description: >-
       ARN of an existing Secrets Manager secret whose SecretString is the Vapi
       private API key. The key itself is never a CloudFormation parameter.
-  VapiRegion:
-    Type: String
-    Default: US
-    AllowedValues: [US, EU]
-    Description: Region where the Vapi organization is hosted; controls API and SIP networking.
   VapiModel:
     Type: String
     Default: gpt-4.1-mini
@@ -125,16 +118,14 @@ Parameters:
     Type: String
     Default: ''
     Description: Optional email address for the Bridgefu alarm topic subscription.
-  VpcCidr:
-    Type: String
-    Default: 10.42.0.0/16
-    AllowedPattern: '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.).+$'
-    Description: Private CIDR for the new dedicated two-subnet Bridgefu VPC.
   DataRetentionMode:
     Type: String
     Default: ProductionRetain
     AllowedValues: [ProductionRetain, TestDelete]
-    Description: ProductionRetain protects context, audit data, and the Vapi template on stack deletion.
+    Description: >-
+      Immutable after stack creation. ProductionRetain preserves context,
+      runtime data, and the Vapi template on deletion; TestDelete is only for
+      disposable qualification stacks.
   SipSecurity:
     Type: String
     Default: sips_optional_srtp
@@ -146,17 +137,6 @@ Parameters:
       DataRetentionMode is TestDelete.
 
 Mappings:
-  VapiRegionConfiguration:
-    US:
-      ApiBaseUrl: https://api.vapi.ai
-      SignalingCidr1: 44.229.228.186/32
-      SignalingCidr2: 44.238.177.138/32
-      MediaSourceCidr: 0.0.0.0/0
-    EU:
-      ApiBaseUrl: https://api.eu.vapi.ai
-      SignalingCidr1: 63.182.83.170/32
-      SignalingCidr2: 63.182.83.170/32
-      MediaSourceCidr: 63.182.83.170/32
   RegionRelease:
     us-east-1:
       AmiId: __AMI_US_EAST_1__
@@ -211,6 +191,11 @@ Resources:
         TargetContactFlowArn: !Ref TargetContactFlowArn
         PublicHostedZoneId: !Ref PublicHostedZoneId
         SipHostname: !Ref SipHostname
+        SipSecurity: !Ref SipSecurity
+        MaxConcurrentCalls: !Ref MaxConcurrentCalls
+        VapiApiKeySecretArn: !Ref VapiApiKeySecretArn
+        DataRetentionMode: !Ref DataRetentionMode
+        RuntimeImageId: !FindInMap [RegionRelease, !Ref 'AWS::Region', AmiId]
         ScreenPopFieldsJson: !Ref ScreenPopFieldsJson
         RoutingJson: !Ref RoutingJson
         LogRetentionDays: !Ref LogRetentionDays
@@ -220,20 +205,20 @@ Resources:
     Properties:
       TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/network.yaml?versionId=__NESTED_NETWORK_VERSION_ID_URLENCODED__
       Parameters:
-        DeploymentId: !Ref DeploymentId
+        DeploymentId: !GetAtt Configuration.Outputs.DeploymentId
         NetworkMode: NewVpc
-        VpcCidr: !Ref VpcCidr
+        VpcCidr: 10.42.0.0/16
         CreateNatGateways: 'false'
         ProjectTag: bridgefu-vapi-awsconnect
         ManagedByTag: bridgefu-cloudformation
-        ExecutionIdTag: !Ref DeploymentId
+        ExecutionIdTag: !GetAtt Configuration.Outputs.DeploymentId
 
   HandoffService:
     Type: AWS::CloudFormation::Stack
     Properties:
       TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/handoff-service.yaml?versionId=__NESTED_HANDOFF_SERVICE_VERSION_ID_URLENCODED__
       Parameters:
-        DeploymentId: !Ref DeploymentId
+        DeploymentId: !GetAtt Configuration.Outputs.DeploymentId
         ArtifactBucket: !FindInMap [RegionRelease, !Ref 'AWS::Region', ArtifactBucket]
         PrepareArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/prepare_handoff.zip
         PrepareArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', HandoffPrepareArtifactVersion]
@@ -241,28 +226,30 @@ Resources:
         TransferArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', HandoffTransferArtifactVersion]
         LookupArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/connect_lookup.zip
         LookupArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', HandoffLookupArtifactVersion]
-        BridgefuControlBaseUrl: !Sub 'https://control.${SipHostname}'
+        BridgefuControlBaseUrl: !Sub
+          - 'https://control.${Hostname}'
+          - Hostname: !GetAtt Configuration.Outputs.SipHostname
         BridgefuRouteId: support
-        SipSecurity: !Ref SipSecurity
+        SipSecurity: !GetAtt Configuration.Outputs.SipSecurity
         ContextTtlSeconds: !Ref ContextTtlSeconds
         ScreenPopFieldsJson: !Ref ScreenPopFieldsJson
         RoutingFieldKey: !GetAtt Configuration.Outputs.RoutingFieldKey
         LambdaReservedConcurrencyPerFunction: 0
-        DataRetentionMode: !Ref DataRetentionMode
+        DataRetentionMode: !GetAtt Configuration.Outputs.DataRetentionMode
         LogRetentionDays: !Ref LogRetentionDays
         TransferSubnetIds: !GetAtt Network.Outputs.PrivateSubnetIds
         TransferSecurityGroupIds: !GetAtt Network.Outputs.TransferFunctionSecurityGroupId
         ProjectTag: bridgefu-vapi-awsconnect
         ManagedByTag: bridgefu-cloudformation
-        ExecutionIdTag: !Ref DeploymentId
+        ExecutionIdTag: !GetAtt Configuration.Outputs.DeploymentId
 
   ConnectIntegration:
     Type: AWS::CloudFormation::Stack
     Properties:
       TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/connect.yaml?versionId=__NESTED_CONNECT_VERSION_ID_URLENCODED__
       Parameters:
-        DeploymentId: !Ref DeploymentId
-        ConnectInstanceArn: !Ref ConnectInstanceArn
+        DeploymentId: !GetAtt Configuration.Outputs.DeploymentId
+        ConnectInstanceArn: !GetAtt Configuration.Outputs.ConnectInstanceArn
         TargetContactFlowArn: !Ref TargetContactFlowArn
         LookupFunctionArn: !GetAtt HandoffService.Outputs.LookupFunctionArn
         AgentGuideTemplateString: !GetAtt Configuration.Outputs.AgentGuideTemplateString
@@ -271,43 +258,45 @@ Resources:
         RoutingTransferActionsJson: !GetAtt Configuration.Outputs.RoutingTransferActionsJson
         ProjectTag: bridgefu-vapi-awsconnect
         ManagedByTag: bridgefu-cloudformation
-        ExecutionIdTag: !Ref DeploymentId
+        ExecutionIdTag: !GetAtt Configuration.Outputs.DeploymentId
 
   Runtime:
     Type: AWS::CloudFormation::Stack
     Properties:
       TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/runtime.yaml?versionId=__NESTED_RUNTIME_VERSION_ID_URLENCODED__
       Parameters:
-        DeploymentId: !Ref DeploymentId
+        DeploymentId: !GetAtt Configuration.Outputs.DeploymentId
         VpcId: !GetAtt Network.Outputs.VpcId
         VpcCidr: !GetAtt Network.Outputs.VpcCidr
         PublicSubnet1Id: !GetAtt Network.Outputs.PublicSubnet1Id
         PublicSubnet1AvailabilityZone: !GetAtt Network.Outputs.PublicSubnet1AvailabilityZone
         TransferFunctionSecurityGroupId: !GetAtt Network.Outputs.TransferFunctionSecurityGroupId
-        PublicHostedZoneId: !Ref PublicHostedZoneId
-        SipHostname: !Ref SipHostname
-        ControlHostname: !Sub 'control.${SipHostname}'
-        SipSecurity: !Ref SipSecurity
-        VapiSignalingCidr1: !FindInMap [VapiRegionConfiguration, !Ref VapiRegion, SignalingCidr1]
-        VapiSignalingCidr2: !FindInMap [VapiRegionConfiguration, !Ref VapiRegion, SignalingCidr2]
+        PublicHostedZoneId: !GetAtt Configuration.Outputs.PublicHostedZoneId
+        SipHostname: !GetAtt Configuration.Outputs.SipHostname
+        ControlHostname: !Sub
+          - 'control.${Hostname}'
+          - Hostname: !GetAtt Configuration.Outputs.SipHostname
+        SipSecurity: !GetAtt Configuration.Outputs.SipSecurity
+        VapiSignalingCidr1: 44.229.228.186/32
+        VapiSignalingCidr2: 44.238.177.138/32
         VapiSignalingCidr3: ''
         VapiSignalingCidr4: ''
-        MediaSourceCidr: !FindInMap [VapiRegionConfiguration, !Ref VapiRegion, MediaSourceCidr]
+        MediaSourceCidr: 0.0.0.0/0
         ArtifactBucket: !FindInMap [RegionRelease, !Ref 'AWS::Region', ArtifactBucket]
-        ConnectInstanceArn: !Ref ConnectInstanceArn
+        ConnectInstanceArn: !GetAtt Configuration.Outputs.ConnectInstanceArn
         ConnectEntryFlowArn: !GetAtt ConnectIntegration.Outputs.WrapperFlowArn
         ConnectEntryFlowId: !GetAtt ConnectIntegration.Outputs.WrapperFlowId
         BridgefuApiBearerSecretArn: !GetAtt HandoffService.Outputs.BridgefuApiBearerSecretArn
         InstanceType: !Ref InstanceType
-        AmiId: !FindInMap [RegionRelease, !Ref 'AWS::Region', AmiId]
+        AmiId: !GetAtt Configuration.Outputs.RuntimeImageId
         RootVolumeGiB: 24
         DataVolumeGiB: 20
-        DataRetentionMode: !Ref DataRetentionMode
-        MaxConcurrentCalls: !Ref MaxConcurrentCalls
+        DataRetentionMode: !GetAtt Configuration.Outputs.DataRetentionMode
+        MaxConcurrentCalls: !GetAtt Configuration.Outputs.MaxConcurrentCalls
         LogRetentionDays: !Ref LogRetentionDays
         ProjectTag: bridgefu-vapi-awsconnect
         ManagedByTag: bridgefu-cloudformation
-        ExecutionIdTag: !Ref DeploymentId
+        ExecutionIdTag: !GetAtt Configuration.Outputs.DeploymentId
 
   VapiResources:
     Type: AWS::CloudFormation::Stack
@@ -315,12 +304,11 @@ Resources:
     Properties:
       TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/vapi.yaml?versionId=__NESTED_VAPI_VERSION_ID_URLENCODED__
       Parameters:
-        DeploymentId: !Ref DeploymentId
+        DeploymentId: !GetAtt Configuration.Outputs.DeploymentId
         ArtifactBucket: !FindInMap [RegionRelease, !Ref 'AWS::Region', ArtifactBucket]
         ProvisionerArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/vapi_provisioner.zip
         ProvisionerArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', VapiProvisionerArtifactVersion]
         VapiApiKeySecretArn: !Ref VapiApiKeySecretArn
-        VapiApiBaseUrl: !FindInMap [VapiRegionConfiguration, !Ref VapiRegion, ApiBaseUrl]
         VapiWebhookSecretArn: !GetAtt HandoffService.Outputs.VapiWebhookSecretArn
         VapiIdentityBindingArn: !GetAtt HandoffService.Outputs.VapiIdentityBindingArn
         PrepareUrl: !GetAtt HandoffService.Outputs.PrepareUrl
@@ -330,17 +318,17 @@ Resources:
         VapiVoiceId: !Ref VapiVoiceId
         LambdaReservedConcurrencyPerFunction: 0
         LogRetentionDays: !Ref LogRetentionDays
-        RetainVapiResourcesOnDelete: !If [RetainCustomerData, 'true', 'false']
+        RetainVapiResourcesOnDelete: !GetAtt Configuration.Outputs.RetainVapiResourcesOnDelete
         ProjectTag: bridgefu-vapi-awsconnect
         ManagedByTag: bridgefu-cloudformation
-        ExecutionIdTag: !Ref DeploymentId
+        ExecutionIdTag: !GetAtt Configuration.Outputs.DeploymentId
 
   Observability:
     Type: AWS::CloudFormation::Stack
     Properties:
       TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/observability.yaml?versionId=__NESTED_OBSERVABILITY_VERSION_ID_URLENCODED__
       Parameters:
-        DeploymentId: !Ref DeploymentId
+        DeploymentId: !GetAtt Configuration.Outputs.DeploymentId
         ApiId: !GetAtt HandoffService.Outputs.ApiId
         HandoffTableName: !GetAtt HandoffService.Outputs.HandoffTableName
         PrepareFunctionName: !GetAtt HandoffService.Outputs.PrepareFunctionName
@@ -352,12 +340,12 @@ Resources:
         LookupLogGroupName: !GetAtt HandoffService.Outputs.LookupLogGroupName
         RuntimeInstanceId: !GetAtt Runtime.Outputs.InstanceId
         RuntimeLogGroupName: !GetAtt Runtime.Outputs.RuntimeLogGroupName
-        SipSecurity: !Ref SipSecurity
-        MaxConcurrentCalls: !Ref MaxConcurrentCalls
+        SipSecurity: !GetAtt Configuration.Outputs.SipSecurity
+        MaxConcurrentCalls: !GetAtt Configuration.Outputs.MaxConcurrentCalls
         AlarmEmail: !Ref AlarmEmail
         ProjectTag: bridgefu-vapi-awsconnect
         ManagedByTag: bridgefu-cloudformation
-        ExecutionIdTag: !Ref DeploymentId
+        ExecutionIdTag: !GetAtt Configuration.Outputs.DeploymentId
 
 Outputs:
   ReleaseVersion:
@@ -402,4 +390,7 @@ Outputs:
   SsmStartSessionCommand:
     Value: !GetAtt Runtime.Outputs.SsmStartSessionCommand
   VapiRetentionNotice:
-    Value: The Vapi assistant, tool, and credential are retained when this stack is deleted.
+    Value: !If
+      - RetainCustomerData
+      - The Vapi assistant, tool, and credential are retained when this stack is deleted.
+      - The disposable Vapi assistant, tool, and credential are deleted with this stack.

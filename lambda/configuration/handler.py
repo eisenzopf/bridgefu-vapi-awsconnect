@@ -20,6 +20,24 @@ INSTANCE_ARN = re.compile(
     r"^arn:(?P<partition>aws(?:-[a-z0-9-]+)?):connect:(?P<region>[a-z0-9-]+):"
     r"(?P<account>[0-9]{12}):instance/(?P<instance>[A-Za-z0-9-]+)$"
 )
+SECRET_ARN = re.compile(
+    r"^arn:(?P<partition>aws(?:-[a-z0-9-]+)?):secretsmanager:"
+    r"(?P<region>[a-z0-9-]+):(?P<account>[0-9]{12}):"
+    r"secret:[A-Za-z0-9/_+=.@-]+$"
+)
+RETENTION_MODES = frozenset({"ProductionRetain", "TestDelete"})
+SIP_SECURITY_MODES = frozenset({"sips_optional_srtp", "sips_srtp", "sip_rtp"})
+AMI_ID = re.compile(r"^ami-[0-9a-f]{8,32}$")
+IMMUTABLE_PROPERTIES = (
+    ("DeploymentId", "deployment_id_immutable"),
+    ("ConnectInstanceArn", "connect_instance_arn_immutable"),
+    ("PublicHostedZoneId", "public_hosted_zone_id_immutable"),
+    ("SipHostname", "sip_hostname_immutable"),
+    ("SipSecurity", "sip_security_immutable"),
+    ("MaxConcurrentCalls", "max_concurrent_calls_immutable"),
+    ("DataRetentionMode", "data_retention_mode_immutable"),
+    ("RuntimeImageId", "runtime_image_id_immutable"),
+)
 
 
 class ConfigurationError(Exception):
@@ -87,7 +105,10 @@ def _routing(value, fields, instance_arn, region, account, connect):
         described = connect.describe_contact_flow(
             InstanceId=match["instance"], ContactFlowId=match["flow"]
         )["ContactFlow"]
-        if described.get("State") != "ACTIVE":
+        if (
+            described.get("State") != "ACTIVE"
+            or described.get("Status") != "PUBLISHED"
+        ):
             raise ConfigurationError("routing_flow_not_published")
         action_id = f"transfer-to-route-{index}"
         conditions.append(
@@ -147,6 +168,28 @@ def render(properties, *, boto3_module=None):
         raise ConfigurationError("connect_arn_invalid")
     region = os.environ.get("AWS_REGION", "")
     account = properties["AccountId"]
+    secret_match = SECRET_ARN.fullmatch(properties["VapiApiKeySecretArn"])
+    if (
+        secret_match is None
+        or secret_match["partition"] != properties["Partition"]
+        or secret_match["region"] != region
+        or secret_match["account"] != account
+    ):
+        raise ConfigurationError("vapi_secret_arn_scope_invalid")
+    if properties.get("DataRetentionMode") not in RETENTION_MODES:
+        raise ConfigurationError("data_retention_mode_invalid")
+    if properties.get("SipSecurity") not in SIP_SECURITY_MODES:
+        raise ConfigurationError("sip_security_invalid")
+    maximum_calls = properties.get("MaxConcurrentCalls")
+    if (
+        isinstance(maximum_calls, bool)
+        or not isinstance(maximum_calls, (int, str))
+        or not str(maximum_calls).isdigit()
+        or not 1 <= int(maximum_calls) <= 1_000
+    ):
+        raise ConfigurationError("max_concurrent_calls_invalid")
+    if AMI_ID.fullmatch(properties.get("RuntimeImageId", "")) is None:
+        raise ConfigurationError("runtime_image_id_invalid")
     if (
         instance_match["region"] != region
         or flow_match["region"] != region
@@ -169,7 +212,7 @@ def render(properties, *, boto3_module=None):
     flow = connect.describe_contact_flow(
         InstanceId=flow_match["instance"], ContactFlowId=flow_match["flow"]
     )["ContactFlow"]
-    if flow.get("State") != "ACTIVE":
+    if flow.get("State") != "ACTIVE" or flow.get("Status") != "PUBLISHED":
         raise ConfigurationError("target_flow_not_published")
     zone = route53.get_hosted_zone(Id=properties["PublicHostedZoneId"])["HostedZone"]
     if zone.get("Config", {}).get("PrivateZone") is not False:
@@ -203,6 +246,17 @@ def render(properties, *, boto3_module=None):
         "SchemaHash": schema_hash(fields),
         "FieldCount": str(len(fields)),
         "HostedZoneName": html.escape(zone_name),
+        "DeploymentId": properties["DeploymentId"],
+        "ConnectInstanceArn": properties["ConnectInstanceArn"],
+        "PublicHostedZoneId": properties["PublicHostedZoneId"],
+        "SipHostname": properties["SipHostname"],
+        "SipSecurity": properties["SipSecurity"],
+        "MaxConcurrentCalls": str(maximum_calls),
+        "DataRetentionMode": properties["DataRetentionMode"],
+        "RuntimeImageId": properties["RuntimeImageId"],
+        "RetainVapiResourcesOnDelete": str(
+            properties["DataRetentionMode"] == "ProductionRetain"
+        ).lower(),
     }
 
 
@@ -212,6 +266,16 @@ def lambda_handler(event, _context):
         if event.get("RequestType") == "Delete":
             _send(event, "SUCCESS", physical_id, {}, "configuration released")
             return
+        if event.get("RequestType") == "Update":
+            old_properties = event.get("OldResourceProperties")
+            if not isinstance(old_properties, dict):
+                raise ConfigurationError("old_resource_properties_invalid")
+            new_properties = event["ResourceProperties"]
+            for property_name, error_code in IMMUTABLE_PROPERTIES:
+                if old_properties.get(property_name) != new_properties.get(
+                    property_name
+                ):
+                    raise ConfigurationError(error_code)
         data = render(event["ResourceProperties"])
         _send(event, "SUCCESS", physical_id, data, "configuration validated")
     except ConfigurationError as error:

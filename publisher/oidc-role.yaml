@@ -38,6 +38,12 @@ Parameters:
     Type: String
     AllowedPattern: '^arn:aws[-a-z0-9]*:secretsmanager:us-east-1:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$'
     Description: Exact us-east-1 qualification Vapi key secret for orphan cleanup.
+  QualificationPublicHostedZoneId:
+    Type: String
+    AllowedPattern: '^Z[A-Z0-9]{1,31}$'
+    Description: >-
+      Exact public Route53 hosted zone used only for disposable qualification
+      certificate validation records.
 
 Resources:
   SigningKey:
@@ -261,6 +267,7 @@ Resources:
                   StringLike:
                     s3:prefix:
                       - candidates/runs/*
+                      - candidates/candidate-*/*
                       - candidates/qualified/*
                       - candidates/publications/*
                       - qualification/bfq-*/*
@@ -271,26 +278,36 @@ Resources:
                 Action: [s3:GetObject, s3:GetObjectVersion]
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/runs/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/candidate-*/*'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/qualified/*'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/publications/*'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/vapi-phone.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/vapi-phone-intent.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/acm-validation-records.json'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/latest/*'
-              - Sid: AugmentExactCandidateJournalBeforeCleanup
+              - Sid: SealExactRecoveryOwnershipBeforeCleanup
                 Effect: Allow
                 Action: s3:PutObject
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/runs/*/state.json'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/publications/*/state.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/vapi-phone.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/acm-validation-records.json'
               - Sid: InspectCandidateOwnershipTags
                 Effect: Allow
                 Action: [s3:GetObjectTagging, s3:GetObjectVersionTagging]
-                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/*'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/candidate-*/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/qualified/*'
               - Sid: DeleteOwnedPrivateCandidateVersions
                 Effect: Allow
                 Action: [s3:DeleteObject, s3:DeleteObjectVersion]
                 Resource:
-                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/runs/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/candidate-*/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/qualified/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/publications/*'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/*'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/latest/*'
@@ -301,7 +318,9 @@ Resources:
                   - s3:DeleteObjectVersionTagging
                   - s3:GetObjectTagging
                   - s3:GetObjectVersionTagging
-                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/latest/*'
               - Sid: VerifyRecoveryReceipt
                 Effect: Allow
                 Action: kms:Verify
@@ -325,6 +344,25 @@ Resources:
                 Effect: Allow
                 Action: cloudformation:DescribeStacks
                 Resource: '*'
+              - Sid: InspectOnlyStackOwnedQualificationCertificates
+                Effect: Allow
+                Action:
+                  - acm:DescribeCertificate
+                  - acm:ListTagsForCertificate
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:acm:*:${AWS::AccountId}:certificate/*
+              - Sid: DeleteOnlyJournaledQualificationValidationRecords
+                Effect: Allow
+                Action:
+                  - route53:ChangeResourceRecordSets
+                  - route53:GetHostedZone
+                  - route53:ListResourceRecordSets
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:route53:::hostedzone/${QualificationPublicHostedZoneId}
+              - Sid: WaitForQualificationValidationRecordDeletion
+                Effect: Allow
+                Action: route53:GetChange
+                Resource: !Sub 'arn:${AWS::Partition}:route53:::change/*'
               - Sid: ReapPrivateCandidateAmisAndRevokePartialPublication
                 Effect: Allow
                 Action:

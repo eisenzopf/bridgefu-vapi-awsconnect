@@ -8,6 +8,9 @@ Deploy `publisher/bucket.yaml` once in every region listed in
 `publisher/oidc-role.yaml` once with the GitHub OIDC provider and the immutable
 GitHub owner/repository IDs shown by the protected OIDC diagnostic, plus the
 exact regional qualification Vapi secret ARNs used only for orphan recovery.
+Pass the exact qualification public Route53 zone ID as
+`QualificationPublicHostedZoneId`; recovery can change only the journaled ACM
+validation records in that zone.
 Do not use the mutable repository name as the IAM subject. Configure the
 GitHub `production-release` environment variables:
 
@@ -16,8 +19,9 @@ GitHub `production-release` environment variables:
 - `RELEASE_SIGNING_KEY_ARN`
 
 Deploy `publisher/qualification-role.yaml` once with that exact signing-key
-ARN and both regional qualification Vapi secret ARNs. Use its two role outputs
-for the protected qualification environment below.
+ARN, both regional qualification Vapi secret ARNs, and the same exact
+`QualificationPublicHostedZoneId`. Use its two role outputs for the protected
+qualification environment below.
 
 Configure the protected `live-qualification` environment with:
 
@@ -36,6 +40,7 @@ non-secret variables:
 - `AWS_RECOVERY_ROLE_ARN`
 - `VAPI_API_KEY_SECRET_ARN_US_WEST_2`
 - `VAPI_API_KEY_SECRET_ARN_US_EAST_1`
+- `PUBLIC_HOSTED_ZONE_ID`
 
 It must have **no required reviewers**, because it is used only by the
 `workflow_run` reaper after a failed or cancelled attempt.

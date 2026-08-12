@@ -41,6 +41,12 @@ Parameters:
     Type: String
     AllowedPattern: '^arn:aws[-a-z0-9]*:kms:[-a-z0-9]+:[0-9]{12}:key/[0-9a-f-]{36}$'
     Description: Exact publisher signing key used to verify qualified receipts.
+  QualificationPublicHostedZoneId:
+    Type: String
+    AllowedPattern: '^Z[A-Z0-9]{1,31}$'
+    Description: >-
+      Exact public Route53 hosted zone used only for disposable qualification
+      certificate validation records.
 
 Conditions:
   HasUsEast1VapiSecret: !Not [!Equals [!Ref VapiApiKeySecretArnUsEast1, '']]
@@ -196,6 +202,24 @@ Resources:
                 Effect: Allow
                 Action: route53:GetHostedZone
                 Resource: !Sub 'arn:${AWS::Partition}:route53:::hostedzone/*'
+              - Sid: DeleteOnlyOwnedQualificationValidationRecords
+                Effect: Allow
+                Action:
+                  - route53:ChangeResourceRecordSets
+                  - route53:ListResourceRecordSets
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:route53:::hostedzone/${QualificationPublicHostedZoneId}
+              - Sid: WaitForQualificationValidationRecordDeletion
+                Effect: Allow
+                Action: route53:GetChange
+                Resource: !Sub 'arn:${AWS::Partition}:route53:::change/*'
+              - Sid: InspectOnlyStackOwnedQualificationCertificates
+                Effect: Allow
+                Action:
+                  - acm:DescribeCertificate
+                  - acm:ListTagsForCertificate
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:acm:*:${AWS::AccountId}:certificate/*
               - Sid: ReadQualificationEvidence
                 Effect: Allow
                 Action:
