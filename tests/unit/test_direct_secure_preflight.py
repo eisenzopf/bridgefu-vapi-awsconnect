@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import ast
 import json
+import os
+import pathlib
+import stat
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -164,6 +169,45 @@ class DirectSecurePreflightTests(unittest.TestCase):
             "preflight_runtime_ownership",
             "preflight_workspace",
         ):
+            with self.subTest(phase=phase):
+                self.assertIn(f"phase={phase}", script)
+                self.assertIn(phase, PREFLIGHT.PROBE_PHASES)
+
+    def test_atomic_config_writer_preserves_reviewed_mode_under_private_umask(self):
+        script = PREFLIGHT.probe_script(EXECUTION, REGION, BUCKET, KEY, DIGEST)
+        source = script.split("python3 - <<'PY' >/dev/null 2>&1\n", 1)[1].split(
+            "\nPY\n", 1
+        )[0]
+        parsed = ast.parse(source)
+        writer = next(
+            node
+            for node in parsed.body
+            if isinstance(node, ast.FunctionDef) and node.name == "exclusive_text"
+        )
+        namespace = {"os": os, "pathlib": pathlib}
+        exec(  # noqa: S102 - execute only the parsed in-repo helper under test.
+            compile(ast.Module(body=[writer], type_ignores=[]), "<writer>", "exec"),
+            namespace,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = pathlib.Path(directory) / "bridgefu.yaml"
+            previous = os.umask(0o077)
+            try:
+                namespace["exclusive_text"](
+                    destination,
+                    "recipe_mode: true\n",
+                    0o640,
+                    os.getuid(),
+                    os.getgid(),
+                )
+            finally:
+                os.umask(previous)
+
+            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o640)
+            self.assertEqual(destination.read_text(), "recipe_mode: true\n")
+
+        for phase in ("restart_patched_service", "restart_patched_readiness"):
             with self.subTest(phase=phase):
                 self.assertIn(f"phase={phase}", script)
                 self.assertIn(phase, PREFLIGHT.PROBE_PHASES)
