@@ -45,7 +45,8 @@ def as_list(value: Any) -> list[Any]:
 
 def reaper_source() -> str:
     embedded = "\n".join(
-        "          " + line for line in QUALIFICATION_REAPER_PATH.read_text().splitlines()
+        "          " + line
+        for line in QUALIFICATION_REAPER_PATH.read_text().splitlines()
     )
     return WORKFLOW_PATH.read_text() + "\n" + embedded + "\n"
 
@@ -123,9 +124,7 @@ CLI_ACTIONS = {
     ("acm", "list-tags-for-certificate"): {"acm:ListTagsForCertificate"},
     ("cloudformation", "delete-stack"): {"cloudformation:DeleteStack"},
     ("cloudformation", "describe-stacks"): {"cloudformation:DescribeStacks"},
-    ("cloudformation", "list-stack-resources"): {
-        "cloudformation:ListStackResources"
-    },
+    ("cloudformation", "list-stack-resources"): {"cloudformation:ListStackResources"},
     ("cloudformation", "wait"): {"cloudformation:DescribeStacks"},
     ("ec2", "create-tags"): {"ec2:CreateTags"},
     ("ec2", "delete-snapshot"): {"ec2:DeleteSnapshot"},
@@ -138,13 +137,9 @@ CLI_ACTIONS = {
     ("ec2", "modify-image-attribute"): {"ec2:ModifyImageAttribute"},
     ("ec2", "modify-snapshot-attribute"): {"ec2:ModifySnapshotAttribute"},
     ("kms", "verify"): {"kms:Verify"},
-    ("route53", "change-resource-record-sets"): {
-        "route53:ChangeResourceRecordSets"
-    },
+    ("route53", "change-resource-record-sets"): {"route53:ChangeResourceRecordSets"},
     ("route53", "get-hosted-zone"): {"route53:GetHostedZone"},
-    ("route53", "list-resource-record-sets"): {
-        "route53:ListResourceRecordSets"
-    },
+    ("route53", "list-resource-record-sets"): {"route53:ListResourceRecordSets"},
     ("route53", "wait"): {"route53:GetChange"},
     ("s3api", "delete-object"): {"s3:DeleteObject", "s3:DeleteObjectVersion"},
     ("s3api", "delete-object-tagging"): {
@@ -161,18 +156,14 @@ CLI_ACTIONS = {
     ("s3api", "head-object"): {"s3:GetObject"},
     ("s3api", "list-object-versions"): {"s3:ListBucketVersions"},
     ("s3api", "put-object"): {"s3:PutObject"},
-    ("secretsmanager", "get-secret-value"): {
-        "secretsmanager:GetSecretValue"
-    },
+    ("secretsmanager", "get-secret-value"): {"secretsmanager:GetSecretValue"},
     # GetCallerIdentity requires no identity-policy permission.
     ("sts", "get-caller-identity"): set(),
 }
 
 
 def workflow_commands() -> set[tuple[str, str]]:
-    return set(
-        re.findall(r"\baws\s+([a-z0-9-]+)\s+([a-z0-9-]+)", reaper_source())
-    )
+    return set(re.findall(r"\baws\s+([a-z0-9-]+)\s+([a-z0-9-]+)", reaper_source()))
 
 
 class RecoveryPolicyContractTests(unittest.TestCase):
@@ -222,7 +213,9 @@ class RecoveryPolicyContractTests(unittest.TestCase):
         self.assertTrue(allows(statements, "s3:GetObject", object_arn))
 
         missing_prefix = copy.deepcopy(statements)
-        listing = next(item for item in missing_prefix if item["Sid"] == "ListRecoveryPrefixes")
+        listing = next(
+            item for item in missing_prefix if item["Sid"] == "ListRecoveryPrefixes"
+        )
         patterns = listing["Condition"]["StringLike"]["s3:prefix"]
         listing["Condition"]["StringLike"]["s3:prefix"] = [
             item for item in patterns if item != "candidates/candidate-*/*"
@@ -238,9 +231,7 @@ class RecoveryPolicyContractTests(unittest.TestCase):
                 for action in as_list(statement["Action"])
                 if action != "s3:GetObject"
             ]
-        self.assertFalse(
-            allows(missing_head_permission, "s3:GetObject", object_arn)
-        )
+        self.assertFalse(allows(missing_head_permission, "s3:GetObject", object_arn))
 
     def test_recovery_s3_routes_are_complete_but_not_bucket_wide(self):
         statements = recovery_statements()
@@ -257,9 +248,7 @@ class RecoveryPolicyContractTests(unittest.TestCase):
         for prefix in listed_prefixes:
             with self.subTest(prefix=prefix):
                 self.assertTrue(
-                    allows(
-                        statements, "s3:ListBucketVersions", bucket, prefix=prefix
-                    )
+                    allows(statements, "s3:ListBucketVersions", bucket, prefix=prefix)
                 )
         self.assertFalse(
             allows(
@@ -301,8 +290,7 @@ class RecoveryPolicyContractTests(unittest.TestCase):
         )[1].split("          load_exact_acm_validation_journal() {", 1)[0]
         self.assertIn("bridgefu-vapi-phone-intent@1", recovery)
         self.assertIn(
-            'intent_key="qualification/$execution_id/ownership/'
-            'vapi-phone-intent.json"',
+            'intent_key="qualification/$execution_id/ownership/vapi-phone-intent.json"',
             recovery,
         )
         self.assertIn("load_latest_s3_object_exact", recovery)
@@ -324,7 +312,9 @@ class RecoveryPolicyContractTests(unittest.TestCase):
             self.assertIn(field, recovery)
         self.assertIn("bridgefu-vapi-phone-ownership@1", recovery)
         self.assertIn("--server-side-encryption AES256", recovery)
-        self.assertLess(recovery.index("aws s3api put-object"), recovery.index("--request DELETE"))
+        self.assertLess(
+            recovery.index("aws s3api put-object"), recovery.index("--request DELETE")
+        )
         self.assertNotIn("password", recovery.lower())
         self.assertNotIn('echo "$vapi_key"', recovery)
 
@@ -338,10 +328,14 @@ class RecoveryPolicyContractTests(unittest.TestCase):
                 re.MULTILINE | re.DOTALL,
             )
             self.assertIsNotNone(match)
-            return f"{name}() {{\n" + "\n".join(
-                line.removeprefix("            ")
-                for line in match.group(1).splitlines()
-            ) + "\n}"
+            return (
+                f"{name}() {{\n"
+                + "\n".join(
+                    line.removeprefix("            ")
+                    for line in match.group(1).splitlines()
+                )
+                + "\n}"
+            )
 
         execution_id = "bfq-w-123-1"
         assistant_id = "11111111-1111-4111-8111-111111111111"
@@ -443,9 +437,7 @@ fi
         )[1].split("          cleanup_exact_acm_validation_records() {", 1)[0]
         cleanup = workflow.split(
             "          cleanup_exact_acm_validation_records() {", 1
-        )[1].split(
-            "          for pair in us-west-2:w us-east-1:e; do", 1
-        )[0]
+        )[1].split("          for pair in us-west-2:w us-east-1:e; do", 1)[0]
         self.assertIn(
             "for depth in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16",
             discovery,
@@ -471,20 +463,21 @@ fi
             ("BridgefuRecipe", "vapi-amazon-connect-screen-pop@1"),
         ):
             self.assertIn(f"exact_tag {key} {value}", discovery)
-        self.assertIn('endswith($suffix) and contains($execution_id)', discovery)
+        self.assertIn("endswith($suffix) and contains($execution_id)", discovery)
         self.assertIn('test "$current" = "$(jq -cS . <<<"$owned")"', cleanup)
-        self.assertNotRegex(cleanup, r"list-resource-record-sets[^\n]*--max-items (?!1)")
+        self.assertNotRegex(
+            cleanup, r"list-resource-record-sets[^\n]*--max-items (?!1)"
+        )
         self.assertNotIn("list-hosted-zones", workflow)
         self.assertNotIn("list-certificates", workflow)
-        self.assertNotIn(
-            'if ! journal_head="$(aws s3api head-object', workflow
-        )
+        self.assertNotIn('if ! journal_head="$(aws s3api head-object', workflow)
         self.assertIn("load_latest_s3_object_exact()", workflow)
         self.assertIn("describe_stack_exact()", workflow)
         self.assertIn("Stack with id .+ does not exist", workflow)
-        caller = workflow.split(
-            "          for pair in us-west-2:w us-east-1:e; do", 1
-        )[1].split("\n\n  delete-failed-private-candidate:", 1)[0]
+        self.assertIn("(aws: \\[ERROR\\]: )?An error occurred", workflow)
+        caller = workflow.split("          for pair in us-west-2:w us-east-1:e; do", 1)[
+            1
+        ].split("\n\n  delete-failed-private-candidate:", 1)[0]
         self.assertNotIn(
             'if aws cloudformation describe-stacks --region "$region"', caller
         )
@@ -492,10 +485,8 @@ fi
         self.assertNotIn("if load_exact_acm_validation_journal", caller)
         self.assertNotIn("if discover_and_journal_exact_stack_acm_records", caller)
         self.assertIn("run_strict load_exact_acm_validation_journal", caller)
-        self.assertIn(
-            "run_strict discover_and_journal_exact_stack_acm_records", caller
-        )
-        self.assertIn('3|4) ;;', caller)
+        self.assertIn("run_strict discover_and_journal_exact_stack_acm_records", caller)
+        self.assertIn("3|4) ;;", caller)
         self.assertIn("CREATE_IN_PROGRESS|REVIEW_IN_PROGRESS)", caller)
         self.assertIn(
             "CREATE_FAILED|ROLLBACK_COMPLETE|ROLLBACK_FAILED|DELETE_FAILED)\n"
@@ -503,9 +494,39 @@ fi
             caller,
         )
         self.assertLess(
-            caller.index('3|4) ;;'),
+            caller.index("3|4) ;;"),
             caller.index("aws cloudformation delete-stack"),
         )
+
+    def test_stack_absence_accepts_current_aws_cli_error_prefix(self):
+        source = QUALIFICATION_REAPER_PATH.read_text()
+        function = source.split("describe_stack_exact() {", 1)[1].split(
+            "delete_prefix_versions() {", 1
+        )[0]
+        program = f"""set -euo pipefail
+strict_status=0
+run_strict() {{
+  set +e
+  (
+    set -e
+    "$@"
+  )
+  strict_status="$?"
+  set -e
+  return 0
+}}
+describe_stack_exact() {{{function}
+aws() {{
+  printf '%s\\n' 'aws: [ERROR]: An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id bridgefu-bfq-w-test-1 does not exist' >&2
+  return 254
+}}
+run_strict describe_stack_exact us-west-2 bridgefu-bfq-w-test-1 stack.json
+test "$strict_status" = 3
+"""
+        completed = subprocess.run(
+            ["bash"], input=program, text=True, capture_output=True, check=False
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_incomplete_acm_metadata_is_retryable_but_conflicts_are_not(self):
         workflow = reaper_source()
@@ -521,10 +542,15 @@ fi
             )
             if match is None:
                 self.fail(f"missing {name} helper")
-            return name + "() {\n" + "\n".join(
-                line.removeprefix("              ")
-                for line in match.group(1).splitlines()
-            ) + "\n}"
+            return (
+                name
+                + "() {\n"
+                + "\n".join(
+                    line.removeprefix("              ")
+                    for line in match.group(1).splitlines()
+                )
+                + "\n}"
+            )
 
         exact_tag = extract_function("exact_tag")
         complete_options = extract_function("complete_domain_validation_options")
@@ -584,10 +610,14 @@ test "$captured" != 4
             re.MULTILINE | re.DOTALL,
         )
         self.assertIsNotNone(match)
-        helper = "run_strict() {\n" + "\n".join(
-            line.removeprefix("            ")
-            for line in match.group(1).splitlines()
-        ) + "\n}"
+        helper = (
+            "run_strict() {\n"
+            + "\n".join(
+                line.removeprefix("            ")
+                for line in match.group(1).splitlines()
+            )
+            + "\n}"
+        )
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / "mutation-reached"
             script = f"""
@@ -648,10 +678,13 @@ test ! -e {marker!s}
         self.assertEqual(result.returncode, 0, result.stderr)
         parsed = json.loads(result.stdout)
         self.assertIsInstance(parsed, list)
-        self.assertEqual([item["name"] for item in parsed], [
-            "_a.bfq-test.example.com.",
-            "_b.bfq-test.example.com.",
-        ])
+        self.assertEqual(
+            [item["name"] for item in parsed],
+            [
+                "_a.bfq-test.example.com.",
+                "_b.bfq-test.example.com.",
+            ],
+        )
         self.assertTrue(all(item["type"] == "CNAME" for item in parsed))
 
         route53_match = re.search(
@@ -662,8 +695,14 @@ test ! -e {marker!s}
         )
         self.assertIsNotNone(route53_match)
         absent = subprocess.run(  # noqa: S603
-            ["jq", "-c", "--arg", "name", "_a.bfq-test.example.com.",
-             route53_match.group(1)],
+            [
+                "jq",
+                "-c",
+                "--arg",
+                "name",
+                "_a.bfq-test.example.com.",
+                route53_match.group(1),
+            ],
             input=json.dumps({"ResourceRecordSets": []}),
             text=True,
             capture_output=True,
@@ -682,7 +721,9 @@ test ! -e {marker!s}
         journal_marker = "Journal ownership and prove the version is unused"
         credential_marker = "aws-actions/configure-aws-credentials@v4"
         self.assertLess(candidate.index(build_marker), candidate.index(journal_marker))
-        self.assertLess(candidate.index(build_marker), candidate.index(credential_marker))
+        self.assertLess(
+            candidate.index(build_marker), candidate.index(credential_marker)
+        )
         self.assertEqual(candidate.count("python qualification/build_demo_site.py"), 1)
         self.assertIn(
             "upload_candidate_object \\\n"
@@ -691,12 +732,16 @@ test ! -e {marker!s}
             candidate,
         )
         for workflow in (candidate, remote):
-            with self.subTest(workflow="candidate" if workflow is candidate else "remote"):
+            with self.subTest(
+                workflow="candidate" if workflow is candidate else "remote"
+            ):
                 self.assertIn("--version-id", workflow)
                 self.assertIn("demo-site-manifest.json", workflow)
                 self.assertIn("--demo-site-archive", workflow)
                 self.assertIn("--demo-site-sha256", workflow)
-                self.assertIn('sha256sum target/qualification-inputs/demo-site.zip', workflow)
+                self.assertIn(
+                    "sha256sum target/qualification-inputs/demo-site.zip", workflow
+                )
 
     def test_qualification_reaper_stays_below_github_run_expression_limit(self):
         workflow = WORKFLOW_PATH.read_text()
