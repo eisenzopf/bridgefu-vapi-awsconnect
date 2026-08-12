@@ -41,7 +41,9 @@ Resources:
           - Sid: PublicQualifiedReleaseRead
             Effect: Allow
             Principal: '*'
-            Action: s3:GetObject
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
             Resource:
               - !Sub '${ReleaseBucket.Arn}/releases/*'
               - !Sub '${ReleaseBucket.Arn}/latest/*'
