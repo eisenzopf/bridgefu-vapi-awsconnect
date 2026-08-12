@@ -454,6 +454,8 @@ class ReleaseContractTests(unittest.TestCase):
     def test_public_s3_reads_require_the_publication_tag(self):
         bucket = (ROOT / "publisher" / "bucket.yaml").read_text()
         self.assertIn("PublicQualifiedReleaseRead", bucket)
+        self.assertIn("- s3:GetObject\n", bucket)
+        self.assertIn("- s3:GetObjectVersion\n", bucket)
         self.assertIn(
             "s3:ExistingObjectTag/bridgefu-publication-status: published", bucket
         )
