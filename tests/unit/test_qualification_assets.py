@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import tempfile
 import tomllib
 import unittest
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -42,6 +45,61 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertRegex(lock["commit"], r"^[0-9a-f]{40}$")
         browser = (QUALIFICATION / "browser" / "vapi-web-playwright.mjs").read_text()
         self.assertIn('join(ROOT, "qualification/package.json")', browser)
+
+    def test_vapi_web_demo_site_is_owned_and_built_by_this_repository(self):
+        controller = (QUALIFICATION / "controller.py").read_text()
+        package = json.loads((QUALIFICATION / "package.json").read_text())
+        self.assertIn('os.fspath(QUALIFICATION / "build_demo_site.py")', controller)
+        self.assertNotIn("build-recipe-demo-site.py", controller)
+        build_site = controller.split("    def build_site", 1)[1].split(
+            "\n    def authenticate_agent", 1
+        )[0]
+        self.assertIn(
+            'os.fspath(output),\n            ],\n            cwd=ROOT', build_site
+        )
+        self.assertEqual(package["dependencies"]["@vapi-ai/web"], "2.5.2")
+        self.assertEqual(package["devDependencies"]["esbuild"], "0.28.1")
+        for name in ("index.html", "style.css", "app.js"):
+            self.assertTrue((QUALIFICATION / "demo-site" / name).is_file())
+
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / "first"
+            second = Path(directory) / "second"
+            for output in (first, second):
+                subprocess.run(
+                    [
+                        "python3",
+                        str(QUALIFICATION / "build_demo_site.py"),
+                        "--output",
+                        str(output),
+                    ],
+                    cwd=ROOT,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+            first_archive = first / "demo-site.zip"
+            second_archive = second / "demo-site.zip"
+            self.assertEqual(first_archive.read_bytes(), second_archive.read_bytes())
+            with zipfile.ZipFile(first_archive) as bundle:
+                self.assertEqual(
+                    sorted(bundle.namelist()),
+                    sorted(
+                        [
+                            "index.html",
+                            "style.css",
+                            "app.js",
+                            "app.js.LEGAL.txt",
+                            "third-party-licenses.json",
+                        ]
+                    ),
+                )
+            manifest = json.loads((first / "manifest.json").read_text())
+            self.assertEqual(
+                manifest["producer"],
+                "bridgefu-vapi-awsconnect-qualification-site@1",
+            )
 
     def test_packer_creates_runtime_staging_directory_before_upload(self):
         packer = (ROOT / "image" / "bridgefu.pkr.hcl").read_text()

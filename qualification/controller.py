@@ -1890,6 +1890,9 @@ class Controller:
         )
 
     def build_site(self) -> tuple[Path, str]:
+        # The browser smoke belongs to this distribution repository. Bridgefu's
+        # pinned source checkout is still verified below because it is the exact
+        # source used by the AMI, but it must not supply recipe/release tooling.
         checkout = self.args.bridgefu_checkout.resolve()
         expected_commit = self.bridgefu_lock["commit"]
         actual_commit = self.runner.run(
@@ -1904,17 +1907,15 @@ class Controller:
             raise QualificationError(
                 "Bridgefu Cargo.lock does not match the source lock"
             )
-        output = (
-            checkout / "target" / f"qualification-demo-site-{self.args.execution_id}"
-        )
+        output = self.work / "qualification-demo-site"
         self.runner.run(
             [
                 "python3",
-                "scripts/build-recipe-demo-site.py",
+                os.fspath(QUALIFICATION / "build_demo_site.py"),
                 "--output",
                 os.fspath(output),
             ],
-            cwd=checkout,
+            cwd=ROOT,
             timeout=600,
         )
         archive = output / "demo-site.zip"
