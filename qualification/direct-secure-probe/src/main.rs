@@ -30,8 +30,12 @@ const MAX_REQUEST_BYTES: usize = 4 * 1024;
 const FRAME_SAMPLES: usize = 160;
 const FRAME_DURATION: Duration = Duration::from_millis(20);
 const MARKER_FREQUENCY: f32 = 997.0;
-const MARKER_FRAMES: usize = 10;
-const MARKER_SILENCE_FRAMES: usize = 5;
+const MARKER_BURSTS: usize = 12;
+const MARKER_FRAMES_PER_BURST: usize = 10;
+const MARKER_SILENCE_FRAMES_PER_BURST: usize = 40;
+const MARKER_FRAMES: usize = MARKER_BURSTS * MARKER_FRAMES_PER_BURST;
+const MARKER_TOTAL_FRAMES: usize =
+    MARKER_BURSTS * (MARKER_FRAMES_PER_BURST + MARKER_SILENCE_FRAMES_PER_BURST);
 const DTMF_FRAMES: usize = 15;
 const DTMF_TRAILING_SILENCE_FRAMES: usize = 5;
 const DTMF_LOW_FREQUENCY: f32 = 770.0;
@@ -761,26 +765,28 @@ fn dual_tone_frame(
 async fn send_marker(sender: &rvoip_sip::AudioSender) -> anyhow::Result<usize> {
     let mut phase = 0.0;
     let mut timestamp = 0_u32;
-    for _ in 0..MARKER_FRAMES {
-        sender
-            .send(AudioFrame::new(
-                tone_frame(MARKER_FREQUENCY, &mut phase),
-                8_000,
-                1,
-                timestamp,
-            ))
-            .await
-            .context("sending secure probe marker")?;
-        timestamp = timestamp.wrapping_add(FRAME_SAMPLES as u32);
-        tokio::time::sleep(FRAME_DURATION).await;
-    }
-    for _ in 0..MARKER_SILENCE_FRAMES {
-        sender
-            .send(AudioFrame::new(vec![0; FRAME_SAMPLES], 8_000, 1, timestamp))
-            .await
-            .context("sending secure probe marker spacing")?;
-        timestamp = timestamp.wrapping_add(FRAME_SAMPLES as u32);
-        tokio::time::sleep(FRAME_DURATION).await;
+    for _ in 0..MARKER_BURSTS {
+        for _ in 0..MARKER_FRAMES_PER_BURST {
+            sender
+                .send(AudioFrame::new(
+                    tone_frame(MARKER_FREQUENCY, &mut phase),
+                    8_000,
+                    1,
+                    timestamp,
+                ))
+                .await
+                .context("sending secure probe marker")?;
+            timestamp = timestamp.wrapping_add(FRAME_SAMPLES as u32);
+            tokio::time::sleep(FRAME_DURATION).await;
+        }
+        for _ in 0..MARKER_SILENCE_FRAMES_PER_BURST {
+            sender
+                .send(AudioFrame::new(vec![0; FRAME_SAMPLES], 8_000, 1, timestamp))
+                .await
+                .context("sending secure probe marker spacing")?;
+            timestamp = timestamp.wrapping_add(FRAME_SAMPLES as u32);
+            tokio::time::sleep(FRAME_DURATION).await;
+        }
     }
     Ok(MARKER_FRAMES)
 }
@@ -788,7 +794,7 @@ async fn send_marker(sender: &rvoip_sip::AudioSender) -> anyhow::Result<usize> {
 async fn send_in_band_dtmf(sender: &rvoip_sip::AudioSender) -> anyhow::Result<usize> {
     let mut low_phase = 0.0;
     let mut high_phase = 0.0;
-    let mut timestamp = ((MARKER_FRAMES + MARKER_SILENCE_FRAMES) * FRAME_SAMPLES) as u32;
+    let mut timestamp = (MARKER_TOTAL_FRAMES * FRAME_SAMPLES) as u32;
     for _ in 0..DTMF_FRAMES {
         sender
             .send(AudioFrame::new(
@@ -1603,6 +1609,13 @@ mod tests {
                 &mut repeated_high,
             )
         );
+    }
+
+    #[test]
+    fn marker_window_allows_connect_flow_and_agent_acceptance() {
+        let duration = FRAME_DURATION * MARKER_TOTAL_FRAMES as u32;
+        assert_eq!(MARKER_FRAMES, 120);
+        assert!(duration >= Duration::from_secs(12));
     }
 
     #[test]
