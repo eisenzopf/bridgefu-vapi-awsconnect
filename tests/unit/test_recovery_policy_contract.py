@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 POLICY_PATH = ROOT / "publisher" / "oidc-role.yaml"
 QUALIFICATION_POLICY_PATH = ROOT / "publisher" / "qualification-role.yaml"
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "release-reaper.yml"
+QUALIFICATION_REAPER_PATH = ROOT / "release" / "reap_qualification.sh"
 CANDIDATE_PATH = ROOT / ".github" / "workflows" / "candidate.yml"
 REMOTE_QUALIFICATION_PATH = ROOT / ".github" / "workflows" / "remote-qualification.yml"
 
@@ -40,6 +41,13 @@ CloudFormationLoader.add_multi_constructor("!", construct_cloudformation_tag)
 
 def as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else [value]
+
+
+def reaper_source() -> str:
+    embedded = "\n".join(
+        "          " + line for line in QUALIFICATION_REAPER_PATH.read_text().splitlines()
+    )
+    return WORKFLOW_PATH.read_text() + "\n" + embedded + "\n"
 
 
 def recovery_statements() -> list[dict[str, Any]]:
@@ -163,7 +171,7 @@ CLI_ACTIONS = {
 
 def workflow_commands() -> set[tuple[str, str]]:
     return set(
-        re.findall(r"\baws\s+([a-z0-9-]+)\s+([a-z0-9-]+)", WORKFLOW_PATH.read_text())
+        re.findall(r"\baws\s+([a-z0-9-]+)\s+([a-z0-9-]+)", reaper_source())
     )
 
 
@@ -195,7 +203,7 @@ class RecoveryPolicyContractTests(unittest.TestCase):
         self.assertEqual(required - actions, set())
 
     def test_observed_candidate_discovery_and_head_object_are_allowed(self):
-        workflow = WORKFLOW_PATH.read_text()
+        workflow = reaper_source()
         prefix_match = re.search(
             r'discover_candidate_versions candidate us-east-1 "\$east_bucket" \\\n'
             r'\s+"(candidates/\$candidate_id/)"',
@@ -287,7 +295,7 @@ class RecoveryPolicyContractTests(unittest.TestCase):
         self.assertFalse(allows(statements, "s3:PutObject", unrelated))
 
     def test_vapi_intent_recovery_is_bounded_exact_and_sealed_before_delete(self):
-        workflow = WORKFLOW_PATH.read_text()
+        workflow = reaper_source()
         recovery = workflow.split(
             "          validate_vapi_phone_intent_journal_exact() {", 1
         )[1].split("          load_exact_acm_validation_journal() {", 1)[0]
@@ -321,7 +329,7 @@ class RecoveryPolicyContractTests(unittest.TestCase):
         self.assertNotIn('echo "$vapi_key"', recovery)
 
     def test_vapi_intent_and_remote_identity_guards_reject_tampering(self):
-        workflow = WORKFLOW_PATH.read_text()
+        workflow = reaper_source()
 
         def shell_function(name: str) -> str:
             match = re.search(
@@ -429,7 +437,7 @@ fi
         )
 
     def test_workflow_hard_cancel_discovery_is_bounded_and_exact_match_only(self):
-        workflow = WORKFLOW_PATH.read_text()
+        workflow = reaper_source()
         discovery = workflow.split(
             "          discover_and_journal_exact_stack_acm_records() {", 1
         )[1].split("          cleanup_exact_acm_validation_records() {", 1)[0]
@@ -500,7 +508,7 @@ fi
         )
 
     def test_incomplete_acm_metadata_is_retryable_but_conflicts_are_not(self):
-        workflow = WORKFLOW_PATH.read_text()
+        workflow = reaper_source()
         discovery = workflow.split(
             "          discover_and_journal_exact_stack_acm_records() {", 1
         )[1].split("          cleanup_exact_acm_validation_records() {", 1)[0]
@@ -569,7 +577,7 @@ test "$captured" != 4
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_strict_runner_stops_failed_ownership_guard_before_mutation(self):
-        workflow = WORKFLOW_PATH.read_text()
+        workflow = reaper_source()
         match = re.search(
             r"^          run_strict\(\) \{\n(.+?)^          \}\n",
             workflow,
@@ -600,7 +608,7 @@ test ! -e {marker!s}
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_hard_cancel_acm_filter_returns_canonical_record_sets_not_boolean(self):
-        workflow = WORKFLOW_PATH.read_text()
+        workflow = reaper_source()
         discovery = workflow.split(
             "          discover_and_journal_exact_stack_acm_records() {", 1
         )[1].split("          cleanup_exact_acm_validation_records() {", 1)[0]
@@ -689,6 +697,21 @@ test ! -e {marker!s}
                 self.assertIn("--demo-site-archive", workflow)
                 self.assertIn("--demo-site-sha256", workflow)
                 self.assertIn('sha256sum target/qualification-inputs/demo-site.zip', workflow)
+
+    def test_qualification_reaper_stays_below_github_run_expression_limit(self):
+        workflow = WORKFLOW_PATH.read_text()
+        script = QUALIFICATION_REAPER_PATH.read_text()
+        run_blocks = re.findall(
+            r"(?m)^(\s*)run: \|\n((?:(?:\1  .*|\s*)\n?)*)", workflow
+        )
+        self.assertTrue(run_blocks)
+        self.assertTrue(all(len(body.encode()) < 21_000 for _, body in run_blocks))
+        self.assertIn("- uses: actions/checkout@v4", workflow)
+        self.assertIn("ref: ${{ github.event.workflow_run.head_sha }}", workflow)
+        self.assertIn("persist-credentials: false", workflow)
+        self.assertIn("run: bash release/reap_qualification.sh", workflow)
+        self.assertTrue(script.startswith("#!/usr/bin/env bash\nset -euo pipefail\n"))
+        self.assertNotIn("${{", script)
 
 
 if __name__ == "__main__":

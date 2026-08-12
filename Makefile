@@ -17,7 +17,7 @@ qualification-test:
 lint:
 	python3 -m compileall -q lambda release tests
 	@if command -v ruff >/dev/null 2>&1; then ruff check .; fi
-	@if command -v shellcheck >/dev/null 2>&1; then shellcheck image/install.sh image/runtime/bootstrap.sh image/runtime/bridgefu-load-secrets image/runtime/bridgefu-cert-refresh image/runtime/bridgefu-cert-reload image/runtime/bridgefu-run; fi
+	@if command -v shellcheck >/dev/null 2>&1; then shellcheck image/install.sh image/runtime/bootstrap.sh image/runtime/bridgefu-load-secrets image/runtime/bridgefu-cert-refresh image/runtime/bridgefu-cert-reload image/runtime/bridgefu-run release/reap_qualification.sh; fi
 
 package:
 	python3 release/build_lambdas.py --output target/lambda

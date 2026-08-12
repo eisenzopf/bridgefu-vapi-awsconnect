@@ -13,6 +13,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def reaper_source() -> str:
+    return (
+        (ROOT / ".github" / "workflows" / "release-reaper.yml").read_text()
+        + "\n"
+        + (ROOT / "release" / "reap_qualification.sh").read_text()
+    )
+
+
 class ReleaseContractTests(unittest.TestCase):
     def supported_regions(self) -> set[str]:
         catalog = json.loads((ROOT / "release" / "regions.json").read_text())
@@ -480,7 +488,8 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertNotIn("ec2:RunInstances", publisher)
 
     def test_workflow_run_reaper_covers_candidate_cancellation(self):
-        reaper = (ROOT / ".github" / "workflows" / "release-reaper.yml").read_text()
+        workflow = (ROOT / ".github" / "workflows" / "release-reaper.yml").read_text()
+        reaper = reaper_source()
         self.assertIn("workflow_run:", reaper)
         self.assertIn("Build and qualify private candidate", reaper)
         self.assertIn("Publish qualified release", reaper)
@@ -494,8 +503,8 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertNotIn("AWS_CANDIDATE_ROLE_ARN", reaper)
         self.assertNotIn("AWS_PUBLISH_ROLE_ARN", reaper)
         self.assertNotIn("AWS_QUALIFICATION_ROLE_ARN", reaper)
-        self.assertEqual(reaper.count("environment: release-recovery"), 3)
-        self.assertEqual(reaper.count("AWS_RECOVERY_ROLE_ARN"), 3)
+        self.assertEqual(workflow.count("environment: release-recovery"), 3)
+        self.assertEqual(workflow.count("AWS_RECOVERY_ROLE_ARN"), 3)
         policy = (ROOT / "publisher" / "oidc-role.yaml").read_text()
         recovery = policy.split("  RecoveryRole:\n", 1)[1].split("\nOutputs:\n", 1)[0]
         self.assertIn("environment:${GitHubRecoveryEnvironment}", recovery)
@@ -827,7 +836,7 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("?versionId=$QUALIFICATION_TEMPLATE_VERSION", remote)
 
     def test_recovery_deletes_only_the_exact_journaled_vapi_phone(self):
-        reaper = (ROOT / ".github" / "workflows" / "release-reaper.yml").read_text()
+        reaper = reaper_source()
         self.assertIn(
             'journal_key="qualification/$execution_id/ownership/vapi-phone.json"',
             reaper,
