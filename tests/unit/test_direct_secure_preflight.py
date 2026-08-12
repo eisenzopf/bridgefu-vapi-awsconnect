@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import unittest
+from pathlib import Path
 
 from qualification import direct_secure_preflight as PREFLIGHT
 
@@ -11,6 +12,7 @@ REGION = "us-west-2"
 BUCKET = "bridgefu-artifacts-test"
 KEY = f"qualification/{EXECUTION}/direct-secure-probe"
 DIGEST = "a" * 64
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class DirectSecurePreflightTests(unittest.TestCase):
@@ -135,6 +137,36 @@ class DirectSecurePreflightTests(unittest.TestCase):
         self.assertEqual(first.count("stdout=subprocess.DEVNULL"), 1)
         self.assertEqual(first.count("stderr=subprocess.DEVNULL"), 1)
         self._assert_shell_and_embedded_python_syntax(first)
+
+    def test_runtime_secret_owner_matches_the_unprivileged_systemd_writer(self):
+        service = (ROOT / "image/runtime/bridgefu.service").read_text()
+        runner = (ROOT / "image/runtime/bridgefu-run").read_text()
+        loader = (ROOT / "image/runtime/bridgefu-load-secrets").read_text()
+        script = PREFLIGHT.probe_script(EXECUTION, REGION, BUCKET, KEY, DIGEST)
+
+        self.assertIn("User=bridgefu", service)
+        self.assertIn("Group=bridgefu", service)
+        self.assertIn("/usr/local/sbin/bridgefu-load-secrets", runner)
+        self.assertIn("mktemp /run/bridgefu/runtime.env.", loader)
+        self.assertIn('chmod 0600 "$temporary"', loader)
+        self.assertIn(
+            "stat -c '%U:%G:%a' \"$runtime_secrets\")\" = 'bridgefu:bridgefu:600'",
+            script,
+        )
+        self.assertNotIn(
+            "stat -c '%U:%G:%a' \"$runtime_secrets\")\" = 'root:root:600'",
+            script,
+        )
+
+        for phase in (
+            "preflight_identity",
+            "preflight_runtime_files",
+            "preflight_runtime_ownership",
+            "preflight_workspace",
+        ):
+            with self.subTest(phase=phase):
+                self.assertIn(f"phase={phase}", script)
+                self.assertIn(phase, PREFLIGHT.PROBE_PHASES)
 
     def test_cleanup_program_is_exact_idempotent_and_boolean_only(self):
         paths = PREFLIGHT.remote_paths(EXECUTION)

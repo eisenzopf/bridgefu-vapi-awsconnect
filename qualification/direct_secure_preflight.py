@@ -37,6 +37,10 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 PROBE_PHASES = frozenset(
     {
         "preflight",
+        "preflight_identity",
+        "preflight_runtime_files",
+        "preflight_runtime_ownership",
+        "preflight_workspace",
         "download_probe",
         "backup",
         "patch_configuration",
@@ -422,7 +426,7 @@ _PROBE_SCRIPT = textwrap.dedent(
       restore_owned || status=1
       if [ "$status" -ne 0 ]; then
         case "$phase" in
-          preflight|download_probe|backup|patch_configuration|restart_patched_runtime|reserve_and_probe|restore|validate_result|emit_result|complete)
+          preflight|preflight_identity|preflight_runtime_files|preflight_runtime_ownership|preflight_workspace|download_probe|backup|patch_configuration|restart_patched_runtime|reserve_and_probe|restore|validate_result|emit_result|complete)
             printf 'direct_secure_preflight_phase=%s\n' "$phase" >&3
             ;;
           *) printf 'direct_secure_preflight_phase=preflight\n' >&3 ;;
@@ -442,13 +446,17 @@ _PROBE_SCRIPT = textwrap.dedent(
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
+    phase=preflight_identity
     [ "$(id -u)" -eq 0 ]
+    phase=preflight_runtime_files
     for path in "$config" "$runtime_config" "$runtime_secrets"; do
       [ -f "$path" ] && [ ! -L "$path" ]
     done
+    phase=preflight_runtime_ownership
     [ "$(stat -c '%U:%G:%a' "$config")" = 'root:bridgefu:640' ]
     [ "$(stat -c '%U:%G:%a' "$runtime_config")" = 'root:bridgefu:640' ]
-    [ "$(stat -c '%U:%G:%a' "$runtime_secrets")" = 'root:root:600' ]
+    [ "$(stat -c '%U:%G:%a' "$runtime_secrets")" = 'bridgefu:bridgefu:600' ]
+    phase=preflight_workspace
     if [ -e "$base" ]; then
       [ -d "$base" ] && [ ! -L "$base" ]
       [ "$(stat -c '%U:%G:%a' "$base")" = 'root:root:700' ]
