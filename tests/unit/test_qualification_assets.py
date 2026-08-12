@@ -249,15 +249,32 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("modify-image-attribute", publication)
         self.assertNotIn("packer build", publication)
 
-    def test_qualification_aws_session_covers_the_bounded_live_run(self):
-        role = (ROOT / "publisher" / "qualification-role.yaml").read_text()
-        self.assertIn("MaxSessionDuration: 10800", role)
+    def test_release_aws_sessions_cover_bounded_build_and_live_runs(self):
+        qualification_role = (
+            ROOT / "publisher" / "qualification-role.yaml"
+        ).read_text()
+        publisher_role = (ROOT / "publisher" / "oidc-role.yaml").read_text()
+        self.assertIn("MaxSessionDuration: 10800", qualification_role)
+        candidate_role = publisher_role.split("  CandidateBuilderRole:\n", 1)[1].split(
+            "\n  PublisherRole:", 1
+        )[0]
+        self.assertIn("MaxSessionDuration: 10800", candidate_role)
         for workflow_name in ("candidate.yml", "remote-qualification.yml"):
             workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text()
             credential_block = workflow.split(
                 "role-to-assume: ${{ vars.AWS_QUALIFICATION_ROLE_ARN }}", 1
             )[1].split("\n      - name:", 1)[0]
             self.assertIn("role-duration-seconds: 10800", credential_block)
+        candidate = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
+        candidate_role_blocks = candidate.split(
+            "role-to-assume: ${{ vars.AWS_CANDIDATE_ROLE_ARN }}"
+        )[1:]
+        self.assertEqual(len(candidate_role_blocks), 2)
+        for credential_block in candidate_role_blocks:
+            self.assertIn(
+                "role-duration-seconds: 10800",
+                credential_block.split("\n      - name:", 1)[0],
+            )
 
     def test_publication_requires_signed_secure_preflight_attestations(self):
         publication = (ROOT / ".github" / "workflows" / "release.yml").read_text()

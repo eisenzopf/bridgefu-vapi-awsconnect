@@ -75,6 +75,7 @@ jobs:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_CANDIDATE_ROLE_ARN }}
+          role-duration-seconds: 10800
           aws-region: us-west-2
       - name: Journal ownership and prove the version is unused
         env:
@@ -636,6 +637,7 @@ jobs:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_CANDIDATE_ROLE_ARN }}
+          role-duration-seconds: 10800
           aws-region: us-east-1
       - name: Verify both regional qualifications and seal the receipt
         env:
