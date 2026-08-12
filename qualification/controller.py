@@ -2898,6 +2898,13 @@ class Controller:
             self.processes.remove(process)
 
     def send_owned_shell(self, instance_id: str, script: str) -> str:
+        commands = [command for command in script.splitlines() if command]
+        if (
+            not commands
+            or any(len(command.encode("utf-8")) > 8192 for command in commands)
+            or "\r" in script
+        ):
+            raise QualificationError("qualification SSM program is invalid")
         command_id = self.aws.text(
             [
                 "ssm",
@@ -2907,7 +2914,7 @@ class Controller:
                 "--document-name",
                 "AWS-RunShellScript",
                 "--parameters",
-                "commands=" + json.dumps([script], separators=(",", ":")),
+                "commands=" + json.dumps(commands, separators=(",", ":")),
                 "--query",
                 "Command.CommandId",
             ]
