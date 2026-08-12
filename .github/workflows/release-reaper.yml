@@ -27,6 +27,9 @@ jobs:
     environment: release-recovery
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_RECOVERY_ROLE_ARN }}

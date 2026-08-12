@@ -707,6 +707,8 @@ test ! -e {marker!s}
         self.assertTrue(run_blocks)
         self.assertTrue(all(len(body.encode()) < 21_000 for _, body in run_blocks))
         self.assertIn("- uses: actions/checkout@v4", workflow)
+        self.assertIn("ref: ${{ github.event.workflow_run.head_sha }}", workflow)
+        self.assertIn("persist-credentials: false", workflow)
         self.assertIn("run: bash release/reap_qualification.sh", workflow)
         self.assertTrue(script.startswith("#!/usr/bin/env bash\nset -euo pipefail\n"))
         self.assertNotIn("${{", script)
