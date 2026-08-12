@@ -2730,7 +2730,16 @@ class Controller:
                 "--document-name",
                 "AWS-RunShellScript",
                 "--parameters",
-                'commands=["systemctl is-active bridgefu.service","curl --fail --silent --show-error --max-time 5 http://127.0.0.1:9090/readyz"]',
+                json.dumps(
+                    {
+                        "commands": [
+                            "systemctl is-active bridgefu.service",
+                            "curl --fail --silent --show-error --max-time 5 "
+                            "http://127.0.0.1:9090/readyz",
+                        ]
+                    },
+                    separators=(",", ":"),
+                ),
                 "--query",
                 "Command.CommandId",
             ]
@@ -2914,7 +2923,7 @@ class Controller:
                 "--document-name",
                 "AWS-RunShellScript",
                 "--parameters",
-                "commands=" + json.dumps(commands, separators=(",", ":")),
+                json.dumps({"commands": commands}, separators=(",", ":")),
                 "--query",
                 "Command.CommandId",
             ]
@@ -3556,7 +3565,7 @@ class Controller:
                 "--document-name",
                 "AWS-RunShellScript",
                 "--parameters",
-                "commands=" + json.dumps(commands, separators=(",", ":")),
+                json.dumps({"commands": commands}, separators=(",", ":")),
                 "--query",
                 "Command.CommandId",
             ]

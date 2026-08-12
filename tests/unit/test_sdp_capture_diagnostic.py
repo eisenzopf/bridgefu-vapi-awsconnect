@@ -179,7 +179,8 @@ class SdpCaptureDiagnosticTests(unittest.TestCase):
         parameter = capture.aws.arguments[
             capture.aws.arguments.index("--parameters") + 1
         ]
-        commands = json.loads(parameter.removeprefix("commands="))
+        self.assertTrue(parameter.startswith("{"))
+        commands = json.loads(parameter)["commands"]
         self.assertEqual(commands, ["set -euo pipefail", "printf 'ready\\n'", "true"])
         self.assertTrue(all("\n" not in command for command in commands))
         with self.assertRaises(CAPTURE.DiagnosticError):
