@@ -758,6 +758,58 @@ test ! -e {marker!s}
         self.assertTrue(script.startswith("#!/usr/bin/env bash\nset -euo pipefail\n"))
         self.assertNotIn("${{", script)
 
+    def test_all_reaper_bulk_deletes_require_exact_nonquiet_receipts(self):
+        source = reaper_source()
+        self.assertNotIn("Quiet: true", source)
+        self.assertEqual(source.count("Quiet: false"), 3)
+        self.assertEqual(source.count('--argjson requested "$deletes"'), 3)
+        self.assertEqual(source.count(".Deleted // []"), 6)
+        self.assertEqual(
+            source.count("$requested.Objects | sort_by(.Key, .VersionId)"), 3
+        )
+
+        requested = {
+            "Objects": [
+                {"Key": "qualification/bfq-test/a", "VersionId": "version-a"},
+                {"Key": "qualification/bfq-test/b", "VersionId": "version-b"},
+            ],
+            "Quiet": False,
+        }
+        receipt_filter = """
+          ((.Errors // []) | length == 0) and
+          ((.Deleted // []) | length == ($requested.Objects | length)) and
+          (((.Deleted // []) | map({Key, VersionId}) |
+              sort_by(.Key, .VersionId)) ==
+           ($requested.Objects | sort_by(.Key, .VersionId)))
+        """
+        for deleted, expected in (
+            (list(requested["Objects"]), True),
+            ([requested["Objects"][0]], False),
+            (
+                [
+                    requested["Objects"][0],
+                    {"Key": "qualification/bfq-test/b", "VersionId": "wrong"},
+                ],
+                False,
+            ),
+        ):
+            with self.subTest(deleted=deleted):
+                result = subprocess.run(  # noqa: S603
+                    [
+                        "jq",
+                        "-e",
+                        "--argjson",
+                        "requested",
+                        json.dumps(requested, separators=(",", ":")),
+                        receipt_filter,
+                    ],
+                    input=json.dumps({"Deleted": deleted}),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode == 0, expected, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

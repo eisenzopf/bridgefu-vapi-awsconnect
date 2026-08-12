@@ -87,12 +87,17 @@ jobs:
             deletes="$(jq -c --arg key "$state_key" \
               '{Objects: (((.Versions // []) + (.DeleteMarkers // [])) |
                 map(select(.Key == $key) |
-                  {Key: .Key, VersionId: .VersionId})), Quiet: true}' \
+                  {Key: .Key, VersionId: .VersionId})), Quiet: false}' \
               <<<"$listing")"
             if [[ "$(jq '.Objects | length' <<<"$deletes")" -gt 0 ]]; then
               delete_response="$(aws s3api delete-objects --region us-east-1 \
                 --bucket "$east_bucket" --delete "$deletes")"
-              jq -e '(.Errors // []) | length == 0' \
+              jq -e --argjson requested "$deletes" '
+                ((.Errors // []) | length == 0) and
+                ((.Deleted // []) | length == ($requested.Objects | length)) and
+                (((.Deleted // []) | map({Key, VersionId}) |
+                    sort_by(.Key, .VersionId)) ==
+                 ($requested.Objects | sort_by(.Key, .VersionId)))' \
                 <<<"$delete_response" >/dev/null
             fi
             listing="$(aws s3api list-object-versions --region us-east-1 \
@@ -401,11 +406,16 @@ jobs:
           deletes="$(jq -c --arg key "$state_key" \
             '{Objects: (((.Versions // []) + (.DeleteMarkers // [])) |
               map(select(.Key == $key) | {Key: .Key, VersionId: .VersionId})),
-              Quiet: true}' <<<"$listing")"
+              Quiet: false}' <<<"$listing")"
           if [[ "$(jq '.Objects | length' <<<"$deletes")" -gt 0 ]]; then
             delete_response="$(aws s3api delete-objects --region us-east-1 \
               --bucket "$east_bucket" --delete "$deletes")"
-            jq -e '(.Errors // []) | length == 0' \
+            jq -e --argjson requested "$deletes" '
+              ((.Errors // []) | length == 0) and
+              ((.Deleted // []) | length == ($requested.Objects | length)) and
+              (((.Deleted // []) | map({Key, VersionId}) |
+                  sort_by(.Key, .VersionId)) ==
+               ($requested.Objects | sort_by(.Key, .VersionId)))' \
               <<<"$delete_response" >/dev/null
           fi
           listing="$(aws s3api list-object-versions --region us-east-1 \

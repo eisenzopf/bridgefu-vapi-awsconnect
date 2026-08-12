@@ -751,7 +751,8 @@ class QualificationControllerTests(unittest.TestCase):
                 if "delete-objects" in arguments:
                     payload = json.loads(arguments[arguments.index("--delete") + 1])
                     self.deleted = payload["Objects"]
-                    return {}
+                    self.quiet = payload["Quiet"]
+                    return {"Deleted": list(self.deleted)}
                 raise AssertionError(arguments)
 
         aws = Aws()
@@ -773,6 +774,7 @@ class QualificationControllerTests(unittest.TestCase):
                 },
             ],
         )
+        self.assertFalse(aws.quiet)
         self.assertIn("--key-marker", aws.second_arguments)
         self.assertIn("--version-id-marker", aws.second_arguments)
         self.assertTrue(
@@ -818,7 +820,7 @@ class QualificationControllerTests(unittest.TestCase):
                     self.deleted = json.loads(
                         arguments[arguments.index("--delete") + 1]
                     )["Objects"]
-                    return {}
+                    return {"Deleted": list(self.deleted)}
                 raise AssertionError(arguments)
 
         aws = Aws()
@@ -837,6 +839,45 @@ class QualificationControllerTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_object_version_cleanup_requires_exact_deletion_receipt(self):
+        class Aws:
+            def __init__(self):
+                self.list_count = 0
+
+            def json(self, arguments, timeout=900):
+                if "list-object-versions" in arguments:
+                    self.list_count += 1
+                    if self.list_count == 1:
+                        return {
+                            "IsTruncated": False,
+                            "Versions": [
+                                {
+                                    "Key": "qualification/bfq-test1234/a",
+                                    "VersionId": "version-1",
+                                }
+                            ],
+                        }
+                    return {"IsTruncated": False}
+                if "delete-objects" in arguments:
+                    return {
+                        "Deleted": [
+                            {
+                                "Key": "qualification/bfq-test1234/a",
+                                "VersionId": "wrong-version",
+                            }
+                        ]
+                    }
+                raise AssertionError(arguments)
+
+        with self.assertRaisesRegex(
+            CONTROLLER.QualificationError, "version deletion failed"
+        ):
+            CONTROLLER.purge_object_versions_exact(
+                Aws(),
+                "bridgefu-artifacts-test",
+                "qualification/bfq-test1234/",
+            )
 
     def test_object_version_pagination_and_entry_bounds_fail_closed(self):
         class TruncatedAws:
@@ -1254,6 +1295,43 @@ class QualificationControllerTests(unittest.TestCase):
             reason = failure["reason"]
             self.assertIn("password=[REDACTED]", reason)
             self.assertNotIn("do-not-retain", reason)
+        finally:
+            shutil.rmtree(output)
+            if "controller" in locals():
+                shutil.rmtree(controller.work, ignore_errors=True)
+
+    def test_failure_evidence_schema_accepts_every_current_run_phase(self):
+        output = Path(tempfile.mkdtemp(prefix="qualification-phase-test-"))
+        try:
+            controller = CONTROLLER.Controller(
+                SimpleNamespace(
+                    execution_id="bfq-test1234", region="us-west-2", output=output
+                )
+            )
+            controller.created_stack = False
+            for phase in (
+                "input_validation",
+                "web_site_validation",
+                "preflight",
+                "cloudformation_deploy",
+                "connect_authentication",
+                "direct_secure_preflight",
+                "credential_initialization",
+                "vapi_web_transfer",
+                "vapi_sip_transfer",
+            ):
+                with self.subTest(phase=phase):
+                    controller.phase = phase
+                    controller.record_failure_evidence(
+                        CONTROLLER.QualificationError("bounded failure")
+                    )
+                    evidence = json.loads(
+                        (output / "failure-evidence.json").read_text()
+                    )
+                    self.assertEqual(evidence["phase"], phase)
+                    CONTROLLER.validate_schema(
+                        evidence, "failure-evidence-v1.schema.json"
+                    )
         finally:
             shutil.rmtree(output)
             if "controller" in locals():

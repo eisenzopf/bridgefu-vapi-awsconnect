@@ -75,6 +75,7 @@ Resources:
     Properties:
       RoleName: bridgefu-vapi-awsconnect-qualification-runner
       Description: Orchestrates only protected disposable Bridgefu release qualifications.
+      MaxSessionDuration: 10800
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
