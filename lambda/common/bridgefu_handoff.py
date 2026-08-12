@@ -45,7 +45,11 @@ FIELD_LIMITS = {
     "intent": 128,
     "verification_status": 128,
 }
-MAX_BODY_BYTES = 16_384
+# Vapi's tool webhook includes a bounded call/message envelope in addition to
+# the configured tool arguments. Current live envelopes exceed 16 KiB even
+# though Bridgefu extracts and stores at most MAX_CONTEXT_BYTES. Keep parsing
+# bounded well below API Gateway/Lambda limits while accepting that envelope.
+MAX_BODY_BYTES = 256 * 1024
 MAX_CONTEXT_BYTES = 8_192
 IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 CORRELATION = re.compile(r"^bf1_[A-Za-z0-9_-]{43}$")
@@ -418,6 +422,8 @@ def transfer_destination(
         f"{expected_scheme}:"
     ):
         raise HandoffError("bridgefu_destination_invalid", 502)
+    if expected_scheme == "sips" and not reservation.uri.endswith(";transport=tls"):
+        raise HandoffError("bridgefu_destination_invalid", 502)
     _bounded_identifier(reservation.call_id, "bridgefu_call_id")
     if reservation.expires_at <= now:
         raise HandoffError("bridgefu_destination_expired", 502)
@@ -430,8 +436,20 @@ def transfer_destination(
     return {
         "destination": {
             "type": "sip",
+            # Preserve the exact one-use URI returned by Bridgefu. In the
+            # production posture this is a `sips:` URI with `transport=tls`;
+            # changing its scheme would alter the reserved route's security
+            # contract and is not required by Vapi's SIP destination schema.
             "sipUri": reservation.uri,
             "sipHeaders": {CORRELATION_HEADER: correlation_id},
+            # A SIP-originated Vapi call defaults to REFER, which asks the
+            # source carrier/client to originate the destination leg. Bridgefu
+            # must instead receive an INVITE from Vapi so the same transfer
+            # contract works for SIP and Web SDK source calls.
+            "transferPlan": {
+                "mode": "blind-transfer",
+                "sipVerb": "dial",
+            },
             "message": "Okay, connecting you to a support specialist now. Please stay on the line.",
         }
     }
@@ -569,12 +587,19 @@ def decode_http_json(
     body = event.get("body")
     if not isinstance(body, str):
         raise HandoffError("invalid_http_request")
+    encoded = event.get("isBase64Encoded", False)
+    if not isinstance(encoded, bool):
+        raise HandoffError("invalid_http_request")
+    # Reject by encoded character count before allocating the decoded body.
+    # API Gateway permits bodies much larger than Bridgefu's webhook contract;
+    # decoding first would make MAX_BODY_BYTES an after-the-fact limit only.
+    maximum_input_characters = (
+        ((MAX_BODY_BYTES + 2) // 3) * 4 if encoded else MAX_BODY_BYTES
+    )
+    if len(body) > maximum_input_characters:
+        raise HandoffError("request_too_large", 413)
     try:
-        raw = (
-            base64.b64decode(body, validate=True)
-            if event.get("isBase64Encoded")
-            else body.encode()
-        )
+        raw = base64.b64decode(body, validate=True) if encoded else body.encode()
     except (ValueError, TypeError):
         raise HandoffError("invalid_http_request") from None
     if len(raw) > MAX_BODY_BYTES:

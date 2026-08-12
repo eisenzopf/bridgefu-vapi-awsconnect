@@ -11,6 +11,7 @@ sys.path.insert(0, str(COMMON))
 
 from bridgefu_handoff import (  # noqa: E402
     CORRELATION_HEADER,
+    MAX_BODY_BYTES,
     HandoffError,
     SipReservation,
     VapiIdentity,
@@ -269,6 +270,10 @@ class HandoffContractTests(unittest.TestCase):
             destination["sipHeaders"],
             {CORRELATION_HEADER: prepared.correlation_id},
         )
+        self.assertEqual(
+            destination["transferPlan"],
+            {"mode": "blind-transfer", "sipVerb": "dial"},
+        )
         self.assertEqual(store.reserve_updates, 1)
 
     def test_transfer_rejects_missing_expired_identity_and_scheme_conflicts(self):
@@ -319,6 +324,20 @@ class HandoffContractTests(unittest.TestCase):
                 DEPLOYMENT,
                 lambda *_: SipReservation(
                     "sip:clear@example.test:5060",
+                    "018f4d41-0000-7000-8000-000000000001",
+                    NOW + 120,
+                ),
+                "sips",
+                now=NOW,
+            )
+        with self.assertRaisesRegex(HandoffError, "bridgefu_destination_invalid"):
+            transfer_destination(
+                transfer_event(),
+                store,
+                KEY,
+                DEPLOYMENT,
+                lambda *_: SipReservation(
+                    "sips:token@example.test:5061",
                     "018f4d41-0000-7000-8000-000000000001",
                     NOW + 120,
                 ),
@@ -382,6 +401,39 @@ class HandoffContractTests(unittest.TestCase):
             }
         )
         self.assertEqual(decoded, prepare_event())
+        large_body = json.dumps({"padding": "x" * 64_000})
+        decoded, _ = decode_http_json(
+            {
+                "headers": {"content-type": "application/json"},
+                "body": large_body,
+                "isBase64Encoded": False,
+            }
+        )
+        self.assertEqual(len(decoded["padding"]), 64_000)
+        with self.assertRaisesRegex(HandoffError, "request_too_large"):
+            decode_http_json(
+                {
+                    "headers": {"content-type": "application/json"},
+                    "body": json.dumps({"padding": "x" * MAX_BODY_BYTES}),
+                    "isBase64Encoded": False,
+                }
+            )
+        with self.assertRaisesRegex(HandoffError, "request_too_large"):
+            decode_http_json(
+                {
+                    "headers": {"content-type": "application/json"},
+                    "body": "A" * (((MAX_BODY_BYTES + 2) // 3) * 4 + 1),
+                    "isBase64Encoded": True,
+                }
+            )
+        with self.assertRaisesRegex(HandoffError, "invalid_http_request"):
+            decode_http_json(
+                {
+                    "headers": {"content-type": "application/json"},
+                    "body": "{}",
+                    "isBase64Encoded": "false",
+                }
+            )
         with self.assertRaisesRegex(HandoffError, "unsupported_content_type"):
             decode_http_json(
                 {

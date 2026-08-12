@@ -9,13 +9,51 @@ permissions:
   contents: read
 
 jobs:
+  sdp-diagnostics:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the qualification-only crates.io rvoip SDP observer
+        run: |
+          cargo fmt --manifest-path qualification/sdp-observer/Cargo.toml -- --check
+          cargo test --locked --manifest-path qualification/sdp-observer/Cargo.toml
+          cargo clippy --locked --all-targets \
+            --manifest-path qualification/sdp-observer/Cargo.toml -- -D warnings
+          cargo metadata --locked --format-version 1 \
+            --manifest-path qualification/sdp-observer/Cargo.toml \
+            | jq -e '.packages[] | select(.name == "rvoip-sip-core") |
+              .version == "0.3.7" and
+              .source == "registry+https://github.com/rust-lang/crates.io-index"'
+
   qualification-client:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Test crates.io rvoip SIP smoke client
         run: cargo test --locked --manifest-path qualification/sip-client/Cargo.toml
-      - name: Build and launch the static release qualification client
+      - name: Test the exact crates.io rvoip direct secure probe
+        run: |
+          cargo fmt --manifest-path qualification/direct-secure-probe/Cargo.toml -- --check
+          cargo test --locked \
+            --manifest-path qualification/direct-secure-probe/Cargo.toml
+          cargo clippy --locked --all-targets \
+            --manifest-path qualification/direct-secure-probe/Cargo.toml -- -D warnings
+          metadata="$(cargo metadata --locked --format-version 1 \
+            --manifest-path qualification/direct-secure-probe/Cargo.toml)"
+          jq -e '
+            ([.packages[] |
+              select(.name == "bridgefu-direct-secure-probe") |
+              .dependencies[] |
+              select(.name == "rvoip-sip" and
+                .req == "=0.3.7" and
+                .source == "registry+https://github.com/rust-lang/crates.io-index" and
+                .uses_default_features == false)] | length) == 1 and
+            ([.packages[] |
+              select(.name == "rvoip-sip" and
+                .version == "0.3.7" and
+                .source == "registry+https://github.com/rust-lang/crates.io-index")] |
+              length) == 1' <<<"$metadata"
+      - name: Build and launch the static release qualification clients
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-musl-gcc
           RUSTFLAGS: -C link-arg=-Wl,-Bstatic -C link-arg=-lm -C link-arg=-lc
@@ -25,9 +63,15 @@ jobs:
           rustup target add aarch64-unknown-linux-musl
           cargo build --release --locked --target aarch64-unknown-linux-musl \
             --manifest-path qualification/sip-client/Cargo.toml
-          binary=qualification/sip-client/target/aarch64-unknown-linux-musl/release/bridgefu-vapi-sip-smoke
-          file "$binary" | grep -F 'statically linked'
-          "$binary" --help >/dev/null
+          cargo build --release --locked --target aarch64-unknown-linux-musl \
+            --manifest-path qualification/direct-secure-probe/Cargo.toml
+          sip_binary=qualification/sip-client/target/aarch64-unknown-linux-musl/release/bridgefu-vapi-sip-smoke
+          probe_binary=qualification/direct-secure-probe/target/aarch64-unknown-linux-musl/release/bridgefu-direct-secure-probe
+          for binary in "$sip_binary" "$probe_binary"; do
+            file "$binary" | grep -F 'ARM aarch64'
+            file "$binary" | grep -F 'statically linked'
+            "$binary" --help >/dev/null
+          done
       - uses: actions/setup-node@v4
         with: {node-version: '22', cache: npm, cache-dependency-path: qualification/package-lock.json}
       - name: Check browser smoke harnesses
@@ -77,5 +121,7 @@ jobs:
           packer validate \
             -var bridgefu_commit="$bridgefu_commit" \
             -var bridgefu_cargo_lock_sha256="$bridgefu_lock" \
+            -var candidate_id=candidate-0.1.0-dev-ci-validation \
+            -var distribution_repository_commit=0000000000000000000000000000000000000000 \
             -var release_version=0.1.0-dev \
             image/bridgefu.pkr.hcl

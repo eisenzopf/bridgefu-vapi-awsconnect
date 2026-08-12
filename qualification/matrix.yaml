@@ -1,6 +1,11 @@
 schema_version: 1
 release: bridgefu-vapi-awsconnect
 environment: disposable
+required_preflight:
+  direct_secure_sips_sdes_srtp: true
+  exactly_one_correlation_header: true
+  agent_bidirectional_media_and_hangup: true
+  runtime_restored_and_ready: true
 required_smokes:
   - id: vapi-sip-transfer
     source: vapi_sip
@@ -11,10 +16,13 @@ required_smokes:
 required_checks:
   - vapi_call_connected
   - vapi_transfer_invoked
+  - handoff_context_stored
   - bridgefu_received_correlation_header
   - amazon_connect_contact_connected
   - configured_screen_pop_visible
   - audio_source_to_agent
   - audio_agent_to_source
+  - dtmf_source_to_agent
+  - dtmf_agent_to_source_web
   - source_call_ended
   - disposable_resources_removed

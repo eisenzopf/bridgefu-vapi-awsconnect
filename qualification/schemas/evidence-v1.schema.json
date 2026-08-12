@@ -28,20 +28,33 @@
           "checks": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["vapi_call_connected", "vapi_transfer_invoked", "bridgefu_received_correlation_header", "amazon_connect_contact_connected", "configured_screen_pop_visible", "audio_source_to_agent", "audio_agent_to_source", "source_call_ended"],
+            "required": ["vapi_call_connected", "vapi_transfer_invoked", "handoff_context_stored", "bridgefu_received_correlation_header", "amazon_connect_contact_connected", "configured_screen_pop_visible", "audio_source_to_agent", "audio_agent_to_source", "dtmf_source_to_agent", "source_call_ended"],
             "properties": {
               "vapi_call_connected": {"const": true},
               "vapi_transfer_invoked": {"const": true},
+              "handoff_context_stored": {"const": true},
               "bridgefu_received_correlation_header": {"const": true},
               "amazon_connect_contact_connected": {"const": true},
               "configured_screen_pop_visible": {"const": true},
               "audio_source_to_agent": {"const": true},
               "audio_agent_to_source": {"const": true},
+              "dtmf_source_to_agent": {"const": true},
+              "dtmf_agent_to_source": {"const": true},
               "source_call_ended": {"const": true}
             }
           },
           "passed": {"const": true}
-        }
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"id": {"const": "vapi-web-transfer"}}},
+            "then": {
+              "properties": {
+                "checks": {"required": ["dtmf_agent_to_source"]}
+              }
+            }
+          }
+        ]
       }
     },
     "teardown": {

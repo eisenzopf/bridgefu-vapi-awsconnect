@@ -20,10 +20,19 @@ Parameters:
     MaxLength: 63
   PrepareArtifactKey:
     Type: String
+  PrepareArtifactVersion:
+    Type: String
+    MinLength: 1
   TransferArtifactKey:
     Type: String
+  TransferArtifactVersion:
+    Type: String
+    MinLength: 1
   LookupArtifactKey:
     Type: String
+  LookupArtifactVersion:
+    Type: String
+    MinLength: 1
   BridgefuControlBaseUrl:
     Type: String
     Description: >-
@@ -38,8 +47,8 @@ Parameters:
     AllowedPattern: '^[A-Za-z0-9_-]+$'
   SipSecurity:
     Type: String
-    Default: sips_srtp
-    AllowedValues: [sips_srtp, sip_rtp]
+    Default: sips_optional_srtp
+    AllowedValues: [sips_optional_srtp, sips_srtp, sip_rtp]
   ContextTtlSeconds:
     Type: Number
     Default: 3600
@@ -103,7 +112,7 @@ Parameters:
 Conditions:
   RetainData: !Equals [!Ref DataRetentionMode, ProductionRetain]
   DeleteData: !Equals [!Ref DataRetentionMode, TestDelete]
-  SecureSip: !Equals [!Ref SipSecurity, sips_srtp]
+  SecureSip: !Not [!Equals [!Ref SipSecurity, sip_rtp]]
   UseReservedConcurrency: !Not [!Equals [!Ref LambdaReservedConcurrencyPerFunction, 0]]
   UseTransferVpc: !And
     - !Not [!Equals [!Ref TransferSubnetIds, '']]
@@ -376,6 +385,7 @@ Resources:
       Code:
         S3Bucket: !Ref ArtifactBucket
         S3Key: !Ref PrepareArtifactKey
+        S3ObjectVersion: !Ref PrepareArtifactVersion
       Environment:
         Variables:
           HANDOFF_TABLE_NAME: !If [RetainData, !Ref ProductionHandoffTable, !Ref TestHandoffTable]
@@ -409,6 +419,7 @@ Resources:
       Code:
         S3Bucket: !Ref ArtifactBucket
         S3Key: !Ref TransferArtifactKey
+        S3ObjectVersion: !Ref TransferArtifactVersion
       Environment:
         Variables:
           HANDOFF_TABLE_NAME: !If [RetainData, !Ref ProductionHandoffTable, !Ref TestHandoffTable]
@@ -448,6 +459,7 @@ Resources:
       Code:
         S3Bucket: !Ref ArtifactBucket
         S3Key: !Ref LookupArtifactKey
+        S3ObjectVersion: !Ref LookupArtifactVersion
       Environment:
         Variables:
           HANDOFF_TABLE_NAME: !If [RetainData, !Ref ProductionHandoffTable, !Ref TestHandoffTable]

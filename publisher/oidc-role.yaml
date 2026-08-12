@@ -22,10 +22,22 @@ Parameters:
   GitHubEnvironment:
     Type: String
     Default: production-release
+  GitHubRecoveryEnvironment:
+    Type: String
+    Default: release-recovery
+    AllowedPattern: '^[A-Za-z0-9_.-]+$'
   ArtifactBucketPrefix:
     Type: String
     Default: bridgefu-vapi-awsconnect
     AllowedPattern: '^[a-z0-9][a-z0-9-]+$'
+  VapiApiKeySecretArnUsWest2:
+    Type: String
+    AllowedPattern: '^arn:aws[-a-z0-9]*:secretsmanager:us-west-2:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$'
+    Description: Exact us-west-2 qualification Vapi key secret for orphan cleanup.
+  VapiApiKeySecretArnUsEast1:
+    Type: String
+    AllowedPattern: '^arn:aws[-a-z0-9]*:secretsmanager:us-east-1:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$'
+    Description: Exact us-east-1 qualification Vapi key secret for orphan cleanup.
 
 Resources:
   SigningKey:
@@ -38,7 +50,7 @@ Resources:
       KeySpec: ECC_NIST_P256
       Enabled: true
 
-  PublisherRole:
+  CandidateBuilderRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -50,22 +62,40 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:environment: !Ref GitHubEnvironment
+                token.actions.githubusercontent.com:ref: refs/heads/main
                 token.actions.githubusercontent.com:sub: !Sub >-
                   repo:${GitHubRepositoryOwner}@${GitHubRepositoryOwnerId}/${GitHubRepositoryName}@${GitHubRepositoryId}:environment:${GitHubEnvironment}
+                token.actions.githubusercontent.com:workflow: Build and qualify private candidate
       Policies:
-        - PolicyName: PublishImmutableArtifacts
+        - PolicyName: BuildPrivateCandidate
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Effect: Allow
-                Action: [s3:ListBucket, s3:GetBucketVersioning]
+              - Sid: ListCandidateAndReleasePrefixes
+                Effect: Allow
+                Action: [s3:ListBucket, s3:ListBucketVersions]
                 Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*'
-              - Effect: Allow
-                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - candidates/*
+                      - releases/*
+              - Sid: InspectCandidateBucketVersioning
+                Effect: Allow
+                Action: s3:GetBucketVersioning
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*'
+              - Sid: ManagePrivateCandidateObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
                 Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/*'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*'
-                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/latest/*'
-              - Effect: Allow
+              - Sid: SignQualifiedCandidate
+                Effect: Allow
                 Action: kms:Sign
                 Resource: !GetAtt SigningKey.Arn
               - Sid: ValidateReleaseTemplates
@@ -93,13 +123,225 @@ Resources:
                   - ec2:DetachVolume
                   - ec2:DisassociateIamInstanceProfile
                   - ec2:GetPasswordData
-                  - ec2:ModifyImageAttribute
-                  - ec2:ModifySnapshotAttribute
                   - ec2:RunInstances
                   - ec2:StopInstances
                   - ec2:TerminateInstances
                 Resource: '*'
 
+  PublisherRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Federated: !Ref GitHubOidcProviderArn}
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:environment: !Ref GitHubEnvironment
+                token.actions.githubusercontent.com:sub: !Sub >-
+                  repo:${GitHubRepositoryOwner}@${GitHubRepositoryOwnerId}/${GitHubRepositoryName}@${GitHubRepositoryId}:environment:${GitHubEnvironment}
+                token.actions.githubusercontent.com:workflow: Publish qualified release
+              StringLike:
+                token.actions.githubusercontent.com:ref: refs/tags/v*
+      Policies:
+        - PolicyName: PublishExactQualifiedCandidate
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ListPublicationPrefixes
+                Effect: Allow
+                Action: [s3:ListBucket, s3:ListBucketVersions]
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*'
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - candidates/qualified/*
+                      - candidates/publications/*
+                      - releases/*
+                      - latest/*
+              - Sid: InspectPublicationBucketVersioning
+                Effect: Allow
+                Action: s3:GetBucketVersioning
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*'
+              - Sid: ReadQualifiedCandidate
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectTagging
+                  - s3:GetObjectVersion
+                  - s3:GetObjectVersionTagging
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/qualified/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/latest/*'
+              - Sid: PublishExactReleaseObjectVersions
+                Effect: Allow
+                Action:
+                  - s3:GetObjectTagging
+                  - s3:GetObjectVersionTagging
+                  - s3:PutObjectTagging
+                  - s3:PutObjectVersionTagging
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*'
+              - Sid: PublishSignedReceiptAlongsideRelease
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:PutObjectTagging
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*/qualification/receipt.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*/qualification/receipt.sig'
+              - Sid: ManageMutableLatestPointers
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectTagging
+                  - s3:GetObjectVersion
+                  - s3:GetObjectVersionTagging
+                  - s3:PutObject
+                  - s3:PutObjectTagging
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/latest/*'
+              - Sid: JournalPublicationForCancellationRecovery
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/publications/*'
+              - Sid: VerifyCandidateSignatures
+                Effect: Allow
+                Action: kms:Verify
+                Resource: !GetAtt SigningKey.Arn
+              - Sid: PublishQualifiedAmis
+                Effect: Allow
+                Action:
+                  - ec2:CreateTags
+                  - ec2:DescribeImageAttribute
+                  - ec2:DescribeImages
+                  - ec2:DescribeSnapshotAttribute
+                  - ec2:DescribeSnapshots
+                  - ec2:ModifyImageAttribute
+                  - ec2:ModifySnapshotAttribute
+                Resource: '*'
+
+  RecoveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: >-
+        Cancellation-safe cleanup only. Bind this role to a release-recovery
+        GitHub environment with no required reviewers.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Federated: !Ref GitHubOidcProviderArn}
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:environment: !Ref GitHubRecoveryEnvironment
+                token.actions.githubusercontent.com:ref: refs/heads/main
+                token.actions.githubusercontent.com:sub: !Sub >-
+                  repo:${GitHubRepositoryOwner}@${GitHubRepositoryOwnerId}/${GitHubRepositoryName}@${GitHubRepositoryId}:environment:${GitHubRecoveryEnvironment}
+                token.actions.githubusercontent.com:workflow: Reap incomplete release work
+      Policies:
+        - PolicyName: ReapOnlyOwnedReleaseAttempts
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ListRecoveryPrefixes
+                Effect: Allow
+                Action: [s3:ListBucket, s3:ListBucketVersions]
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*'
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - candidates/runs/*
+                      - candidates/qualified/*
+                      - candidates/publications/*
+                      - qualification/bfq-*/*
+                      - releases/*
+                      - latest/*
+              - Sid: ReadRecoveryJournalsAndReceipts
+                Effect: Allow
+                Action: [s3:GetObject, s3:GetObjectVersion]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/runs/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/qualified/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/publications/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/vapi-phone.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/latest/*'
+              - Sid: AugmentExactCandidateJournalBeforeCleanup
+                Effect: Allow
+                Action: s3:PutObject
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/runs/*/state.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/publications/*/state.json'
+              - Sid: InspectCandidateOwnershipTags
+                Effect: Allow
+                Action: [s3:GetObjectTagging, s3:GetObjectVersionTagging]
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/*'
+              - Sid: DeleteOwnedPrivateCandidateVersions
+                Effect: Allow
+                Action: [s3:DeleteObject, s3:DeleteObjectVersion]
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/latest/*'
+              - Sid: RevokeFailedPublicationObjectTags
+                Effect: Allow
+                Action:
+                  - s3:DeleteObjectTagging
+                  - s3:DeleteObjectVersionTagging
+                  - s3:GetObjectTagging
+                  - s3:GetObjectVersionTagging
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*'
+              - Sid: VerifyRecoveryReceipt
+                Effect: Allow
+                Action: kms:Verify
+                Resource: !GetAtt SigningKey.Arn
+              - Sid: ReadExactRegionalVapiKeysForOrphanCleanup
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref VapiApiKeySecretArnUsWest2
+                  - !Ref VapiApiKeySecretArnUsEast1
+              - Sid: DeleteOnlyDisposableQualificationStacks
+                Effect: Allow
+                Action:
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:DescribeStacks
+                  - cloudformation:ListStackResources
+                Resource: !Sub 'arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/bridgefu-bfq-*/*'
+              - Sid: DiscoverAbsentQualificationStack
+                Effect: Allow
+                Action: cloudformation:DescribeStacks
+                Resource: '*'
+              - Sid: ReapPrivateCandidateAmisAndRevokePartialPublication
+                Effect: Allow
+                Action:
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
+                  - ec2:DeleteSnapshot
+                  - ec2:DeregisterImage
+                  - ec2:DescribeImageAttribute
+                  - ec2:DescribeImages
+                  - ec2:DescribeSnapshotAttribute
+                  - ec2:DescribeSnapshots
+                  - ec2:ModifyImageAttribute
+                  - ec2:ModifySnapshotAttribute
+                Resource: '*'
+
 Outputs:
+  CandidateBuilderRoleArn: {Value: !GetAtt CandidateBuilderRole.Arn}
   PublisherRoleArn: {Value: !GetAtt PublisherRole.Arn}
+  RecoveryRoleArn: {Value: !GetAtt RecoveryRole.Arn}
   SigningKeyArn: {Value: !GetAtt SigningKey.Arn}

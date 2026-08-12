@@ -69,6 +69,14 @@ Review the IAM capabilities, create the stack, and wait for `CREATE_COMPLETE`.
 The EC2 resource does not report success until Bridgefu, its private control
 endpoint, and its SIPS certificate are ready.
 
+The Vapi-specific default, `sips_optional_srtp`, always encrypts SIP signaling
+with TLS and prefers SRTP media. It accepts `RTP/AVP` only when the incoming
+Vapi transfer does not offer SRTP. That fallback keeps the call working, but
+its audio is not encrypted between Vapi and Bridgefu and can cross the public
+internet. Choose `sips_srtp` under **Advanced network controls** to reject any
+transfer that does not negotiate SRTP. `sip_rtp` is test-only and cannot be
+used with production retention.
+
 ### What the template asks for
 
 | Group | Required choices | Defaults you can usually keep |
@@ -80,7 +88,7 @@ endpoint, and its SIPS certificate are ready.
 | Vapi | Private-key secret ARN | Model `gpt-4.1-mini`, voice `Elliot` |
 | Screen pop | — | Four fields, no alternate routing, one-hour TTL |
 | Operations | — | 100 calls, 30-day logs, no alarm email |
-| Network | — | Dedicated `10.42.0.0/16` VPC and region-matched Vapi firewall rules |
+| Network | — | Dedicated `10.42.0.0/16` VPC, SIPS/TLS with SRTP preferred, and region-matched Vapi firewall rules |
 | Retention | — | Retain DynamoDB, audit data, and Vapi resources on deletion |
 
 The EC2 choices are `t4g.medium`, `t4g.large`, `t4g.xlarge`,

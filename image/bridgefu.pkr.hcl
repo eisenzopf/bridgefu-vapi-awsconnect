@@ -37,8 +37,24 @@ variable "release_version" {
   type = string
 }
 
+variable "candidate_id" {
+  type = string
+  validation {
+    condition     = can(regex("^candidate-[A-Za-z0-9.-]{8,96}$", var.candidate_id))
+    error_message = "Candidate_id must be the immutable candidate execution ID."
+  }
+}
+
+variable "distribution_repository_commit" {
+  type = string
+  validation {
+    condition     = can(regex("^[0-9a-f]{40}$", var.distribution_repository_commit))
+    error_message = "Distribution_repository_commit must be a full Git commit SHA."
+  }
+}
+
 source "amazon-ebs" "bridgefu_arm64" {
-  region        = var.aws_region
+  region = var.aws_region
   # Give four bounded Cargo jobs 8 GiB each for release linking. This temporary
   # build instance does not determine the customer runtime instance type.
   instance_type = "m7g.2xlarge"
@@ -73,11 +89,22 @@ source "amazon-ebs" "bridgefu_arm64" {
   }
 
   tags = {
-    Name                 = "bridgefu-vapi-awsconnect-${var.release_version}"
-    ManagedBy            = "bridgefu-vapi-awsconnect"
-    BridgefuCommit       = var.bridgefu_commit
-    BridgefuRelease      = var.release_version
-    BridgefuRvoipVersion = "0.3.7"
+    Name                     = "bridgefu-vapi-awsconnect-${var.release_version}"
+    ManagedBy                = "bridgefu-vapi-awsconnect"
+    BridgefuCommit           = var.bridgefu_commit
+    BridgefuCandidateId      = var.candidate_id
+    BridgefuRepositoryCommit = var.distribution_repository_commit
+    BridgefuRelease          = var.release_version
+    BridgefuRvoipVersion     = "0.3.7"
+  }
+
+  snapshot_tags = {
+    ManagedBy                = "bridgefu-vapi-awsconnect"
+    BridgefuCommit           = var.bridgefu_commit
+    BridgefuCandidateId      = var.candidate_id
+    BridgefuRepositoryCommit = var.distribution_repository_commit
+    BridgefuRelease          = var.release_version
+    BridgefuRvoipVersion     = "0.3.7"
   }
 }
 

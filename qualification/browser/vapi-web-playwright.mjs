@@ -313,7 +313,7 @@ function validateSession(path, callId, hangupOrigin) {
     session.recipe !== "vapi-amazon-connect-screen-pop@1" ||
     session.scenario_id !== "vapi-web-transfer" ||
     session.hangup_origin !== hangupOrigin ||
-    !["sips_srtp", "sip_rtp"].includes(session.security) ||
+    !["sips_optional_srtp", "sips_srtp", "sip_rtp"].includes(session.security) ||
     session.codec !== "negotiated" ||
     !validNetworkContract(session.network_profile, session.network_contract) ||
     session.sip_uri !== null ||
@@ -492,6 +492,21 @@ function sourceMarkerSchedule(captureStartedAtMs, triggerAtMs, observedAtMs) {
       if (timestamp > observedAtMs) return result;
       result.push(timestamp);
     }
+  }
+  return result;
+}
+
+function sourceDtmfSchedule(captureStartedAtMs, triggerAtMs, observedAtMs) {
+  const firstDtmf = captureStartedAtMs + PROBE_INITIAL_SILENCE_MS + DTMF_START_MS;
+  const firstCycle = Math.max(
+    0,
+    Math.ceil((triggerAtMs + 500 - firstDtmf) / PROBE_CYCLE_MS),
+  );
+  const result = [];
+  for (let cycle = firstCycle; result.length < 16; cycle += 1) {
+    const timestamp = firstDtmf + cycle * PROBE_CYCLE_MS;
+    if (timestamp > observedAtMs) return result;
+    result.push(timestamp);
   }
   return result;
 }
@@ -697,6 +712,7 @@ async function observe(options) {
         return (
           probe?.agentMarkerObservedAtMs.length >= 5 &&
           probe.agentMarkerFrames >= 5 &&
+          probe.dtmfAgentToSourceObserved &&
           probe.remoteAudioTracks > 0 &&
           probe.audioPacketsSent > 5 &&
           probe.audioBytesSent > 0
@@ -732,10 +748,17 @@ async function observe(options) {
       triggerAtMs,
       observedAtMs,
     );
+    const sourceDtmfSentAtMs = sourceDtmfSchedule(
+      probe.captureRequestedAtMs,
+      triggerAtMs,
+      observedAtMs,
+    );
     if (
       sourceMarkers.length < 5 ||
+      sourceDtmfSentAtMs.length < 1 ||
       probe.agentMarkerObservedAtMs.length < 5 ||
-      probe.agentMarkerFrames < 5
+      probe.agentMarkerFrames < 5 ||
+      !probe.dtmfAgentToSourceObserved
     ) {
       fail("Vapi browser final media evidence is incomplete");
     }
@@ -760,9 +783,11 @@ async function observe(options) {
         codec: "negotiated",
         security: "srtp",
         source_marker_sent_at_ms: sourceMarkers.slice(0, 32),
+        dtmf_source_to_agent_sent_at_ms: sourceDtmfSentAtMs,
         agent_marker_observed_at_ms: probe.agentMarkerObservedAtMs.slice(0, 16),
         source_to_agent_marker_frames_sent: sourceMarkers.length * 5,
         agent_to_source_marker_frames: probe.agentMarkerFrames,
+        dtmf_agent_to_source_observed: probe.dtmfAgentToSourceObserved,
       },
       hangup: {
         origin: session.hangup_origin,

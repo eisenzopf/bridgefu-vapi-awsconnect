@@ -38,8 +38,8 @@ Parameters:
     AllowedPattern: '^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$'
   SipSecurity:
     Type: String
-    Default: sips_srtp
-    AllowedValues: [sips_srtp, sip_rtp]
+    Default: sips_optional_srtp
+    AllowedValues: [sips_optional_srtp, sips_srtp, sip_rtp]
   VapiSignalingCidr1:
     Type: String
     Default: 44.229.228.186/32
@@ -119,10 +119,10 @@ Parameters:
 
 Rules:
   SecureSipRequiresPublicDns:
-    RuleCondition: !Equals [!Ref SipSecurity, sips_srtp]
+    RuleCondition: !Not [!Equals [!Ref SipSecurity, sip_rtp]]
     Assertions:
       - Assert: !Not [!Equals [!Ref PublicHostedZoneId, none]]
-        AssertDescription: SIPS/SRTP requires a public Route 53 hosted zone and hostname.
+        AssertDescription: SIPS requires a public Route 53 hosted zone and hostname.
   ClearSipIsTestOnly:
     RuleCondition: !Equals [!Ref SipSecurity, sip_rtp]
     Assertions:
@@ -130,7 +130,7 @@ Rules:
         AssertDescription: Direct-IP SIP/RTP is restricted to deletable nonproduction data.
 
 Conditions:
-  SecureSip: !Equals [!Ref SipSecurity, sips_srtp]
+  SecureSip: !Not [!Equals [!Ref SipSecurity, sip_rtp]]
   ClearSip: !Equals [!Ref SipSecurity, sip_rtp]
   HasPublicDns: !Not [!Equals [!Ref PublicHostedZoneId, none]]
   HasCidr3: !Not [!Equals [!Ref VapiSignalingCidr3, '']]

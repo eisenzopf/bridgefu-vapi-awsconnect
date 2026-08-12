@@ -8,10 +8,10 @@ use anyhow::{bail, Context};
 use clap::Parser;
 use rvoip_sip::api::headers::SipRequestOptions;
 use rvoip_sip::{
-    AudioFrame, CallHandlerDecision, CallbackPeer, Config, HeaderName, SipTrace, SipTraceConfig,
-    SipTraceDirection,
+    AudioFrame, CallHandlerDecision, CallbackPeer, Config, HeaderName, SipClientAuth, SipTrace,
+    SipTraceConfig, SipTraceDirection,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Read, Write};
@@ -27,6 +27,8 @@ const SAMPLE_RATE: u32 = 8_000;
 const FRAME_SAMPLES: usize = 160;
 const FRAME_DURATION: Duration = Duration::from_millis(20);
 const SOURCE_MARKER_HZ: f32 = 997.0;
+const SOURCE_DTMF_LOW_HZ: f32 = 770.0;
+const SOURCE_DTMF_HIGH_HZ: f32 = 1_336.0;
 const AGENT_MARKER_HZ: f64 = 880.0;
 const REQUIRED_AGENT_MARKERS: usize = 5;
 const MAX_PROMPT_BYTES: u64 = 8 * 1024 * 1024;
@@ -52,12 +54,25 @@ struct Args {
     media_port_start: u16,
     #[arg(long, default_value_t = 120)]
     timeout_seconds: u64,
+    /// Read the temporary Vapi SIP Digest credential as JSON from standard input.
+    #[arg(long)]
+    auth_stdin: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SipAuthentication {
+    realm: String,
+    username: String,
+    password: String,
 }
 
 #[derive(Default)]
 struct WireEvidence {
     invite_count: usize,
     request_host_is_vapi: bool,
+    challenge_received: bool,
+    answer_received: bool,
     transport: Option<String>,
 }
 
@@ -74,6 +89,8 @@ struct SendStats {
     prompt_frames: usize,
     marker_timestamps: Vec<u64>,
     marker_frames: usize,
+    dtmf_timestamps: Vec<u64>,
+    dtmf_frames: usize,
 }
 
 #[derive(Serialize)]
@@ -105,6 +122,8 @@ struct MediaObservation {
     prompt_frames_sent: usize,
     source_marker_sent_at_ms: Vec<u64>,
     source_to_agent_marker_frames_sent: usize,
+    dtmf_source_to_agent_sent_at_ms: Vec<u64>,
+    dtmf_source_to_agent_frames_sent: usize,
     agent_marker_observed_at_ms: Vec<u64>,
     agent_to_source_marker_frames: usize,
 }
@@ -167,6 +186,9 @@ fn validate_args(args: &Args) -> anyhow::Result<()> {
     {
         bail!("SIP client port or timeout is invalid")
     }
+    if !args.auth_stdin {
+        bail!("temporary Vapi SIP authentication must arrive on standard input")
+    }
     if args.public_ip.is_private()
         || args.public_ip.is_loopback()
         || args.public_ip.is_link_local()
@@ -180,6 +202,34 @@ fn validate_args(args: &Args) -> anyhow::Result<()> {
         bail!("observation output already exists")
     }
     Ok(())
+}
+
+fn read_authentication() -> anyhow::Result<SipClientAuth> {
+    let mut encoded = Vec::new();
+    std::io::stdin()
+        .take(1025)
+        .read_to_end(&mut encoded)
+        .context("reading temporary Vapi SIP authentication")?;
+    if encoded.is_empty() || encoded.len() > 1024 {
+        bail!("temporary Vapi SIP authentication exceeds its boundary")
+    }
+    let authentication: SipAuthentication =
+        serde_json::from_slice(&encoded).context("parsing temporary Vapi SIP authentication")?;
+    if authentication.realm != "sip.vapi.ai"
+        || !(8..=128).contains(&authentication.username.len())
+        || !authentication
+            .username
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'@'))
+        || !(16..=40).contains(&authentication.password.len())
+        || authentication.password.chars().any(char::is_control)
+    {
+        bail!("temporary Vapi SIP authentication is invalid")
+    }
+    Ok(SipClientAuth::digest(
+        authentication.username,
+        authentication.password,
+    ))
 }
 
 fn read_prompt(path: &Path) -> anyhow::Result<Vec<i16>> {
@@ -287,6 +337,19 @@ fn tone_frame(phase: &mut f32) -> Vec<i16> {
         .collect()
 }
 
+fn dtmf_frame(low_phase: &mut f32, high_phase: &mut f32) -> Vec<i16> {
+    let low_step = 2.0 * std::f32::consts::PI * SOURCE_DTMF_LOW_HZ / SAMPLE_RATE as f32;
+    let high_step = 2.0 * std::f32::consts::PI * SOURCE_DTMF_HIGH_HZ / SAMPLE_RATE as f32;
+    (0..FRAME_SAMPLES)
+        .map(|_| {
+            let sample = (low_phase.sin() + high_phase.sin()) * 0.18 * f32::from(i16::MAX);
+            *low_phase = (*low_phase + low_step) % (2.0 * std::f32::consts::PI);
+            *high_phase = (*high_phase + high_step) % (2.0 * std::f32::consts::PI);
+            sample as i16
+        })
+        .collect()
+}
+
 async fn send_frame(
     sender: &rvoip_sip::AudioSender,
     samples: Vec<i16>,
@@ -319,6 +382,8 @@ async fn send_media(
     }
     stats.lock().await.prompt_frames = prompt_frames;
     let mut phase = 0.0;
+    let mut dtmf_low_phase = 0.0;
+    let mut dtmf_high_phase = 0.0;
     for _ in 0..90 {
         let marker_timestamp = now_ms();
         for _ in 0..5 {
@@ -329,7 +394,21 @@ async fn send_media(
             current.marker_timestamps.push(marker_timestamp);
             current.marker_frames += 5;
         }
-        for _ in 0..45 {
+        let dtmf_timestamp = now_ms();
+        for _ in 0..15 {
+            send_frame(
+                &sender,
+                dtmf_frame(&mut dtmf_low_phase, &mut dtmf_high_phase),
+                &mut timestamp,
+            )
+            .await?;
+        }
+        {
+            let mut current = stats.lock().await;
+            current.dtmf_timestamps.push(dtmf_timestamp);
+            current.dtmf_frames += 15;
+        }
+        for _ in 0..30 {
             send_frame(&sender, vec![0; FRAME_SAMPLES], &mut timestamp).await?;
         }
     }
@@ -337,7 +416,12 @@ async fn send_media(
 }
 
 fn observe_wire(trace: &SipTrace, evidence: &mut WireEvidence) {
-    if trace.direction != SipTraceDirection::Outbound || !trace.start_line.starts_with("INVITE ") {
+    if trace.direction == SipTraceDirection::Inbound {
+        evidence.challenge_received |= trace.start_line.starts_with("SIP/2.0 401 ");
+        evidence.answer_received |= trace.start_line.starts_with("SIP/2.0 200 ");
+        return;
+    }
+    if !trace.start_line.starts_with("INVITE ") {
         return;
     }
     evidence.invite_count += 1;
@@ -373,6 +457,7 @@ fn write_observation(path: &Path, value: &Observation) -> anyhow::Result<()> {
 
 async fn run(args: Args) -> anyhow::Result<()> {
     validate_args(&args)?;
+    let authentication = read_authentication()?;
     let prompt = read_prompt(&args.prompt_pcm)?;
     let mut config = Config::on(
         "bridgefu-vapi-sip-smoke",
@@ -423,6 +508,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
 
     let call_id = control
         .invite(args.sip_uri.clone())
+        .with_auth(authentication)
         .with_raw_header(
             HeaderName::Other("X-Bridgefu-Qualification".to_owned()),
             "vapi-sip-transfer".to_owned(),
@@ -431,12 +517,24 @@ async fn run(args: Args) -> anyhow::Result<()> {
         .send()
         .await
         .context("sending SIP INVITE to Vapi")?;
-    let handle = control
-        .coordinator()
-        .session(&call_id)
-        .wait_for_answered(Some(Duration::from_secs(args.timeout_seconds)))
-        .await
-        .context("Vapi did not answer the SIP call")?;
+    let handle = control.coordinator().session(&call_id);
+    let answer_deadline = tokio::time::Instant::now() + Duration::from_secs(args.timeout_seconds);
+    loop {
+        let answer_received = wire.lock().await.answer_received;
+        if answer_received && handle.is_active().await {
+            break;
+        }
+        if tokio::time::Instant::now() >= answer_deadline {
+            bail!("Vapi SIP 200 did not converge with the active rvoip session")
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // rvoip publishes the next call state before the answer actions finish.
+    // Its answered watcher currently misses Vapi's Digest-retry fast answer,
+    // so allow the bounded SDP/media actions to commit before opening the
+    // audio pumps. Opening them at the intermediate Active state makes the
+    // sender's internal pump exit before it can emit RTP.
+    tokio::time::sleep(Duration::from_secs(2)).await;
     let audio = handle.audio().await.context("opening Vapi SIP audio")?;
     let (sender, mut receiver) = audio.split();
 
@@ -467,16 +565,24 @@ async fn run(args: Args) -> anyhow::Result<()> {
         Err(error) => return Err(error).context("SIP media sender failed"),
     }
     let send_stats = send_stats.lock().await.clone();
-    if send_stats.prompt_frames == 0 || send_stats.marker_frames < 5 {
-        bail!("source audio was not sent before the return marker arrived")
+    if send_stats.prompt_frames == 0
+        || send_stats.marker_frames < 5
+        || send_stats.dtmf_frames < 15
+        || send_stats.dtmf_timestamps.is_empty()
+    {
+        bail!("source audio and DTMF were not sent before the return marker arrived")
     }
     handle
         .hangup_and_wait(Some(Duration::from_secs(10)))
         .await
         .context("SIP smoke BYE did not complete")?;
     let wire = wire.lock().await;
-    if wire.invite_count != 1 || !wire.request_host_is_vapi {
-        bail!("wire trace did not prove exactly one INVITE to Vapi")
+    if wire.invite_count != 2
+        || !wire.request_host_is_vapi
+        || !wire.challenge_received
+        || !wire.answer_received
+    {
+        bail!("wire trace did not prove Vapi Digest challenge, retry, and answer")
     }
     let transport = wire.transport.clone().unwrap_or_else(|| "unknown".into());
     drop(wire);
@@ -504,6 +610,8 @@ async fn run(args: Args) -> anyhow::Result<()> {
                 prompt_frames_sent: send_stats.prompt_frames,
                 source_marker_sent_at_ms: send_stats.marker_timestamps,
                 source_to_agent_marker_frames_sent: send_stats.marker_frames,
+                dtmf_source_to_agent_sent_at_ms: send_stats.dtmf_timestamps,
+                dtmf_source_to_agent_frames_sent: send_stats.dtmf_frames,
                 agent_marker_observed_at_ms: agent_markers.timestamps,
                 agent_to_source_marker_frames: agent_markers.frames,
             },
@@ -541,5 +649,53 @@ mod tests {
         let mut detector = ToneEdges::default();
         detector.observe(&frame);
         assert!(detector.timestamps.is_empty());
+    }
+
+    #[test]
+    fn deterministic_dtmf_probe_contains_both_digit_five_frequencies() {
+        let mut low_phase = 0.0;
+        let mut high_phase = 0.0;
+        let samples = dtmf_frame(&mut low_phase, &mut high_phase);
+        assert!(tone_power(&samples, SAMPLE_RATE, f64::from(SOURCE_DTMF_LOW_HZ)) > 0.001);
+        assert!(tone_power(&samples, SAMPLE_RATE, f64::from(SOURCE_DTMF_HIGH_HZ)) > 0.001);
+    }
+
+    #[test]
+    fn wire_evidence_requires_digest_retry_and_answer() {
+        let mut evidence = WireEvidence::default();
+        for (direction, start_line) in [
+            (
+                SipTraceDirection::Outbound,
+                "INVITE sip:bfq_12345678@sip.vapi.ai SIP/2.0",
+            ),
+            (SipTraceDirection::Inbound, "SIP/2.0 401 Unauthorized"),
+            (
+                SipTraceDirection::Outbound,
+                "INVITE sip:bfq_12345678@sip.vapi.ai SIP/2.0",
+            ),
+            (SipTraceDirection::Inbound, "SIP/2.0 200 OK"),
+        ] {
+            observe_wire(
+                &SipTrace {
+                    direction,
+                    transport: "UDP".to_owned(),
+                    local_addr: "127.0.0.1:5076".to_owned(),
+                    remote_addr: "127.0.0.1:5060".to_owned(),
+                    timestamp_unix_millis: 1,
+                    start_line: start_line.to_owned(),
+                    sip_call_id: None,
+                    session_id: None,
+                    raw_message: String::new(),
+                    original_len: 1,
+                    truncated: false,
+                    redacted: true,
+                },
+                &mut evidence,
+            );
+        }
+        assert_eq!(evidence.invite_count, 2);
+        assert!(evidence.request_host_is_vapi);
+        assert!(evidence.challenge_received);
+        assert!(evidence.answer_received);
     }
 }

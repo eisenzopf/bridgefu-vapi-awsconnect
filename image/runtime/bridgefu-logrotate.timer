@@ -1,0 +1,13 @@
+[Unit]
+Description=Rotate Bridgefu runtime logs when they reach the size limit
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+RandomizedDelaySec=30s
+Persistent=true
+Unit=bridgefu-logrotate.service
+
+[Install]
+WantedBy=timers.target

@@ -15,8 +15,9 @@ class QualificationAssetTests(unittest.TestCase):
         text = (QUALIFICATION / "matrix.yaml").read_text()
         scenarios = set(re.findall(r"^  - id: ([a-z0-9-]+)$", text, re.M))
         self.assertEqual(scenarios, {"vapi-sip-transfer", "vapi-web-transfer"})
-        for removed_scope in ("soak", "failure_drill", "dtmf", "sip-rtp-pcmu"):
+        for removed_scope in ("soak", "failure_drill", "sip-rtp-pcmu"):
             self.assertNotIn(removed_scope, text)
+        self.assertIn("dtmf_source_to_agent", text)
 
     def test_sip_source_uses_exact_crates_io_rvoip_037(self):
         crate = tomllib.loads((QUALIFICATION / "sip-client" / "Cargo.toml").read_text())
@@ -51,7 +52,7 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertLess(packer.index(create), packer.index(upload))
 
     def test_release_creates_packer_manifest_parent_before_build(self):
-        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+        workflow = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
         build = workflow.split(
             "      - name: Build and copy private candidate AMIs\n", 1
         )[1].split("\n      - name:", 1)[0]
@@ -62,7 +63,7 @@ class QualificationAssetTests(unittest.TestCase):
     def test_static_sip_client_links_opus_dependencies_and_launches_in_ci(self):
         workflows = [
             (ROOT / ".github" / "workflows" / name).read_text()
-            for name in ("ci.yml", "release.yml", "remote-qualification.yml")
+            for name in ("ci.yml", "candidate.yml", "remote-qualification.yml")
         ]
         for workflow in workflows:
             self.assertIn(
@@ -71,8 +72,7 @@ class QualificationAssetTests(unittest.TestCase):
                 workflow,
             )
             self.assertIn(
-                "RUSTFLAGS: -C link-arg=-Wl,-Bstatic "
-                "-C link-arg=-lm -C link-arg=-lc",
+                "RUSTFLAGS: -C link-arg=-Wl,-Bstatic -C link-arg=-lm -C link-arg=-lc",
                 workflow,
             )
             self.assertIn("aarch64-unknown-linux-musl", workflow)
@@ -103,9 +103,7 @@ class QualificationAssetTests(unittest.TestCase):
         packer = (ROOT / "image" / "bridgefu.pkr.hcl").read_text()
         install = (ROOT / "image" / "install.sh").read_text()
         self.assertIn('instance_type = "m7g.2xlarge"', packer)
-        self.assertIn(
-            "cargo build --locked --release --jobs 4 --bin bridgefu", install
-        )
+        self.assertIn("cargo build --locked --release --jobs 4 --bin bridgefu", install)
 
     def test_certificate_passphrase_preserves_exact_secret_bytes(self):
         refresh = (ROOT / "image" / "runtime" / "bridgefu-cert-refresh").read_text()
@@ -123,15 +121,12 @@ class QualificationAssetTests(unittest.TestCase):
 
     def test_image_installs_and_verifies_opus_build_and_runtime_dependencies(self):
         install = (ROOT / "image" / "install.sh").read_text()
-        package_block = install.split("sudo dnf install -y", 1)[1].split(
-            "\n\n", 1
-        )[0]
+        package_block = install.split("sudo dnf install -y", 1)[1].split("\n\n", 1)[0]
         self.assertIn("opus-devel", package_block)
         self.assertIn("rpm -q opus opus-devel", install)
         self.assertIn("pkg-config --exists opus", install)
         self.assertIn(
-            "ldd /usr/local/bin/bridgefu | grep -Eq "
-            "'libopus\\.so\\.[0-9]+ => /'",
+            "ldd /usr/local/bin/bridgefu | grep -Eq 'libopus\\.so\\.[0-9]+ => /'",
             install,
         )
 
@@ -145,17 +140,224 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("DeletionPolicy: Delete", text)
         self.assertIn("AutoAccept: true", text)
 
-    def test_release_publication_is_downstream_of_live_qualification(self):
-        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
-        publish = workflow.split("\n  publish:\n", 1)[1]
-        self.assertIn("needs: [build-candidate, live-qualification]", publish)
-        self.assertIn("modify-image-attribute", publish)
-        qualification = workflow.split("\n  live-qualification:\n", 1)[1].split(
-            "\n  publish:\n", 1
+    def test_disposable_stack_owns_exact_host_split_horizon_sip_dns(self):
+        qualification = (QUALIFICATION / "cloudformation" / "template.yaml").read_text()
+        product = (ROOT / "cloudformation" / "template.yaml").read_text()
+        runtime = (ROOT / "cloudformation" / "nested" / "runtime.yaml").read_text()
+
+        zone = qualification.split("  QualificationSipPrivateHostedZone:\n", 1)[
+            1
+        ].split("\n  QualificationSipPrivateRecord:\n", 1)[0]
+        record = qualification.split("  QualificationSipPrivateRecord:\n", 1)[1].split(
+            "\nOutputs:\n", 1
         )[0]
-        self.assertIn("qualification/controller.py run", qualification)
-        self.assertIn("bridgefu-vapi-sip-smoke", qualification)
-        self.assertNotIn("--retain-on-failure", qualification)
+        self.assertIn("Type: AWS::Route53::HostedZone", zone)
+        self.assertIn("Name: !Ref SipHostname", zone)
+        self.assertIn("VPCId: !GetAtt Candidate.Outputs.BridgefuVpcId", zone)
+        self.assertIn("ManagedBy, Value: bridgefu-qualification", zone)
+        self.assertIn("DeletionPolicy: Delete", zone)
+        self.assertIn("Type: AWS::Route53::RecordSet", record)
+        self.assertIn("HostedZoneId: !Ref QualificationSipPrivateHostedZone", record)
+        self.assertIn(
+            "ResourceRecords: [!GetAtt Candidate.Outputs.BridgefuInstancePrivateIp]",
+            record,
+        )
+        self.assertIn("BridgefuVpcId:", product)
+        self.assertIn("BridgefuInstancePrivateIp:", product)
+        self.assertNotIn("QualificationSipPrivateHostedZone", product + runtime)
+        self.assertNotIn("Disposable split-horizon SIP DNS", product + runtime)
+        role = (ROOT / "publisher" / "qualification-role.yaml").read_text()
+        self.assertIn("ProveQualificationPrivateDnsDeleted", role)
+        self.assertIn("Action: route53:GetHostedZone", role)
+        self.assertIn(
+            "Resource: !Sub 'arn:${AWS::Partition}:route53:::hostedzone/*'", role
+        )
+
+    def test_tag_publication_consumes_a_prequalified_immutable_receipt(self):
+        candidate = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
+        publication = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+        self.assertIn(
+            "needs: [build-private-candidate, qualify-both-regions]", candidate
+        )
+        self.assertIn("matrix:\n        region: [us-west-2, us-east-1]", candidate)
+        self.assertIn("qualification/controller.py run", candidate)
+        self.assertIn("bridgefu-vapi-sip-smoke", candidate)
+        self.assertNotIn("--retain-on-failure", candidate)
+        self.assertIn("bridgefu-qualified-candidate-receipt/v1", publication)
+        self.assertIn("kms verify", publication)
+        self.assertIn("modify-image-attribute", publication)
+        self.assertNotIn("packer build", publication)
+
+    def test_publication_requires_signed_secure_preflight_attestations(self):
+        publication = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+        receipt_gate = publication.split(
+            "      - name: Resolve tag and download its immutable qualified receipt\n",
+            1,
+        )[1].split("\n      - name:", 1)[0]
+        for assertion in (
+            ".evidence_schema_version == 2",
+            ".secure_preflight_passed == true",
+            ".required_checks_passed == true",
+            '.scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"]',
+            ".zero_resource_proof == true",
+        ):
+            self.assertGreaterEqual(receipt_gate.count(assertion), 2)
+        self.assertLess(
+            receipt_gate.index(".secure_preflight_passed == true"),
+            receipt_gate.index("aws kms verify"),
+        )
+        self.assertLess(
+            publication.index(".secure_preflight_passed == true"),
+            publication.index(
+                "      - name: Stage exact signed release receipt copies privately"
+            ),
+        )
+
+    def test_sdp_observer_is_diagnostics_only_and_exactly_pinned(self):
+        crate = tomllib.loads(
+            (QUALIFICATION / "sdp-observer" / "Cargo.toml").read_text()
+        )
+        self.assertEqual(
+            crate["dependencies"]["rvoip-sip-core"],
+            "=0.3.7",
+        )
+        lock = (QUALIFICATION / "sdp-observer" / "Cargo.lock").read_text()
+        package = lock.split('name = "rvoip-sip-core"', 1)[1].split(
+            "[[package]]", 1
+        )[0]
+        self.assertIn('version = "0.3.7"', package)
+        self.assertIn(
+            'source = "registry+https://github.com/rust-lang/crates.io-index"',
+            package,
+        )
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        self.assertIn(
+            "cargo test --locked --manifest-path qualification/sdp-observer/Cargo.toml",
+            ci,
+        )
+        self.assertIn("cargo clippy --locked --all-targets", ci)
+        observer_job = ci.split("  sdp-diagnostics:\n", 1)[1].split(
+            "\n  qualification-client:\n", 1
+        )[0]
+        self.assertIn('select(.name == "rvoip-sip-core")', observer_job)
+        self.assertNotIn('select(.name == "rvoip-sip")', observer_job)
+        for workflow in ("candidate.yml", "release.yml", "remote-qualification.yml"):
+            self.assertNotIn(
+                "qualification/sdp-observer",
+                (ROOT / ".github" / "workflows" / workflow).read_text(),
+            )
+
+    def test_direct_secure_probe_is_exactly_pinned_and_candidate_packaged(self):
+        crate = tomllib.loads(
+            (QUALIFICATION / "direct-secure-probe" / "Cargo.toml").read_text()
+        )
+        self.assertEqual(
+            crate["dependencies"]["rvoip-sip"],
+            {"version": "=0.3.7", "default-features": False},
+        )
+        lock = (QUALIFICATION / "direct-secure-probe" / "Cargo.lock").read_text()
+        package = lock.split('name = "rvoip-sip"', 1)[1].split("[[package]]", 1)[0]
+        self.assertIn('version = "0.3.7"', package)
+        self.assertIn(
+            'source = "registry+https://github.com/rust-lang/crates.io-index"',
+            package,
+        )
+
+        ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        self.assertIn(
+            "cargo fmt --manifest-path qualification/direct-secure-probe/Cargo.toml",
+            ci,
+        )
+        self.assertIn(
+            "--manifest-path qualification/direct-secure-probe/Cargo.toml",
+            ci,
+        )
+        self.assertIn("cargo clippy --locked --all-targets", ci)
+
+        workflows = {
+            name: (ROOT / ".github" / "workflows" / name).read_text()
+            for name in ("ci.yml", "candidate.yml", "remote-qualification.yml")
+        }
+        for workflow in workflows.values():
+            self.assertIn(
+                "qualification/direct-secure-probe/target/"
+                "aarch64-unknown-linux-musl/release/bridgefu-direct-secure-probe",
+                workflow,
+            )
+            self.assertIn("file \"$binary\" | grep -F 'ARM aarch64'", workflow)
+            self.assertIn("file \"$binary\" | grep -F 'statically linked'", workflow)
+            self.assertIn('"$binary" --help >/dev/null', workflow)
+            self.assertIn('.req == "=0.3.7"', workflow)
+            self.assertIn(
+                '.source == "registry+https://github.com/rust-lang/crates.io-index"',
+                workflow,
+            )
+
+        candidate = workflows["candidate.yml"]
+        self.assertIn(
+            "upload_candidate_object target/candidate/bridgefu-direct-secure-probe",
+            candidate,
+        )
+        self.assertNotIn(
+            "bridgefu-direct-secure-probe",
+            (ROOT / ".github" / "workflows" / "release.yml").read_text(),
+        )
+
+    def test_live_workflows_gate_on_the_packaged_secure_preflight(self):
+        candidate = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
+        remote = (
+            ROOT / ".github" / "workflows" / "remote-qualification.yml"
+        ).read_text()
+        for workflow, probe_path in (
+            (candidate, "target/candidate/bridgefu-direct-secure-probe"),
+            (
+                remote,
+                "target/qualification-client/bridgefu-direct-secure-probe",
+            ),
+        ):
+            controller_runs = workflow.count("qualification/controller.py run")
+            self.assertGreater(controller_runs, 0)
+            self.assertEqual(workflow.count("--direct-secure-probe"), controller_runs)
+            self.assertIn(f"--direct-secure-probe {probe_path}", workflow)
+
+        evidence_v2 = json.loads(
+            (QUALIFICATION / "schemas" / "evidence-v2.schema.json").read_text()
+        )
+        required_preflight_checks = evidence_v2["properties"]["secure_preflight"][
+            "properties"
+        ]["checks"]["required"]
+        receipt_gate = candidate.split(
+            "      - name: Verify both regional qualifications and seal the receipt\n",
+            1,
+        )[1]
+        self.assertIn(".schema_version == 2", receipt_gate)
+        self.assertIn(".secure_preflight.passed == true", receipt_gate)
+        self.assertIn("exact_true_checks", receipt_gate)
+        for check in required_preflight_checks:
+            self.assertIn(f'"{check}"', receipt_gate)
+        self.assertIn(
+            '([.scenarios[].id] | sort) == ["vapi-sip-transfer","vapi-web-transfer"]',
+            receipt_gate,
+        )
+        for attestation in (
+            "evidence_schema_version",
+            "secure_preflight_passed",
+            "required_checks_passed",
+            "scenario_ids",
+        ):
+            self.assertIn(attestation, candidate)
+            self.assertIn(attestation, remote)
+        for signed_receipt_gate in (candidate, remote):
+            self.assertIn(".evidence_schema_version == 2", signed_receipt_gate)
+            self.assertIn(
+                ".secure_preflight_passed == true",
+                signed_receipt_gate,
+            )
+            self.assertIn(".required_checks_passed == true", signed_receipt_gate)
+            self.assertIn(
+                '.scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"]',
+                signed_receipt_gate,
+            )
 
     def test_controller_proves_and_removes_every_disposable_resource_class(self):
         controller = (QUALIFICATION / "controller.py").read_text()
@@ -165,10 +367,44 @@ class QualificationAssetTests(unittest.TestCase):
             "temporary_vapi_resources_absent",
             "test_credentials_absent",
             "qualification_objects_absent",
+            "qualification_private_dns_absent",
             "bridgefu_sip_invite_evidence",
             "bridgefu_correlation_evidence",
         ):
             self.assertIn(proof, controller)
+
+    def test_both_smokes_gate_on_concrete_dtmf_observations(self):
+        controller = (QUALIFICATION / "controller.py").read_text()
+        agent = (
+            QUALIFICATION / "browser" / "agent-workspace-playwright.mjs"
+        ).read_text()
+        web = (QUALIFICATION / "browser" / "vapi-web-playwright.mjs").read_text()
+        sip = (QUALIFICATION / "sip-client" / "src" / "main.rs").read_text()
+        evidence_schema = (
+            QUALIFICATION / "schemas" / "evidence-v1.schema.json"
+        ).read_text()
+        self.assertNotIn("CHECKS = {", controller)
+        self.assertIn("dtmf_source_to_agent_observed", agent)
+        self.assertIn("dtmf_agent_to_source_observed", web)
+        self.assertIn("dtmf_source_to_agent_frames_sent", sip)
+        self.assertIn('"dtmf_source_to_agent": {"const": true}', evidence_schema)
+
+    def test_connect_available_is_selected_before_either_source_starts(self):
+        controller = (QUALIFICATION / "controller.py").read_text()
+        web = controller.split("    def web_smoke(", 1)[1].split(
+            "    def cleanup_sip_transients(", 1
+        )[0]
+        sip = controller.split("    def _sip_smoke(", 1)[1].split(
+            "    def verify_scenario(", 1
+        )[0]
+        self.assertLess(
+            web.index("ensure_connect_agent_available"),
+            web.index("vapi-web-playwright.mjs"),
+        )
+        self.assertLess(
+            sip.index("ensure_connect_agent_available"),
+            sip.index('"send-command"'),
+        )
 
 
 if __name__ == "__main__":

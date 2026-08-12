@@ -72,7 +72,7 @@ def main() -> int:
     if not FLOW_ID.fullmatch(flow_id):
         raise SystemExit("invalid CONNECT_ENTRY_FLOW_ID")
     security = required("BRIDGEFU_SIP_SECURITY")
-    if security not in {"sips_srtp", "sip_rtp"}:
+    if security not in {"sips_optional_srtp", "sips_srtp", "sip_rtp"}:
         raise SystemExit("invalid BRIDGEFU_SIP_SECURITY")
     try:
         maximum = int(required("BRIDGEFU_MAX_CONCURRENT_CALLS"))
@@ -88,7 +88,7 @@ def main() -> int:
         str(ipaddress.ip_network(value, strict=True)) for value in cidrs
     ]
     cidr_yaml = "\n".join(f"        - {value}" for value in normalized_cidrs)
-    if security == "sips_srtp":
+    if security != "sip_rtp":
         edge = """  sip_tls:
     bind: 0.0.0.0:5061
     advertised_addr: __PUBLIC_IP__:5061
@@ -125,7 +125,7 @@ def main() -> int:
         {
             "CONTROL_BIND": (
                 f"{private_ip}:443 ssl crt /etc/haproxy/bridgefu.pem alpn h2,http/1.1"
-                if security == "sips_srtp"
+                if security != "sip_rtp"
                 else f"{private_ip}:443"
             )
         },

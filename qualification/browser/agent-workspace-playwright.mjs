@@ -28,6 +28,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PRODUCER = "bridgefu-agent-workspace-playwright@1";
+const DIRECT_SECURE_PRODUCER = "bridgefu-agent-direct-secure-observer@1";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "../..");
 const require = createRequire(join(ROOT, "qualification/package.json"));
@@ -190,6 +191,16 @@ function validateSession(path) {
   ) {
     fail("Agent Workspace qualification accepts synthetic context only");
   }
+  return value;
+}
+
+function validateExecutionId(value) {
+  if (!/^bfq-[a-z0-9-]{4,28}$/.test(value)) fail("execution ID is invalid");
+  return value;
+}
+
+function validateScenarioId(value) {
+  if (!QUALIFIED_SCENARIOS.has(value)) fail("scenario ID is invalid");
   return value;
 }
 
@@ -547,6 +558,61 @@ async function ensureAvailable(page, timeoutMs) {
   );
 }
 
+async function setAvailable(page, timeoutMs) {
+  const selectedThroughStreams = await waitUntil(
+    async () => {
+      for (const frame of page.frames()) {
+        try {
+          const selected = await frame.evaluate(async () => {
+            const streams = globalThis.connect;
+            if (typeof streams?.Agent !== "function") return null;
+            const agent = new streams.Agent();
+            const states =
+              typeof agent.getAgentStates === "function"
+                ? agent.getAgentStates()
+                : [];
+            const available = states.filter(
+              (state) =>
+                state?.name === "Available" &&
+                (state?.type === "routable" || state?.type === "ROUTABLE"),
+            );
+            if (available.length !== 1) return false;
+            if (agent.getState?.()?.name === "Available") return true;
+            if (typeof agent.setState !== "function") return false;
+            return await new Promise((resolvePromise) => {
+              let settled = false;
+              const finish = (value) => {
+                if (settled) return;
+                settled = true;
+                resolvePromise(value);
+              };
+              const timer = setTimeout(() => finish(false), 3000);
+              agent.setState(available[0], {
+                success: () => {
+                  clearTimeout(timer);
+                  finish(true);
+                },
+                failure: () => {
+                  clearTimeout(timer);
+                  finish(false);
+                },
+              });
+            });
+          });
+          if (selected === true) return true;
+        } catch {
+          // Streams is present in only one Agent Workspace frame.
+        }
+      }
+      return false;
+    },
+    Math.min(timeoutMs, 30_000),
+    "Agent Workspace could not select Available",
+  );
+  if (!selectedThroughStreams) fail("Agent Workspace did not select Available");
+  await ensureAvailable(page, timeoutMs);
+}
+
 async function waitForAutoAcceptedContact(page, timeoutMs) {
   return waitUntil(
     async () => {
@@ -586,6 +652,21 @@ async function probeSnapshot(page) {
         if (!state) return null;
         let audioPacketsSent = 0;
         let audioBytesSent = 0;
+        let activeContacts = null;
+        const streams = globalThis.connect;
+        if (typeof streams?.Agent === "function") {
+          try {
+            const contacts = new streams.Agent().getContacts?.();
+            if (Array.isArray(contacts)) {
+              activeContacts = contacts.filter((contact) => {
+                const type = contact.getStatus?.()?.type;
+                return !["ended", "destroyed", "error", "ENDED"].includes(type);
+              }).length;
+            }
+          } catch {
+            activeContacts = null;
+          }
+        }
         for (const peer of globalThis.__bridgefuAgentPeerConnections ?? []) {
           try {
             const report = await peer.getStats();
@@ -608,6 +689,7 @@ async function probeSnapshot(page) {
           remoteAudioTracks: state.remoteAudioTracks,
           audioPacketsSent,
           audioBytesSent,
+          activeContacts,
         };
       });
       if (value) snapshots.push(value);
@@ -644,6 +726,10 @@ async function probeSnapshot(page) {
       (total, item) => total + item.audioBytesSent,
       0,
     ),
+    activeContacts: snapshots
+      .map((item) => item.activeContacts)
+      .filter(Number.isInteger)
+      .sort((left, right) => right - left)[0] ?? null,
   };
 }
 
@@ -661,6 +747,22 @@ function agentMarkerSchedule(captureStartedAtMs, acceptedAtMs, observedAtMs) {
       if (timestamp > observedAtMs) return result;
       result.push(timestamp);
     }
+  }
+  return result;
+}
+
+function agentDtmfSchedule(captureStartedAtMs, acceptedAtMs, observedAtMs) {
+  const firstDtmf =
+    captureStartedAtMs + PROBE_INITIAL_SILENCE_MS + PROBE_DTMF_SIX_START_MS;
+  const firstCycle = Math.max(
+    0,
+    Math.ceil((acceptedAtMs + 500 - firstDtmf) / PROBE_CYCLE_MS),
+  );
+  const result = [];
+  for (let cycle = firstCycle; result.length < 16; cycle += 1) {
+    const timestamp = firstDtmf + cycle * PROBE_CYCLE_MS;
+    if (timestamp > observedAtMs) return result;
+    result.push(timestamp);
   }
   return result;
 }
@@ -856,24 +958,144 @@ async function authenticate(options) {
   }
 }
 
+async function observeDirectSecure(options) {
+  const storageState = resolve(required(options, "--storage-state"));
+  const readyPath = resolve(required(options, "--ready"));
+  const observationPath = resolve(required(options, "--observation"));
+  const connectUrl = validateConnectUrl(required(options, "--connect-url"));
+  const timeoutMs = timeoutMilliseconds(options, 180);
+  privateRegularFile(storageState);
+  if (existsSync(readyPath) || existsSync(observationPath)) {
+    fail("direct secure observer output already exists");
+  }
+  mkdirSync(dirname(readyPath), { recursive: true, mode: 0o700 });
+  chmodSync(dirname(readyPath), 0o700);
+  mkdirSync(dirname(observationPath), { recursive: true, mode: 0o700 });
+  chmodSync(dirname(observationPath), 0o700);
+  const probePath = join(dirname(observationPath), ".agent-probe-direct-secure.wav");
+  writeProbeWav(probePath);
+  const executablePath = chromium.executablePath();
+  if (!existsSync(executablePath)) {
+    fail("Playwright Chromium is absent; install the pinned SDK browser first");
+  }
+  const browser = await chromium.launch({
+    headless: !options.has("--headed"),
+    args: [
+      "--use-fake-ui-for-media-stream",
+      "--use-fake-device-for-media-stream",
+      `--use-file-for-fake-audio-capture=${probePath}`,
+      "--autoplay-policy=no-user-gesture-required",
+      "--no-sandbox",
+    ],
+  });
+  try {
+    const context = await browser.newContext({
+      storageState,
+      permissions: ["microphone"],
+      viewport: { width: 1440, height: 1100 },
+    });
+    await context.addInitScript(installProbe);
+    const page = await context.newPage();
+    await page.goto(connectUrl.href, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+    await waitUntil(
+      () => workspaceReady(page),
+      Math.min(timeoutMs, 60_000),
+      "authenticated Agent Workspace was not ready",
+    );
+    await setAvailable(page, timeoutMs);
+    exclusiveJson(readyPath, {
+      schema_version: 1,
+      producer: DIRECT_SECURE_PRODUCER,
+      mode: "direct-secure-preflight",
+      agent_available: true,
+      redacted: true,
+    });
+
+    const mediaProbe = await waitUntil(
+      async () => {
+        const probe = await probeSnapshot(page);
+        if (
+          probe.activeContacts === 1 &&
+          probe.remoteAudioTracks > 0 &&
+          probe.sourceMarkerFrames > 0 &&
+          probe.audioPacketsSent > 0 &&
+          probe.audioBytesSent > 0
+        ) return probe;
+        return false;
+      },
+      Math.min(timeoutMs, 90_000),
+      "direct secure contact did not auto-accept with bidirectional media",
+      50,
+    );
+    await waitUntil(
+      async () => {
+        const probe = await probeSnapshot(page);
+        return probe.activeContacts === 0 && !(await endControlVisible(page));
+      },
+      Math.min(timeoutMs, 60_000),
+      "Agent Workspace did not observe the direct secure remote hangup",
+      100,
+    );
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 1000));
+    const cleanupProbe = await probeSnapshot(page);
+    if (
+      cleanupProbe.activeContacts !== 0 ||
+      (await endControlVisible(page)) ||
+      mediaProbe.activeContacts !== 1 ||
+      mediaProbe.remoteAudioTracks < 1 ||
+      mediaProbe.sourceMarkerFrames < 1 ||
+      mediaProbe.audioPacketsSent < 1 ||
+      mediaProbe.audioBytesSent < 1
+    ) {
+      fail("direct secure Agent Workspace evidence is incomplete");
+    }
+    exclusiveJson(observationPath, {
+      schema_version: 1,
+      producer: DIRECT_SECURE_PRODUCER,
+      producer_revision_sha256: sha256File(fileURLToPath(import.meta.url)),
+      mode: "direct-secure-preflight",
+      agent_available: true,
+      sole_contact_auto_accepted: true,
+      remote_audio_observed: true,
+      outbound_rtp_observed: true,
+      remote_hangup_observed: true,
+      contact_cleanup_observed: true,
+      redacted: true,
+    });
+    process.stdout.write(`${observationPath}\n`);
+    await context.close();
+  } finally {
+    await browser.close();
+    rmSync(probePath, { force: true });
+  }
+}
+
 async function observe(options) {
   const sessionPath = resolve(required(options, "--session"));
+  const executionId = validateExecutionId(required(options, "--execution-id"));
+  const scenarioId = validateScenarioId(required(options, "--scenario-id"));
   const storageState = resolve(required(options, "--storage-state"));
   const screenshotPath = resolve(required(options, "--screenshot"));
+  const readyPath = resolve(required(options, "--ready"));
   const observationPath = resolve(required(options, "--observation"));
   const connectUrl = validateConnectUrl(required(options, "--connect-url"));
   const timeoutMs = timeoutMilliseconds(options, 180);
   const expectMissingContext = options.has("--expect-missing-context");
-  const session = validateSession(sessionPath);
   privateRegularFile(storageState);
-  if (existsSync(screenshotPath) || existsSync(observationPath)) {
+  if (existsSync(screenshotPath) || existsSync(readyPath) || existsSync(observationPath)) {
     fail("Agent Workspace evidence output already exists");
   }
   mkdirSync(dirname(observationPath), { recursive: true, mode: 0o700 });
   chmodSync(dirname(observationPath), 0o700);
   mkdirSync(dirname(screenshotPath), { recursive: true, mode: 0o700 });
   chmodSync(dirname(screenshotPath), 0o700);
-  const probePath = join(dirname(observationPath), `.agent-probe-${session.session_id}.wav`);
+  mkdirSync(dirname(readyPath), { recursive: true, mode: 0o700 });
+  chmodSync(dirname(readyPath), 0o700);
+  const observerId = sha256Bytes(`${executionId}:${scenarioId}`).slice(0, 16);
+  const probePath = join(dirname(observationPath), `.agent-probe-${observerId}.wav`);
   writeProbeWav(probePath);
   const executablePath = chromium.executablePath();
   if (!existsSync(executablePath)) {
@@ -904,6 +1126,24 @@ async function observe(options) {
       "authenticated Agent Workspace was not ready",
     );
     await ensureAvailable(page, timeoutMs);
+    exclusiveJson(readyPath, {
+      schema_version: 1,
+      producer: PRODUCER,
+      mode: "scenario-observer",
+      execution_id: executionId,
+      scenario_id: scenarioId,
+      agent_available: true,
+      redacted: true,
+    });
+    await waitUntil(
+      () => existsSync(sessionPath),
+      timeoutMs,
+      "private smoke session was not published after observer readiness",
+    );
+    const session = validateSession(sessionPath);
+    if (session.execution_id !== executionId || session.scenario_id !== scenarioId) {
+      fail("private smoke session does not bind to observer readiness");
+    }
     await waitForAutoAcceptedContact(page, timeoutMs);
     if (expectMissingContext) {
       await waitUntil(
@@ -949,6 +1189,7 @@ async function observe(options) {
         const sourceMediaReadyAtMs = probe.sourceMarkerObservedAtMs[0];
         return (
           probe.sourceMarkerObservedAtMs.length >= 5 &&
+          probe.dtmfSourceToAgentObserved &&
           probe.captureRequestedAtMs &&
           Number.isInteger(sourceMediaReadyAtMs) &&
           agentMarkerSchedule(
@@ -996,10 +1237,17 @@ async function observe(options) {
       mediaProbe.sourceMarkerObservedAtMs[0],
       observedAtMs,
     );
+    const agentDtmfSentAtMs = agentDtmfSchedule(
+      mediaProbe.captureRequestedAtMs,
+      mediaProbe.sourceMarkerObservedAtMs[0],
+      observedAtMs,
+    );
     if (
       mediaProbe.sourceMarkerObservedAtMs.length < 5 ||
       mediaProbe.sourceMarkerFrames < 5 ||
+      !mediaProbe.dtmfSourceToAgentObserved ||
       agentMarkerSentAtMs.length < 5 ||
+      (session.scenario_id === "vapi-web-transfer" && agentDtmfSentAtMs.length < 1) ||
       mediaProbe.audioPacketsSent < 5
     ) {
       fail("Agent Workspace final media evidence is incomplete");
@@ -1034,8 +1282,10 @@ async function observe(options) {
       media: {
         source_to_agent_marker_frames: mediaProbe.sourceMarkerFrames,
         source_marker_observed_at_ms: mediaProbe.sourceMarkerObservedAtMs.slice(0, 16),
+        dtmf_source_to_agent_observed: mediaProbe.dtmfSourceToAgentObserved,
         agent_marker_sent_at_ms: agentMarkerSentAtMs.slice(0, 32),
         agent_to_source_marker_frames_sent: agentMarkerSentAtMs.length * 5,
+        dtmf_agent_to_source_sent_at_ms: agentDtmfSentAtMs,
       },
       hangup: {
         origin: session.hangup_origin,
@@ -1084,9 +1334,12 @@ async function main() {
       if (
         ![
           "--session",
+          "--execution-id",
+          "--scenario-id",
           "--storage-state",
           "--connect-url",
           "--screenshot",
+          "--ready",
           "--observation",
           "--timeout-seconds",
           "--headed",
@@ -1099,7 +1352,26 @@ async function main() {
     await observe(options);
     return;
   }
-  fail("command must be auth or observe");
+  if (command === "observe-direct-secure") {
+    const options = parseOptions(values, new Set(["--headed"]));
+    for (const name of options.keys()) {
+      if (
+        ![
+          "--storage-state",
+          "--connect-url",
+          "--ready",
+          "--observation",
+          "--timeout-seconds",
+          "--headed",
+        ].includes(name)
+      ) {
+        fail(`unknown observe-direct-secure option ${name}`);
+      }
+    }
+    await observeDirectSecure(options);
+    return;
+  }
+  fail("command must be auth, observe, or observe-direct-secure");
 }
 
 main().catch((error) => {

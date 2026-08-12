@@ -40,8 +40,8 @@ Parameters:
     Type: String
   SipSecurity:
     Type: String
-    Default: sips_srtp
-    AllowedValues: [sips_srtp, sip_rtp]
+    Default: sips_optional_srtp
+    AllowedValues: [sips_optional_srtp, sips_srtp, sip_rtp]
   MaxConcurrentCalls:
     Type: Number
     MinValue: 1
@@ -62,7 +62,7 @@ Parameters:
 
 Conditions:
   HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
-  SecureSip: !Equals [!Ref SipSecurity, sips_srtp]
+  SecureSip: !Not [!Equals [!Ref SipSecurity, sip_rtp]]
 
 Resources:
   RecipeAlarmTopic:

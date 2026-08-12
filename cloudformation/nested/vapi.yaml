@@ -21,6 +21,9 @@ Parameters:
   ProvisionerArtifactKey:
     Type: String
     MinLength: 1
+  ProvisionerArtifactVersion:
+    Type: String
+    MinLength: 1
   VapiApiKeySecretArn:
     Type: String
     Description: >-
@@ -157,6 +160,7 @@ Resources:
       Code:
         S3Bucket: !Ref ArtifactBucket
         S3Key: !Ref ProvisionerArtifactKey
+        S3ObjectVersion: !Ref ProvisionerArtifactVersion
       Environment:
         Variables:
           VAPI_ASSET_ROOT: assets/vapi

@@ -22,7 +22,7 @@ Metadata:
       - Label: {default: Retention}
         Parameters: [DataRetentionMode]
       - Label: {default: Advanced network controls}
-        Parameters: [VpcCidr]
+        Parameters: [VpcCidr, SipSecurity]
     ParameterLabels:
       DeploymentId: {default: Deployment name}
       InstanceType: {default: Bridgefu EC2 size}
@@ -42,6 +42,7 @@ Metadata:
       AlarmEmail: {default: Optional alarm email}
       VpcCidr: {default: Dedicated Bridgefu VPC CIDR}
       DataRetentionMode: {default: Deletion behavior}
+      SipSecurity: {default: SIP transport and media security}
 
 Parameters:
   DeploymentId:
@@ -134,6 +135,15 @@ Parameters:
     Default: ProductionRetain
     AllowedValues: [ProductionRetain, TestDelete]
     Description: ProductionRetain protects context, audit data, and the Vapi template on stack deletion.
+  SipSecurity:
+    Type: String
+    Default: sips_optional_srtp
+    AllowedValues: [sips_optional_srtp, sips_srtp, sip_rtp]
+    Description: >-
+      sips_optional_srtp keeps SIP signaling on TLS, prefers SRTP, and accepts
+      RTP/AVP when the peer does not offer SRTP. Choose sips_srtp to require
+      SRTP. Plain sip_rtp is a qualification diagnostic and is rejected unless
+      DataRetentionMode is TestDelete.
 
 Mappings:
   VapiRegionConfiguration:
@@ -151,9 +161,19 @@ Mappings:
     us-east-1:
       AmiId: __AMI_US_EAST_1__
       ArtifactBucket: __ARTIFACT_BUCKET_US_EAST_1__
+      ConfigurationArtifactVersion: __CONFIGURATION_ARTIFACT_VERSION_US_EAST_1__
+      VapiProvisionerArtifactVersion: __VAPI_PROVISIONER_ARTIFACT_VERSION_US_EAST_1__
+      HandoffPrepareArtifactVersion: __HANDOFF_PREPARE_ARTIFACT_VERSION_US_EAST_1__
+      HandoffTransferArtifactVersion: __HANDOFF_TRANSFER_ARTIFACT_VERSION_US_EAST_1__
+      HandoffLookupArtifactVersion: __HANDOFF_LOOKUP_ARTIFACT_VERSION_US_EAST_1__
     us-west-2:
       AmiId: __AMI_US_WEST_2__
       ArtifactBucket: __ARTIFACT_BUCKET_US_WEST_2__
+      ConfigurationArtifactVersion: __CONFIGURATION_ARTIFACT_VERSION_US_WEST_2__
+      VapiProvisionerArtifactVersion: __VAPI_PROVISIONER_ARTIFACT_VERSION_US_WEST_2__
+      HandoffPrepareArtifactVersion: __HANDOFF_PREPARE_ARTIFACT_VERSION_US_WEST_2__
+      HandoffTransferArtifactVersion: __HANDOFF_TRANSFER_ARTIFACT_VERSION_US_WEST_2__
+      HandoffLookupArtifactVersion: __HANDOFF_LOOKUP_ARTIFACT_VERSION_US_WEST_2__
 
 Rules:
   SupportedRegion:
@@ -164,6 +184,15 @@ Rules:
         AssertDescription: >-
           Release __RELEASE_VERSION__ supports the two US Amazon Connect
           regions: us-west-2 and us-east-1.
+  PlainSipOnlyForDisposableTests:
+    Assertions:
+      - Assert: !Or
+          - !Equals [!Ref SipSecurity, sips_optional_srtp]
+          - !Equals [!Ref SipSecurity, sips_srtp]
+          - !Equals [!Ref DataRetentionMode, TestDelete]
+        AssertDescription: >-
+          sip_rtp is permitted only for disposable qualification stacks with
+          DataRetentionMode=TestDelete. Production must use a SIPS mode.
 
 Conditions:
   RetainCustomerData: !Equals [!Ref DataRetentionMode, ProductionRetain]
@@ -172,11 +201,12 @@ Resources:
   Configuration:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/configuration.yaml
+      TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/configuration.yaml?versionId=__NESTED_CONFIGURATION_VERSION_ID_URLENCODED__
       Parameters:
         DeploymentId: !Ref DeploymentId
         ArtifactBucket: !FindInMap [RegionRelease, !Ref 'AWS::Region', ArtifactBucket]
         ConfigurationArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/configuration.zip
+        ConfigurationArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', ConfigurationArtifactVersion]
         ConnectInstanceArn: !Ref ConnectInstanceArn
         TargetContactFlowArn: !Ref TargetContactFlowArn
         PublicHostedZoneId: !Ref PublicHostedZoneId
@@ -188,7 +218,7 @@ Resources:
   Network:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/network.yaml
+      TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/network.yaml?versionId=__NESTED_NETWORK_VERSION_ID_URLENCODED__
       Parameters:
         DeploymentId: !Ref DeploymentId
         NetworkMode: NewVpc
@@ -201,16 +231,19 @@ Resources:
   HandoffService:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/handoff-service.yaml
+      TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/handoff-service.yaml?versionId=__NESTED_HANDOFF_SERVICE_VERSION_ID_URLENCODED__
       Parameters:
         DeploymentId: !Ref DeploymentId
         ArtifactBucket: !FindInMap [RegionRelease, !Ref 'AWS::Region', ArtifactBucket]
         PrepareArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/prepare_handoff.zip
+        PrepareArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', HandoffPrepareArtifactVersion]
         TransferArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/transfer_destination.zip
+        TransferArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', HandoffTransferArtifactVersion]
         LookupArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/connect_lookup.zip
+        LookupArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', HandoffLookupArtifactVersion]
         BridgefuControlBaseUrl: !Sub 'https://control.${SipHostname}'
         BridgefuRouteId: support
-        SipSecurity: sips_srtp
+        SipSecurity: !Ref SipSecurity
         ContextTtlSeconds: !Ref ContextTtlSeconds
         ScreenPopFieldsJson: !Ref ScreenPopFieldsJson
         RoutingFieldKey: !GetAtt Configuration.Outputs.RoutingFieldKey
@@ -226,7 +259,7 @@ Resources:
   ConnectIntegration:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/connect.yaml
+      TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/connect.yaml?versionId=__NESTED_CONNECT_VERSION_ID_URLENCODED__
       Parameters:
         DeploymentId: !Ref DeploymentId
         ConnectInstanceArn: !Ref ConnectInstanceArn
@@ -243,7 +276,7 @@ Resources:
   Runtime:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/runtime.yaml
+      TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/runtime.yaml?versionId=__NESTED_RUNTIME_VERSION_ID_URLENCODED__
       Parameters:
         DeploymentId: !Ref DeploymentId
         VpcId: !GetAtt Network.Outputs.VpcId
@@ -254,7 +287,7 @@ Resources:
         PublicHostedZoneId: !Ref PublicHostedZoneId
         SipHostname: !Ref SipHostname
         ControlHostname: !Sub 'control.${SipHostname}'
-        SipSecurity: sips_srtp
+        SipSecurity: !Ref SipSecurity
         VapiSignalingCidr1: !FindInMap [VapiRegionConfiguration, !Ref VapiRegion, SignalingCidr1]
         VapiSignalingCidr2: !FindInMap [VapiRegionConfiguration, !Ref VapiRegion, SignalingCidr2]
         VapiSignalingCidr3: ''
@@ -280,11 +313,12 @@ Resources:
     Type: AWS::CloudFormation::Stack
     DependsOn: Runtime
     Properties:
-      TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/vapi.yaml
+      TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/vapi.yaml?versionId=__NESTED_VAPI_VERSION_ID_URLENCODED__
       Parameters:
         DeploymentId: !Ref DeploymentId
         ArtifactBucket: !FindInMap [RegionRelease, !Ref 'AWS::Region', ArtifactBucket]
         ProvisionerArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/vapi_provisioner.zip
+        ProvisionerArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', VapiProvisionerArtifactVersion]
         VapiApiKeySecretArn: !Ref VapiApiKeySecretArn
         VapiApiBaseUrl: !FindInMap [VapiRegionConfiguration, !Ref VapiRegion, ApiBaseUrl]
         VapiWebhookSecretArn: !GetAtt HandoffService.Outputs.VapiWebhookSecretArn
@@ -304,7 +338,7 @@ Resources:
   Observability:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/observability.yaml
+      TemplateURL: __NESTED_TEMPLATE_BASE_URL__/nested/observability.yaml?versionId=__NESTED_OBSERVABILITY_VERSION_ID_URLENCODED__
       Parameters:
         DeploymentId: !Ref DeploymentId
         ApiId: !GetAtt HandoffService.Outputs.ApiId
@@ -318,7 +352,7 @@ Resources:
         LookupLogGroupName: !GetAtt HandoffService.Outputs.LookupLogGroupName
         RuntimeInstanceId: !GetAtt Runtime.Outputs.InstanceId
         RuntimeLogGroupName: !GetAtt Runtime.Outputs.RuntimeLogGroupName
-        SipSecurity: sips_srtp
+        SipSecurity: !Ref SipSecurity
         MaxConcurrentCalls: !Ref MaxConcurrentCalls
         AlarmEmail: !Ref AlarmEmail
         ProjectTag: bridgefu-vapi-awsconnect
@@ -336,6 +370,12 @@ Outputs:
     Value: !GetAtt Runtime.Outputs.SipUri
   BridgefuInstanceId:
     Value: !GetAtt Runtime.Outputs.InstanceId
+  BridgefuInstancePrivateIp:
+    Description: Private address used only by same-VPC operators and qualification tooling.
+    Value: !GetAtt Runtime.Outputs.InstancePrivateIp
+  BridgefuVpcId:
+    Description: Dedicated Bridgefu VPC identifier.
+    Value: !GetAtt Network.Outputs.VpcId
   VapiAssistantId:
     Value: !GetAtt VapiResources.Outputs.AssistantId
   VapiPrepareToolId:

@@ -1,0 +1,861 @@
+name: Reap incomplete release work
+
+on:
+  workflow_run:
+    workflows:
+      - Build and qualify private candidate
+      - Publish qualified release
+      - Remote live qualification
+    types: [completed]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: bridgefu-vapi-awsconnect-reaper-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  delete-cancelled-qualification-stacks:
+    if: >-
+      (github.event.workflow_run.name == 'Build and qualify private candidate' ||
+       github.event.workflow_run.name == 'Remote live qualification') &&
+      github.event.workflow_run.conclusion != 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    environment: release-recovery
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_RECOVERY_ROLE_ARN }}
+          aws-region: us-west-2
+      - name: Delete only stacks and objects owned by the interrupted run
+        env:
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          set -euo pipefail
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          delete_prefix_versions() {
+            region="$1"
+            bucket="$2"
+            prefix="$3"
+            for pass in 1 2 3 4 5 6 7 8 9 10; do
+              : "$pass"
+              listing="$(aws s3api list-object-versions --region "$region" \
+                --bucket "$bucket" --prefix "$prefix")"
+              deletes="$(jq -c --arg prefix "$prefix" \
+                '{Objects: (((.Versions // []) + (.DeleteMarkers // [])) |
+                  map(select(.Key | startswith($prefix)) |
+                    {Key: .Key, VersionId: .VersionId}) | .[:1000]), Quiet: true}' \
+                <<<"$listing")"
+              [[ "$(jq '.Objects | length' <<<"$deletes")" = 0 ]] && return 0
+              delete_response="$(aws s3api delete-objects --region "$region" \
+                --bucket "$bucket" --delete "$deletes")"
+              jq -e '(.Errors // []) | length == 0' \
+                <<<"$delete_response" >/dev/null
+            done
+            listing="$(aws s3api list-object-versions --region "$region" \
+              --bucket "$bucket" --prefix "$prefix")"
+            jq -e --arg prefix "$prefix" \
+              '[((.Versions // []) + (.DeleteMarkers // []))[]? |
+                select(.Key | startswith($prefix))] | length == 0' \
+              <<<"$listing" >/dev/null
+          }
+          cleanup_exact_vapi_phone() {
+            region="$1"
+            bucket="$2"
+            execution_id="$3"
+            stack_name="$4"
+            journal_key="qualification/$execution_id/ownership/vapi-phone.json"
+            if ! journal_head="$(aws s3api head-object --region "$region" \
+              --bucket "$bucket" --key "$journal_key" 2>/dev/null)"; then
+              return 0
+            fi
+            jq -e '(.ContentLength > 0 and .ContentLength <= 4096) and
+              (.ServerSideEncryption == "AES256" or
+               .ServerSideEncryption == "aws:kms")' \
+              <<<"$journal_head" >/dev/null
+            aws s3api get-object --region "$region" --bucket "$bucket" \
+              --key "$journal_key" vapi-phone-journal.json >/dev/null
+            jq -e --arg execution_id "$execution_id" --arg region "$region" \
+              --arg name "BFQ $execution_id SIP smoke" \
+              '(keys | sort) == ["assistant_id","created_at","execution_id",
+                "owned_name","ownership_sha256","phone_id","producer",
+                "redacted","region","resource_type","schema_version"] and
+               .schema_version == 1 and
+               .producer == "bridgefu-vapi-phone-ownership@1" and
+               .execution_id == $execution_id and .region == $region and
+               .resource_type == "phone-number" and .owned_name == $name and
+               .redacted == true and
+               (.phone_id | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
+               (.assistant_id | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) and
+               (.ownership_sha256 | test("^[0-9a-f]{64}$")) and
+               (.created_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T"))' \
+              vapi-phone-journal.json >/dev/null
+            canonical="$(jq -cS \
+              '{execution_id, region, resource_type, phone_id, assistant_id,
+                owned_name}' vapi-phone-journal.json)"
+            computed_hash="$(printf '%s' "$canonical" | sha256sum | awk '{print $1}')"
+            test "$computed_hash" = \
+              "$(jq -r .ownership_sha256 vapi-phone-journal.json)"
+            stack="$(aws cloudformation describe-stacks --region "$region" \
+              --stack-name "$stack_name")"
+            stack_assistant="$(jq -r '.Stacks[0].Outputs[] |
+              select(.OutputKey == "VapiAssistantId") | .OutputValue' <<<"$stack")"
+            test "$stack_assistant" = \
+              "$(jq -r .assistant_id vapi-phone-journal.json)"
+            case "$region" in
+              us-west-2) secret_arn="${{ vars.VAPI_API_KEY_SECRET_ARN_US_WEST_2 }}" ;;
+              us-east-1) secret_arn="${{ vars.VAPI_API_KEY_SECRET_ARN_US_EAST_1 }}" ;;
+              *) return 2 ;;
+            esac
+            secret_string="$(aws secretsmanager get-secret-value --region "$region" \
+              --secret-id "$secret_arn" --query SecretString --output text)"
+            [[ ${#secret_string} -ge 8 && ${#secret_string} -le 65536 ]]
+            if jq -e 'type == "object"' <<<"$secret_string" >/dev/null 2>&1; then
+              vapi_key="$(jq -er '
+                [.private_key, .privateKey, .key] |
+                map(select(type == "string")) |
+                if length == 1 then .[0] else error(
+                  "secret must contain exactly one private key field") end' \
+                <<<"$secret_string")"
+            else
+              vapi_key="$secret_string"
+            fi
+            unset secret_string
+            [[ ${#vapi_key} -ge 8 && ${#vapi_key} -le 1024 ]]
+            [[ "$vapi_key" != *[[:space:]]* ]]
+            phone_id="$(jq -r .phone_id vapi-phone-journal.json)"
+            phone_url="https://api.vapi.ai/phone-number/$phone_id"
+            umask 077
+            status="$(curl --silent --proto '=https' --tlsv1.2 \
+              --connect-timeout 5 --max-time 20 --max-filesize 262144 \
+              --header "Authorization: Bearer $vapi_key" \
+              --output vapi-phone-response.json --write-out '%{http_code}' \
+              "$phone_url")"
+            if [[ "$status" = 200 ]]; then
+              jq -e --arg phone_id "$phone_id" --arg assistant_id "$stack_assistant" \
+                --arg name "BFQ $execution_id SIP smoke" \
+                '.id == $phone_id and .assistantId == $assistant_id and
+                 .name == $name' vapi-phone-response.json >/dev/null
+              delete_status="$(curl --silent --proto '=https' \
+                --tlsv1.2 --connect-timeout 5 --max-time 20 --max-filesize 262144 \
+                --request DELETE --header "Authorization: Bearer $vapi_key" \
+                --output vapi-phone-delete-response.json --write-out '%{http_code}' \
+                "$phone_url")"
+              [[ "$delete_status" =~ ^2[0-9][0-9]$ ]]
+              for attempt in 1 2 3 4 5 6 7 8 9 10; do
+                status="$(curl --silent --proto '=https' --tlsv1.2 \
+                  --connect-timeout 5 --max-time 20 --max-filesize 262144 \
+                  --header "Authorization: Bearer $vapi_key" \
+                  --output vapi-phone-verify-response.json \
+                  --write-out '%{http_code}' "$phone_url")"
+                [[ "$status" = 404 ]] && break
+                test "$status" = 200
+                jq -e --arg phone_id "$phone_id" \
+                  --arg assistant_id "$stack_assistant" \
+                  --arg name "BFQ $execution_id SIP smoke" \
+                  '.id == $phone_id and .assistantId == $assistant_id and
+                   .name == $name' vapi-phone-verify-response.json >/dev/null
+                test "$attempt" -lt 10
+                sleep 2
+              done
+            fi
+            unset vapi_key
+            test "$status" = 404
+          }
+          for pair in us-west-2:w us-east-1:e; do
+            region="${pair%%:*}"
+            short_region="${pair##*:}"
+            execution_id="bfq-${short_region}-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}"
+            stack_name="bridgefu-$execution_id"
+            bucket="bridgefu-vapi-awsconnect-$account_id-$region"
+            cleanup_exact_vapi_phone "$region" "$bucket" "$execution_id" \
+              "$stack_name"
+            if aws cloudformation describe-stacks --region "$region" \
+              --stack-name "$stack_name" >/dev/null 2>&1; then
+              aws cloudformation delete-stack --region "$region" \
+                --stack-name "$stack_name"
+              aws cloudformation wait stack-delete-complete --region "$region" \
+                --stack-name "$stack_name"
+            fi
+            delete_prefix_versions "$region" "$bucket" \
+              "qualification/$execution_id/"
+          done
+
+  delete-failed-private-candidate:
+    if: >-
+      github.event.workflow_run.name == 'Build and qualify private candidate' &&
+      github.event.workflow_run.conclusion != 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    environment: release-recovery
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_RECOVERY_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Remove only the failed run's private AMIs and object versions
+        env:
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SOURCE_COMMIT: ${{ github.event.workflow_run.head_sha }}
+          SIGNING_KEY_ARN: ${{ vars.RELEASE_SIGNING_KEY_ARN }}
+        run: |
+          set -euo pipefail
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          east_bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
+          state_key="candidates/runs/$SOURCE_RUN_ID/$SOURCE_RUN_ATTEMPT/state.json"
+          if ! aws s3api get-object --bucket "$east_bucket" --key "$state_key" \
+            target-state.json >/dev/null 2>&1; then
+            echo 'No candidate ownership journal exists; no candidate resource was authorized.'
+            exit 0
+          fi
+          jq -e --arg commit "$SOURCE_COMMIT" --argjson run "$SOURCE_RUN_ID" \
+            --argjson attempt "$SOURCE_RUN_ATTEMPT" \
+            '.schema == "bridgefu-private-candidate-state/v1" and
+             .repository_commit == $commit and .workflow_run_id == $run and
+             .workflow_run_attempt == $attempt' target-state.json >/dev/null
+          version="$(jq -r .version target-state.json)"
+          candidate_id="$(jq -r .candidate_id target-state.json)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]
+          [[ "$candidate_id" == candidate-* ]]
+          if ! jq -e '.cleanup_authorized == true' \
+            target-state.json >/dev/null; then
+            listing="$(aws s3api list-object-versions --region us-east-1 \
+              --bucket "$east_bucket" --prefix "$state_key")"
+            deletes="$(jq -c --arg key "$state_key" \
+              '{Objects: (((.Versions // []) + (.DeleteMarkers // [])) |
+                map(select(.Key == $key) |
+                  {Key: .Key, VersionId: .VersionId})), Quiet: true}' \
+              <<<"$listing")"
+            if [[ "$(jq '.Objects | length' <<<"$deletes")" -gt 0 ]]; then
+              delete_response="$(aws s3api delete-objects --region us-east-1 \
+                --bucket "$east_bucket" --delete "$deletes")"
+              jq -e '(.Errors // []) | length == 0' \
+                <<<"$delete_response" >/dev/null
+            fi
+            listing="$(aws s3api list-object-versions --region us-east-1 \
+              --bucket "$east_bucket" --prefix "$state_key")"
+            jq -e --arg key "$state_key" \
+              '[((.Versions // []) + (.DeleteMarkers // []))[]? |
+                select(.Key == $key)] | length == 0' <<<"$listing" >/dev/null
+            echo 'Preflight never authorized resource creation; removed its journal.'
+            exit 0
+          fi
+          verify_tag() {
+            document="$1"
+            key="$2"
+            expected="$3"
+            test "$(jq -r --arg key "$key" \
+              '.Tags[]? | select(.Key == $key) | .Value' <<<"$document")" = \
+              "$expected"
+          }
+          discover_candidate_versions() {
+            ownership_class="$1"
+            region="$2"
+            bucket="$3"
+            prefix="$4"
+            listing="$(aws s3api list-object-versions --region "$region" \
+              --bucket "$bucket" --prefix "$prefix")"
+            while IFS=$'\t' read -r key version_id; do
+              case "$ownership_class" in
+                release) [[ "$key" == "releases/$version/"* ]] ;;
+                candidate)
+                  [[ "$region" = us-east-1 ]]
+                  [[ "$key" == "candidates/$candidate_id/"* ||
+                     "$key" == "candidates/qualified/$version/$SOURCE_COMMIT/"* ]]
+                  ;;
+                *) return 2 ;;
+              esac
+              head="$(aws s3api head-object --region "$region" --bucket "$bucket" \
+                --key "$key" --version-id "$version_id")"
+              [[ "$(jq -r '.Metadata["candidate-id"] // empty' <<<"$head")" = \
+                "$candidate_id" ]] || continue
+              sha256="$(jq -r '.Metadata.sha256 // empty' <<<"$head")"
+              [[ "$sha256" =~ ^[0-9a-f]{64}$ ]]
+              size="$(jq -r .ContentLength <<<"$head")"
+              array_name="${ownership_class}_objects"
+              existing="$(jq --arg name "$array_name" --arg region "$region" \
+                --arg bucket "$bucket" --arg key "$key" \
+                --arg version_id "$version_id" \
+                '[.[$name][] | select(.region == $region and .bucket == $bucket and
+                  .key == $key and .version_id == $version_id)] | length' \
+                target-state.json)"
+              if [[ "$existing" = 0 ]]; then
+                jq --arg name "$array_name" --arg region "$region" \
+                  --arg bucket "$bucket" --arg key "$key" \
+                  --arg version_id "$version_id" --arg sha256 "$sha256" \
+                  --argjson size_bytes "$size" \
+                  '.[$name] += [{region: $region, bucket: $bucket, key: $key,
+                    version_id: $version_id, sha256: $sha256,
+                    size_bytes: $size_bytes}]' target-state.json \
+                  > target-state.next.json
+                mv target-state.next.json target-state.json
+                aws s3api put-object --region us-east-1 --bucket "$east_bucket" \
+                  --key "$state_key" --body target-state.json >/dev/null
+              else
+                test "$existing" = 1
+              fi
+            done < <(jq -r --arg prefix "$prefix" \
+              '.Versions[]? | select(.Key | startswith($prefix)) |
+               [.Key, .VersionId] | @tsv' <<<"$listing")
+          }
+          for region in us-west-2 us-east-1; do
+            bucket="bridgefu-vapi-awsconnect-$account_id-$region"
+            discover_candidate_versions release "$region" "$bucket" \
+              "releases/$version/"
+          done
+          discover_candidate_versions candidate us-east-1 "$east_bucket" \
+            "candidates/$candidate_id/"
+          discover_candidate_versions candidate us-east-1 "$east_bucket" \
+            "candidates/qualified/$version/$SOURCE_COMMIT/"
+          receipt_json_record="$(jq -c --arg key \
+            "candidates/qualified/$version/$SOURCE_COMMIT/receipt.json" \
+            '[.candidate_objects[] | select(.key == $key)] |
+             if length == 1 then .[0] else empty end' target-state.json)"
+          receipt_sig_record="$(jq -c --arg key \
+            "candidates/qualified/$version/$SOURCE_COMMIT/receipt.sig" \
+            '[.candidate_objects[] | select(.key == $key)] |
+             if length == 1 then .[0] else empty end' target-state.json)"
+          if [[ -n "$receipt_json_record" && -n "$receipt_sig_record" ]]; then
+            aws s3api get-object --region us-east-1 --bucket "$east_bucket" \
+              --key "$(jq -r .key <<<"$receipt_json_record")" \
+              --version-id "$(jq -r .version_id <<<"$receipt_json_record")" \
+              sealed-receipt.json >/dev/null
+            aws s3api get-object --region us-east-1 --bucket "$east_bucket" \
+              --key "$(jq -r .key <<<"$receipt_sig_record")" \
+              --version-id "$(jq -r .version_id <<<"$receipt_sig_record")" \
+              sealed-receipt.sig >/dev/null
+            jq -e --arg version "$version" --arg commit "$SOURCE_COMMIT" \
+              --arg candidate_id "$candidate_id" \
+              --arg signing_key "$SIGNING_KEY_ARN" \
+              '.schema == "bridgefu-qualified-candidate-receipt/v1" and
+               .version == $version and .repository.commit == $commit and
+               .candidate_id == $candidate_id and
+               .signing_key_arn == $signing_key and
+               (.regional_amis | keys | sort) == ["us-east-1","us-west-2"] and
+               (.qualification | keys | sort) == ["us-east-1","us-west-2"] and
+               (.release_objects | type == "array" and length > 0) and
+               ([.release_objects[] | [.region, .bucket, .key, .version_id] |
+                 join("\u0000")] | length == (unique | length)) and
+               ([.qualification[] |
+                 .evidence_schema_version == 2 and
+                 .secure_preflight_passed == true and
+                 .required_checks_passed == true and
+                 .scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"] and
+                 .zero_resource_proof == true] | all(. == true))' \
+              sealed-receipt.json >/dev/null
+            openssl dgst -sha256 -binary sealed-receipt.json \
+              > sealed-receipt.digest
+            aws kms verify --key-id "$SIGNING_KEY_ARN" \
+              --signing-algorithm ECDSA_SHA_256 \
+              --message-type DIGEST --message fileb://sealed-receipt.digest \
+              --signature fileb://sealed-receipt.sig \
+              --query SignatureValid --output text | grep -Fx True
+            jq '.qualified = true' target-state.json > target-state.next.json
+            mv target-state.next.json target-state.json
+            aws s3api put-object --region us-east-1 --bucket "$east_bucket" \
+              --key "$state_key" --body target-state.json >/dev/null
+            echo 'Recovered a fully signed qualified receipt; preserving candidate.'
+            exit 0
+          fi
+          # Packer creates the AMI before it can return the ID. If cancellation
+          # lands in that narrow window, discover only the globally unique
+          # CandidateId already authorized by the prewritten state. Never use
+          # a release-version query as deletion authority.
+          for region in us-west-2 us-east-1; do
+            matches="$(aws ec2 describe-images --owners self --region "$region" \
+              --filters "Name=tag:BridgefuCandidateId,Values=$candidate_id")"
+            match_count="$(jq '.Images | length' <<<"$matches")"
+            test "$match_count" -le 1
+            [[ "$match_count" = 0 ]] && continue
+            discovered="$(jq -c '.Images[0]' <<<"$matches")"
+            verify_tag "$discovered" ManagedBy bridgefu-vapi-awsconnect
+            verify_tag "$discovered" BridgefuRelease "$version"
+            verify_tag "$discovered" BridgefuCandidateId "$candidate_id"
+            verify_tag "$discovered" BridgefuRepositoryCommit "$SOURCE_COMMIT"
+            discovered_ami="$(jq -r .ImageId <<<"$discovered")"
+            recorded_ami="$(jq -r --arg region "$region" \
+              '.regional_amis[$region].ami_id // empty' target-state.json)"
+            [[ -z "$recorded_ami" || "$recorded_ami" = "$discovered_ami" ]]
+            discovered_snapshots="$(jq -c \
+              '[.BlockDeviceMappings[].Ebs.SnapshotId] | sort' <<<"$discovered")"
+            jq --arg region "$region" --arg ami "$discovered_ami" \
+              --argjson snapshots "$discovered_snapshots" \
+              '.regional_amis[$region] = {ami_id: $ami,
+                snapshot_ids: $snapshots}' target-state.json \
+              > target-state.next.json
+            mv target-state.next.json target-state.json
+            aws s3api put-object --region us-east-1 --bucket "$east_bucket" \
+              --key "$state_key" --body target-state.json >/dev/null
+          done
+          while IFS= read -r encoded; do
+            owned="$(printf '%s' "$encoded" | base64 --decode)"
+            region="$(jq -r .key <<<"$owned")"
+            [[ "$region" = us-west-2 || "$region" = us-east-1 ]]
+            ami="$(jq -r .value.ami_id <<<"$owned")"
+            [[ "$ami" =~ ^ami-[0-9a-f]{17}$ ]]
+            state_snapshots="$(jq -c '.value.snapshot_ids | sort' <<<"$owned")"
+            image="$(aws ec2 describe-images --owners self --region "$region" \
+              --image-ids "$ami")"
+            image_present="$(jq '.Images | length' <<<"$image")"
+            if [[ "$image_present" = 1 ]]; then
+              image_record="$(jq -c '.Images[0]' <<<"$image")"
+              verify_tag "$image_record" ManagedBy bridgefu-vapi-awsconnect
+              verify_tag "$image_record" BridgefuRelease "$version"
+              verify_tag "$image_record" BridgefuCandidateId "$candidate_id"
+              verify_tag "$image_record" BridgefuRepositoryCommit "$SOURCE_COMMIT"
+              actual_snapshots="$(jq -c \
+                '[.BlockDeviceMappings[].Ebs.SnapshotId] | sort' <<<"$image_record")"
+              test "$actual_snapshots" = "$state_snapshots"
+              readarray -t journal_snapshot_ids < <(jq -r '.[]' \
+                <<<"$state_snapshots")
+              if [[ "${#journal_snapshot_ids[@]}" -gt 0 ]]; then
+                aws ec2 create-tags --region "$region" \
+                  --resources "${journal_snapshot_ids[@]}" --tags \
+                  "Key=ManagedBy,Value=bridgefu-vapi-awsconnect" \
+                  "Key=BridgefuRelease,Value=$version" \
+                  "Key=BridgefuCandidateId,Value=$candidate_id" \
+                  "Key=BridgefuRepositoryCommit,Value=$SOURCE_COMMIT"
+              fi
+            else
+              test "$image_present" = 0
+              echo "Journaled image $ami is already absent in $region."
+            fi
+            existing_snapshots=()
+            while read -r snapshot; do
+              [[ -z "$snapshot" ]] && continue
+              if ! snapshot_result="$(aws ec2 describe-snapshots --owner-ids self \
+                --region "$region" --snapshot-ids "$snapshot" 2>/dev/null)"; then
+                test "$image_present" = 0
+                continue
+              fi
+              if [[ "$(jq '.Snapshots | length' <<<"$snapshot_result")" = 1 ]]; then
+                existing_snapshots+=("$snapshot")
+                snapshot_record="$(jq -c '.Snapshots[0]' <<<"$snapshot_result")"
+                # A snapshot directly bound through the still-present AMI is
+                # exact ownership proof even if cancellation preceded tagging.
+                if [[ "$image_present" = 0 ]]; then
+                  verify_tag "$snapshot_record" ManagedBy bridgefu-vapi-awsconnect
+                  verify_tag "$snapshot_record" BridgefuRelease "$version"
+                  verify_tag "$snapshot_record" BridgefuCandidateId "$candidate_id"
+                  verify_tag "$snapshot_record" BridgefuRepositoryCommit "$SOURCE_COMMIT"
+                fi
+              fi
+            done < <(jq -r '.[]' <<<"$state_snapshots")
+            if [[ "$image_present" = 1 ]]; then
+              aws ec2 deregister-image --region "$region" --image-id "$ami"
+              for attempt in 1 2 3 4 5; do
+                image="$(aws ec2 describe-images --owners self --region "$region" \
+                  --image-ids "$ami")"
+                [[ "$(jq '.Images | length' <<<"$image")" = 0 ]] && break
+                test "$attempt" -lt 5
+                sleep "$((attempt * 2))"
+              done
+              test "$(jq '.Images | length' <<<"$image")" = 0
+            fi
+            for snapshot in "${existing_snapshots[@]}"; do
+              for attempt in 1 2 3 4 5; do
+                if aws ec2 delete-snapshot --region "$region" \
+                  --snapshot-id "$snapshot"; then
+                  break
+                fi
+                test "$attempt" -lt 5
+                sleep "$((attempt * 2))"
+              done
+              for attempt in 1 2 3 4 5; do
+                if ! aws ec2 describe-snapshots --owner-ids self \
+                  --region "$region" --snapshot-ids "$snapshot" \
+                  >/dev/null 2>&1; then
+                  break
+                fi
+                test "$attempt" -lt 5
+                sleep "$((attempt * 2))"
+              done
+            done
+          done < <(jq -r '.regional_amis | to_entries[] | @base64' \
+            target-state.json)
+          delete_journaled_object() {
+            ownership_class="$1"
+            object="$2"
+            region="$(jq -r .region <<<"$object")"
+            bucket="$(jq -r .bucket <<<"$object")"
+            key="$(jq -r .key <<<"$object")"
+            version_id="$(jq -r .version_id <<<"$object")"
+            expected_sha="$(jq -r .sha256 <<<"$object")"
+            expected_size="$(jq -r .size_bytes <<<"$object")"
+            [[ "$region" = us-west-2 || "$region" = us-east-1 ]]
+            test "$bucket" = "bridgefu-vapi-awsconnect-$account_id-$region"
+            case "$ownership_class" in
+              release) [[ "$key" == "releases/$version/"* ]] ;;
+              candidate)
+                [[ "$region" = us-east-1 ]]
+                [[ "$key" == "candidates/$candidate_id/"* ||
+                   "$key" == "candidates/qualified/$version/$SOURCE_COMMIT/"* ]]
+                ;;
+              *) return 2 ;;
+            esac
+            if ! head="$(aws s3api head-object --region "$region" \
+              --bucket "$bucket" --key "$key" --version-id "$version_id" \
+              2>/dev/null)"; then
+              return 0
+            fi
+            test "$(jq -r '.Metadata["candidate-id"]' <<<"$head")" = \
+              "$candidate_id"
+            test "$(jq -r '.Metadata.sha256' <<<"$head")" = "$expected_sha"
+            test "$(jq -r .ContentLength <<<"$head")" = "$expected_size"
+            tags="$(aws s3api get-object-tagging --region "$region" \
+              --bucket "$bucket" --key "$key" --version-id "$version_id")"
+            test -z "$(jq -r '.TagSet[]? | select(
+              .Key == "bridgefu-publication-status") | .Value' <<<"$tags")"
+            aws s3api delete-object --region "$region" --bucket "$bucket" \
+              --key "$key" --version-id "$version_id" >/dev/null
+            if aws s3api head-object --region "$region" --bucket "$bucket" \
+              --key "$key" --version-id "$version_id" >/dev/null 2>&1; then
+              echo "Failed to remove exact candidate-owned object $key" >&2
+              exit 1
+            fi
+          }
+          for ownership_class in release candidate; do
+            array_name="${ownership_class}_objects"
+            while IFS= read -r encoded; do
+              object="$(printf '%s' "$encoded" | base64 --decode)"
+              delete_journaled_object "$ownership_class" "$object"
+            done < <(jq -r --arg name "$array_name" \
+              '.[$name][] | @base64' target-state.json)
+          done
+          listing="$(aws s3api list-object-versions --region us-east-1 \
+            --bucket "$east_bucket" --prefix "$state_key")"
+          deletes="$(jq -c --arg key "$state_key" \
+            '{Objects: (((.Versions // []) + (.DeleteMarkers // [])) |
+              map(select(.Key == $key) | {Key: .Key, VersionId: .VersionId})),
+              Quiet: true}' <<<"$listing")"
+          if [[ "$(jq '.Objects | length' <<<"$deletes")" -gt 0 ]]; then
+            delete_response="$(aws s3api delete-objects --region us-east-1 \
+              --bucket "$east_bucket" --delete "$deletes")"
+            jq -e '(.Errors // []) | length == 0' \
+              <<<"$delete_response" >/dev/null
+          fi
+          listing="$(aws s3api list-object-versions --region us-east-1 \
+            --bucket "$east_bucket" --prefix "$state_key")"
+          jq -e --arg key "$state_key" \
+            '[((.Versions // []) + (.DeleteMarkers // []))[]? |
+              select(.Key == $key)] | length == 0' <<<"$listing" >/dev/null
+
+  rollback-interrupted-publication:
+    if: >-
+      github.event.workflow_run.name == 'Publish qualified release' &&
+      github.event.workflow_run.conclusion != 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    environment: release-recovery
+    concurrency:
+      group: bridgefu-vapi-awsconnect-release
+      cancel-in-progress: false
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_RECOVERY_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Revoke partial visibility while preserving the qualified candidate
+        env:
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SOURCE_COMMIT: ${{ github.event.workflow_run.head_sha }}
+          SIGNING_KEY_ARN: ${{ vars.RELEASE_SIGNING_KEY_ARN }}
+        run: |
+          set -euo pipefail
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          east_bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
+          state_key="candidates/publications/$SOURCE_RUN_ID/$SOURCE_RUN_ATTEMPT/state.json"
+          if ! aws s3api get-object --bucket "$east_bucket" --key "$state_key" \
+            publication-state.json >/dev/null 2>&1; then
+            echo 'Publication never crossed its mutation boundary.'
+            exit 0
+          fi
+          jq -e --arg commit "$SOURCE_COMMIT" --argjson run "$SOURCE_RUN_ID" \
+            --argjson attempt "$SOURCE_RUN_ATTEMPT" \
+            '.schema == "bridgefu-publication-state/v1" and
+             .cleanup_authorized == true and .repository_commit == $commit and
+             .workflow_run_id == $run and .workflow_run_attempt == $attempt' \
+            publication-state.json >/dev/null
+          publication_attempt="$SOURCE_RUN_ID-$SOURCE_RUN_ATTEMPT"
+          jq -e --arg publication_attempt "$publication_attempt" \
+            '.publication_attempt == $publication_attempt and
+             (.receipt_key | type == "string") and
+             (.receipt_sig_key | type == "string") and
+             (.receipt_version | type == "string") and
+             (.receipt_sig_version | type == "string") and
+             (.release_receipt_objects | type == "array") and
+             (.latest_objects | type == "array")' \
+            publication-state.json >/dev/null
+          receipt_key="$(jq -r .receipt_key publication-state.json)"
+          receipt_version="$(jq -r .receipt_version publication-state.json)"
+          receipt_sig_key="$(jq -r .receipt_sig_key publication-state.json)"
+          receipt_sig_version="$(jq -r .receipt_sig_version publication-state.json)"
+          aws s3api get-object --bucket "$east_bucket" --key "$receipt_key" \
+            --version-id "$receipt_version" receipt.json >/dev/null
+          aws s3api get-object --bucket "$east_bucket" --key "$receipt_sig_key" \
+            --version-id "$receipt_sig_version" receipt.sig >/dev/null
+          jq -e --arg commit "$SOURCE_COMMIT" \
+            --arg version "$(jq -r .version publication-state.json)" \
+            --arg candidate_id "$(jq -r .candidate_id publication-state.json)" \
+            --arg signing_key "$SIGNING_KEY_ARN" \
+            '.schema == "bridgefu-qualified-candidate-receipt/v1" and
+             .repository.commit == $commit and
+             .version == $version and .candidate_id == $candidate_id and
+             .signing_key_arn == $signing_key and
+             (.regional_amis | keys | sort) == ["us-east-1","us-west-2"] and
+             (.qualification | keys | sort) == ["us-east-1","us-west-2"] and
+             (.release_objects | type == "array" and length > 0) and
+             ([.release_objects[] | [.region, .bucket, .key, .version_id] |
+               join("\u0000")] | length == (unique | length)) and
+             ([.qualification[] |
+               .evidence_schema_version == 2 and
+               .secure_preflight_passed == true and
+               .required_checks_passed == true and
+               .scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"] and
+               .zero_resource_proof == true] | all(. == true))' \
+            receipt.json >/dev/null
+          openssl dgst -sha256 -binary receipt.json > receipt.digest
+          aws kms verify --key-id "$SIGNING_KEY_ARN" \
+            --signing-algorithm ECDSA_SHA_256 --message-type DIGEST \
+            --message fileb://receipt.digest --signature fileb://receipt.sig \
+            --query SignatureValid --output text | grep -Fx True
+          version="$(jq -r .version receipt.json)"
+          test "$version" = "$(jq -r .version publication-state.json)"
+          test "$(jq -r .candidate_id receipt.json)" = \
+            "$(jq -r .candidate_id publication-state.json)"
+          if jq -e '.publication_complete == true' \
+            publication-state.json >/dev/null; then
+            echo 'Publication journal records a fully verified release; preserving it.'
+            exit 0
+          fi
+          persist_state() {
+            aws s3api put-object --bucket "$east_bucket" --key "$state_key" \
+              --body publication-state.json >/dev/null
+          }
+          discover_attempt_object() {
+            array_name="$1"
+            key="$2"
+            expected_sha="$3"
+            listing="$(aws s3api list-object-versions --bucket "$east_bucket" \
+              --prefix "$key")"
+            matches='[]'
+            while read -r version_id; do
+              head="$(aws s3api head-object --bucket "$east_bucket" --key "$key" \
+                --version-id "$version_id")"
+              if [[ "$(jq -r '.Metadata["publication-attempt"] // empty' \
+                <<<"$head")" = "$publication_attempt" ]]; then
+                matches="$(jq --arg version_id "$version_id" \
+                  --arg sha "$(jq -r .Metadata.sha256 <<<"$head")" \
+                  --argjson size "$(jq -r .ContentLength <<<"$head")" \
+                  '. + [{version_id: $version_id, sha256: $sha,
+                    size_bytes: $size}]' <<<"$matches")"
+              fi
+            done < <(jq -r --arg key "$key" \
+              '.Versions[]? | select(.Key == $key) | .VersionId' <<<"$listing")
+            test "$(jq 'length' <<<"$matches")" -le 1
+            [[ "$(jq 'length' <<<"$matches")" = 0 ]] && return 0
+            match="$(jq -c '.[0]' <<<"$matches")"
+            if [[ -n "$expected_sha" ]]; then
+              test "$(jq -r .sha256 <<<"$match")" = "$expected_sha"
+            else
+              expected_sha="$(jq -r .sha256 <<<"$match")"
+            fi
+            already="$(jq --arg array "$array_name" --arg key "$key" \
+              --arg version_id "$(jq -r .version_id <<<"$match")" \
+              '[.[$array][] | select(.key == $key and
+                .version_id == $version_id)] | length' publication-state.json)"
+            if [[ "$already" = 0 ]]; then
+              jq --arg array "$array_name" --arg region us-east-1 \
+                --arg bucket "$east_bucket" --arg key "$key" \
+                --arg version_id "$(jq -r .version_id <<<"$match")" \
+                --arg sha256 "$expected_sha" \
+                --argjson size_bytes "$(jq -r .size_bytes <<<"$match")" \
+                '.[$array] += [{region: $region, bucket: $bucket, key: $key,
+                  version_id: $version_id, sha256: $sha256,
+                  size_bytes: $size_bytes}]' publication-state.json \
+                > publication-state.next.json
+              mv publication-state.next.json publication-state.json
+              persist_state
+            else
+              test "$already" = 1
+            fi
+          }
+          discover_attempt_object release_receipt_objects \
+            "releases/$version/qualification/receipt.json" \
+            "$(sha256sum receipt.json | awk '{print $1}')"
+          discover_attempt_object release_receipt_objects \
+            "releases/$version/qualification/receipt.sig" \
+            "$(sha256sum receipt.sig | awk '{print $1}')"
+          for key in latest/manifest.json latest/manifest.sig \
+            latest/quick-create-links.json latest/qualification/receipt.json \
+            latest/qualification/receipt.sig \
+            latest/qualification/us-west-2/evidence.json \
+            latest/qualification/us-east-1/evidence.json \
+            latest/cloudformation/template.yaml; do
+            discover_attempt_object latest_objects "$key" ''
+          done
+          clear_attempt_publication_tag() {
+            object="$1"
+            region="$(jq -r .region <<<"$object")"
+            bucket="$(jq -r .bucket <<<"$object")"
+            key="$(jq -r .key <<<"$object")"
+            version_id="$(jq -r .version_id <<<"$object")"
+            tags="$(aws s3api get-object-tagging --region "$region" \
+              --bucket "$bucket" --key "$key" --version-id "$version_id")"
+            owner="$(jq -r '.TagSet[]? | select(
+              .Key == "bridgefu-publication-attempt") | .Value' <<<"$tags")"
+            status="$(jq -r '.TagSet[]? | select(
+              .Key == "bridgefu-publication-status") | .Value' <<<"$tags")"
+            if [[ "$owner" = "$publication_attempt" ]]; then
+              test "$status" = published
+              aws s3api delete-object-tagging --region "$region" \
+                --bucket "$bucket" --key "$key" --version-id "$version_id"
+              tags="$(aws s3api get-object-tagging --region "$region" \
+                --bucket "$bucket" --key "$key" --version-id "$version_id")"
+              test "$(jq '.TagSet | length' <<<"$tags")" = 0
+            elif [[ -z "$owner" ]]; then
+              test -z "$status"
+            else
+              echo "A newer publication attempt owns $key; preserving it."
+            fi
+          }
+          while IFS= read -r encoded; do
+            object="$(printf '%s' "$encoded" | base64 --decode)"
+            clear_attempt_publication_tag "$object"
+          done < <(jq -r '.release_objects[] | @base64' receipt.json)
+          while IFS= read -r encoded; do
+            object="$(printf '%s' "$encoded" | base64 --decode)"
+            key="$(jq -r .key <<<"$object")"
+            version_id="$(jq -r .version_id <<<"$object")"
+            if ! aws s3api head-object --bucket "$east_bucket" --key "$key" \
+              --version-id "$version_id" >/dev/null 2>&1; then
+              continue
+            fi
+            clear_attempt_publication_tag "$object"
+            tags="$(aws s3api get-object-tagging --bucket "$east_bucket" \
+              --key "$key" --version-id "$version_id")"
+            owner="$(jq -r '.TagSet[]? | select(
+              .Key == "bridgefu-publication-attempt") | .Value' <<<"$tags")"
+            if [[ -z "$owner" ]]; then
+              aws s3api delete-object --bucket "$east_bucket" --key "$key" \
+                --version-id "$version_id" >/dev/null
+              if aws s3api head-object --bucket "$east_bucket" --key "$key" \
+                --version-id "$version_id" >/dev/null 2>&1; then
+                echo "Failed to remove exact interrupted receipt copy $key" >&2
+                exit 1
+              fi
+            fi
+          done < <(jq -r '.release_receipt_objects[] | @base64' \
+            publication-state.json)
+          for region in us-west-2 us-east-1; do
+            ami="$(jq -r --arg region "$region" '.regional_amis[$region].ami_id' receipt.json)"
+            image="$(aws ec2 describe-images --owners self --region "$region" \
+              --image-ids "$ami")"
+            test "$(jq '.Images | length' <<<"$image")" = 1
+            test "$(jq -r '.Images[0].Tags[] | select(
+              .Key == "ManagedBy") | .Value' <<<"$image")" = \
+              bridgefu-vapi-awsconnect
+            test "$(jq -r '.Images[0].Tags[] | select(
+              .Key == "BridgefuRelease") | .Value' <<<"$image")" = "$version"
+            test "$(jq -r '.Images[0].Tags[] | select(
+              .Key == "BridgefuCandidateId") | .Value' <<<"$image")" = \
+              "$(jq -r .candidate_id receipt.json)"
+            test "$(jq -r '.Images[0].Tags[] | select(
+              .Key == "BridgefuRepositoryCommit") | .Value' <<<"$image")" = \
+              "$SOURCE_COMMIT"
+            owner="$(jq -r '.Images[0].Tags[]? | select(
+              .Key == "BridgefuPublicationAttempt") | .Value' <<<"$image")"
+            readarray -t snapshots < <(jq -r \
+              '.Images[0].BlockDeviceMappings[].Ebs.SnapshotId' <<<"$image")
+            if [[ "$owner" = "$publication_attempt" ]]; then
+              for snapshot in "${snapshots[@]}"; do
+                for attempt in 1 2 3 4 5; do
+                  permissions="$(aws ec2 describe-snapshot-attribute \
+                    --region "$region" --snapshot-id "$snapshot" \
+                    --attribute createVolumePermission)"
+                  if jq -e '[.CreateVolumePermissions[]? |
+                    select(.Group == "all")] | length == 0' \
+                    <<<"$permissions" >/dev/null; then
+                    break
+                  fi
+                  aws ec2 modify-snapshot-attribute --region "$region" \
+                    --snapshot-id "$snapshot" --attribute createVolumePermission \
+                    --operation-type remove --group-names all
+                  test "$attempt" -lt 5
+                  sleep "$((attempt * 2))"
+                done
+                aws ec2 describe-snapshot-attribute --region "$region" \
+                  --snapshot-id "$snapshot" --attribute createVolumePermission \
+                  | jq -e '[.CreateVolumePermissions[]? |
+                    select(.Group == "all")] | length == 0' >/dev/null
+              done
+              for attempt in 1 2 3 4 5; do
+                permissions="$(aws ec2 describe-image-attribute --region "$region" \
+                  --image-id "$ami" --attribute launchPermission)"
+                if jq -e '[.LaunchPermissions[]? | select(.Group == "all")] |
+                  length == 0' <<<"$permissions" >/dev/null; then
+                  break
+                fi
+                aws ec2 modify-image-attribute --region "$region" --image-id "$ami" \
+                  --launch-permission 'Remove=[{Group=all}]'
+                test "$attempt" -lt 5
+                sleep "$((attempt * 2))"
+              done
+              aws ec2 describe-image-attribute --region "$region" \
+                --image-id "$ami" --attribute launchPermission \
+                | jq -e '[.LaunchPermissions[]? | select(.Group == "all")] |
+                  length == 0' >/dev/null
+              aws ec2 delete-tags --region "$region" \
+                --resources "$ami" "${snapshots[@]}" \
+                --tags Key=BridgefuPublicationAttempt
+              image="$(aws ec2 describe-images --owners self --region "$region" \
+                --image-ids "$ami")"
+              test -z "$(jq -r '.Images[0].Tags[]? | select(
+                .Key == "BridgefuPublicationAttempt") | .Value' <<<"$image")"
+              for snapshot in "${snapshots[@]}"; do
+                snapshot_record="$(aws ec2 describe-snapshots --owner-ids self \
+                  --region "$region" --snapshot-ids "$snapshot" \
+                  --query 'Snapshots[0]' --output json)"
+                test -z "$(jq -r '.Tags[]? | select(
+                  .Key == "BridgefuPublicationAttempt") | .Value' \
+                  <<<"$snapshot_record")"
+              done
+            elif [[ -z "$owner" ]]; then
+              aws ec2 describe-image-attribute --region "$region" \
+                --image-id "$ami" --attribute launchPermission \
+                | jq -e '[.LaunchPermissions[]? | select(.Group == "all")] |
+                  length == 0' >/dev/null
+              for snapshot in "${snapshots[@]}"; do
+                aws ec2 describe-snapshot-attribute --region "$region" \
+                  --snapshot-id "$snapshot" --attribute createVolumePermission \
+                  | jq -e '[.CreateVolumePermissions[]? |
+                    select(.Group == "all")] | length == 0' >/dev/null
+              done
+            else
+              echo "A newer publication attempt owns $ami; preserving it."
+            fi
+          done
+          while IFS= read -r encoded; do
+            object="$(printf '%s' "$encoded" | base64 --decode)"
+            key="$(jq -r .key <<<"$object")"
+            version_id="$(jq -r .version_id <<<"$object")"
+            if ! head="$(aws s3api head-object --bucket "$east_bucket" \
+              --key "$key" --version-id "$version_id" 2>/dev/null)"; then
+              continue
+            fi
+            test "$(jq -r '.Metadata["publication-attempt"]' <<<"$head")" = \
+              "$publication_attempt"
+            aws s3api delete-object --bucket "$east_bucket" --key "$key" \
+              --version-id "$version_id" >/dev/null
+            if aws s3api head-object --bucket "$east_bucket" --key "$key" \
+              --version-id "$version_id" >/dev/null 2>&1; then
+              echo "Failed to remove exact interrupted latest object $key" >&2
+              exit 1
+            fi
+          done < <(jq -r '.latest_objects[] | @base64' publication-state.json)

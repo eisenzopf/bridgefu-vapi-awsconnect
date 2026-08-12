@@ -4,7 +4,7 @@
   "title": "Disposable qualification teardown observation",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "producer", "producer_revision_sha256", "execution_id", "observed_at", "customer_stack_absent", "connect_instance_absent", "temporary_vapi_resources_absent", "test_credentials_absent", "qualification_objects_absent", "preexisting_connect_resources_mutated", "redacted"],
+  "required": ["schema_version", "producer", "producer_revision_sha256", "execution_id", "observed_at", "customer_stack_absent", "connect_instance_absent", "temporary_vapi_resources_absent", "test_credentials_absent", "qualification_objects_absent", "qualification_private_dns_absent", "redacted"],
   "properties": {
     "schema_version": {"const": 1},
     "producer": {"const": "bridgefu-vapi-awsconnect-qualification@1"},
@@ -16,7 +16,7 @@
     "temporary_vapi_resources_absent": {"const": true},
     "test_credentials_absent": {"const": true},
     "qualification_objects_absent": {"const": true},
-    "preexisting_connect_resources_mutated": {"const": false},
+    "qualification_private_dns_absent": {"const": true},
     "redacted": {"const": true}
   }
 }

@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bridgefu.dev/vapi-awsconnect/qualification/failure-evidence-v1.schema.json",
+  "title": "Redacted Bridgefu qualification failure evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "producer",
+    "producer_revision_sha256",
+    "execution_id",
+    "region",
+    "stack_name",
+    "observed_at",
+    "phase",
+    "summary",
+    "cloudformation",
+    "redacted"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "producer": {"const": "bridgefu-vapi-awsconnect-qualification@1"},
+    "producer_revision_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "execution_id": {"type": "string", "pattern": "^bfq-[a-z0-9-]{4,28}$"},
+    "region": {"enum": ["us-west-2", "us-east-1"]},
+    "stack_name": {"type": "string", "pattern": "^bridgefu-bfq-[a-z0-9-]{4,28}$"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "phase": {
+      "enum": [
+        "initialization",
+        "input_validation",
+        "preflight",
+        "cloudformation_deploy",
+        "web_site_build",
+        "connect_authentication",
+        "vapi_web_transfer",
+        "vapi_sip_transfer"
+      ]
+    },
+    "summary": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "cloudformation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observed", "stack_status", "failed_events", "capture_error"],
+      "properties": {
+        "observed": {"type": "boolean"},
+        "stack_status": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "failed_events": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "stack_depth",
+              "logical_resource_id",
+              "resource_type",
+              "status",
+              "reason",
+              "timestamp"
+            ],
+            "properties": {
+              "stack_depth": {"type": "integer", "minimum": 0, "maximum": 7},
+              "logical_resource_id": {"type": "string", "minLength": 1, "maxLength": 256},
+              "resource_type": {"type": "string", "minLength": 1, "maxLength": 256},
+              "status": {"type": "string", "minLength": 1, "maxLength": 128},
+              "reason": {"type": "string", "minLength": 1, "maxLength": 1024},
+              "timestamp": {"type": "string", "minLength": 1, "maxLength": 64}
+            }
+          }
+        },
+        "capture_error": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    "redacted": {"const": true}
+  }
+}

@@ -4,7 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: Immutable uploaded release version
+        description: Privately qualified candidate version
+        required: true
+      candidate_commit:
+        description: Full bridgefu-vapi-awsconnect commit from the candidate receipt
         required: true
       region:
         description: Disposable Amazon Connect qualification region
@@ -26,7 +29,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
-      - name: Build exact crates.io rvoip SIP source
+        with: {ref: '${{ inputs.candidate_commit }}'}
+      - name: Build exact crates.io rvoip qualification clients
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-musl-gcc
           RUSTFLAGS: -C link-arg=-Wl,-Bstatic -C link-arg=-lm -C link-arg=-lc
@@ -34,16 +38,38 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools
           rustup target add aarch64-unknown-linux-musl
+          metadata="$(cargo metadata --locked --format-version 1 \
+            --manifest-path qualification/direct-secure-probe/Cargo.toml)"
+          jq -e '
+            ([.packages[] |
+              select(.name == "bridgefu-direct-secure-probe") |
+              .dependencies[] |
+              select(.name == "rvoip-sip" and
+                .req == "=0.3.7" and
+                .source == "registry+https://github.com/rust-lang/crates.io-index" and
+                .uses_default_features == false)] | length) == 1 and
+            ([.packages[] |
+              select(.name == "rvoip-sip" and
+                .version == "0.3.7" and
+                .source == "registry+https://github.com/rust-lang/crates.io-index")] |
+              length) == 1' <<<"$metadata"
           cargo build --release --locked --target aarch64-unknown-linux-musl \
             --manifest-path qualification/sip-client/Cargo.toml
-          file qualification/sip-client/target/aarch64-unknown-linux-musl/release/bridgefu-vapi-sip-smoke \
-            | grep -F 'statically linked'
-          qualification/sip-client/target/aarch64-unknown-linux-musl/release/bridgefu-vapi-sip-smoke \
-            --help >/dev/null
+          cargo build --release --locked --target aarch64-unknown-linux-musl \
+            --manifest-path qualification/direct-secure-probe/Cargo.toml
+          sip_binary=qualification/sip-client/target/aarch64-unknown-linux-musl/release/bridgefu-vapi-sip-smoke
+          probe_binary=qualification/direct-secure-probe/target/aarch64-unknown-linux-musl/release/bridgefu-direct-secure-probe
+          mkdir -p target/qualification-clients
+          for binary in "$sip_binary" "$probe_binary"; do
+            file "$binary" | grep -F 'ARM aarch64'
+            file "$binary" | grep -F 'statically linked'
+            "$binary" --help >/dev/null
+            install -m 0700 "$binary" target/qualification-clients/
+          done
       - uses: actions/upload-artifact@v4
         with:
-          name: qualification-sip-client
-          path: qualification/sip-client/target/aarch64-unknown-linux-musl/release/bridgefu-vapi-sip-smoke
+          name: qualification-native-clients
+          path: target/qualification-clients
           if-no-files-found: error
 
   qualify:
@@ -52,16 +78,86 @@ jobs:
     environment: live-qualification
     steps:
       - uses: actions/checkout@v4
+        with: {ref: '${{ inputs.candidate_commit }}'}
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
       - uses: actions/setup-node@v4
         with: {node-version: '22', cache: npm, cache-dependency-path: qualification/package-lock.json}
       - uses: actions/download-artifact@v4
-        with: {name: qualification-sip-client, path: target/qualification-client}
+        with: {name: qualification-native-clients, path: target/qualification-client}
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_QUALIFICATION_ROLE_ARN }}
           aws-region: ${{ inputs.region }}
+      - name: Prove this is an existing private qualified candidate
+        env:
+          VERSION: ${{ inputs.release_version }}
+          CANDIDATE_COMMIT: ${{ inputs.candidate_commit }}
+          SIGNING_KEY_ARN: ${{ vars.RELEASE_SIGNING_KEY_ARN }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_COMMIT"
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
+          receipt_prefix="candidates/qualified/$VERSION/$CANDIDATE_COMMIT"
+          exact_candidate_version() {
+            key="$1"
+            listing="$(aws s3api list-object-versions --region us-east-1 \
+              --bucket "$bucket" --prefix "$key")"
+            jq -er --arg key "$key" \
+              '([.DeleteMarkers[]? | select(.Key == $key)] | length) == 0 and
+               ([.Versions[]? | select(.Key == $key)] | length) == 1' \
+              <<<"$listing" >/dev/null
+            jq -er --arg key "$key" \
+              '.Versions[] | select(.Key == $key and .IsLatest == true) |
+               .VersionId' <<<"$listing"
+          }
+          receipt_version="$(exact_candidate_version "$receipt_prefix/receipt.json")"
+          signature_version="$(exact_candidate_version "$receipt_prefix/receipt.sig")"
+          aws s3api get-object --region us-east-1 --bucket "$bucket" \
+            --key "$receipt_prefix/receipt.json" --version-id "$receipt_version" \
+            target/candidate-receipt.json >/dev/null
+          aws s3api get-object --region us-east-1 --bucket "$bucket" \
+            --key "$receipt_prefix/receipt.sig" --version-id "$signature_version" \
+            target/candidate-receipt.sig >/dev/null
+          jq -e --arg version "$VERSION" --arg commit "$CANDIDATE_COMMIT" \
+            --arg signing_key "$SIGNING_KEY_ARN" \
+            '.schema == "bridgefu-qualified-candidate-receipt/v1" and
+             .version == $version and .repository.commit == $commit and
+             .signing_key_arn == $signing_key and
+             (.qualification | keys | sort) == ["us-east-1","us-west-2"] and
+             ([.qualification[] |
+               .evidence_schema_version == 2 and
+               .secure_preflight_passed == true and
+               .required_checks_passed == true and
+               .scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"] and
+               .zero_resource_proof == true] | all)' \
+            target/candidate-receipt.json >/dev/null
+          openssl dgst -sha256 -binary target/candidate-receipt.json \
+            > target/candidate-receipt.digest
+          aws kms verify --region us-east-1 --key-id "$SIGNING_KEY_ARN" \
+            --signing-algorithm ECDSA_SHA_256 --message-type DIGEST \
+            --message fileb://target/candidate-receipt.digest \
+            --signature fileb://target/candidate-receipt.sig \
+            --query SignatureValid --output text | grep -Fx True
+          template_key="releases/$VERSION/qualification/cloudformation/template.yaml"
+          template_record="$(jq -cer --arg key "$template_key" \
+            '[.release_objects[] | select(.region == "us-east-1" and .key == $key)] |
+             if length == 1 then .[0] else error(
+               "qualification template is not uniquely bound") end' \
+            target/candidate-receipt.json)"
+          template_version="$(jq -r .version_id <<<"$template_record")"
+          expected_sha="$(jq -r .sha256 <<<"$template_record")"
+          head="$(aws s3api head-object --region us-east-1 --bucket "$bucket" \
+            --key "$template_key" --version-id "$template_version")"
+          test "$(jq -r .Metadata.sha256 <<<"$head")" = "$expected_sha"
+          test "$(jq -r '.Metadata["candidate-id"]' <<<"$head")" = \
+            "$(jq -r .candidate_id target/candidate-receipt.json)"
+          encoded_version="$(python -c \
+            'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' \
+            "$template_version")"
+          echo "QUALIFICATION_TEMPLATE_VERSION=$encoded_version" >> "$GITHUB_ENV"
       - name: Install pinned qualification dependencies
         run: |
           python -m pip install -r qualification/requirements-runner.txt
@@ -80,22 +176,33 @@ jobs:
           VERSION: ${{ inputs.release_version }}
           REGION: ${{ inputs.region }}
           VAPI_PUBLIC_KEY: ${{ secrets.VAPI_PUBLIC_KEY }}
+          VAPI_SECRET_WEST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_WEST_2 || vars.VAPI_API_KEY_SECRET_ARN }}
+          VAPI_SECRET_EAST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_EAST_1 }}
         run: |
-          chmod 0700 target/qualification-client/bridgefu-vapi-sip-smoke
+          chmod 0700 \
+            target/qualification-client/bridgefu-vapi-sip-smoke \
+            target/qualification-client/bridgefu-direct-secure-probe
           account_id="$(aws sts get-caller-identity --query Account --output text)"
           bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
-          execution_id="bfq-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          case "$REGION" in
+            us-west-2) vapi_secret_arn="$VAPI_SECRET_WEST"; short_region=w ;;
+            us-east-1) vapi_secret_arn="$VAPI_SECRET_EAST"; short_region=e ;;
+            *) exit 2 ;;
+          esac
+          test -n "$vapi_secret_arn"
+          execution_id="bfq-${short_region}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           python qualification/controller.py run \
             --execution-id "$execution_id" \
             --release "$VERSION" \
             --region "$REGION" \
-            --template-url "https://$bucket.s3.us-east-1.amazonaws.com/releases/$VERSION/qualification/cloudformation/template.yaml" \
-            --vapi-secret-arn "${{ vars.VAPI_API_KEY_SECRET_ARN }}" \
+            --template-url "https://$bucket.s3.us-east-1.amazonaws.com/releases/$VERSION/qualification/cloudformation/template.yaml?versionId=$QUALIFICATION_TEMPLATE_VERSION" \
+            --vapi-secret-arn "$vapi_secret_arn" \
             --hosted-zone-id "${{ vars.PUBLIC_HOSTED_ZONE_ID }}" \
             --hosted-zone-name "${{ vars.PUBLIC_HOSTED_ZONE_NAME }}" \
             --cloudformation-role-arn "${{ vars.AWS_QUALIFICATION_CLOUDFORMATION_ROLE_ARN }}" \
             --bridgefu-checkout target/pinned-bridgefu \
             --sip-client target/qualification-client/bridgefu-vapi-sip-smoke \
+            --direct-secure-probe target/qualification-client/bridgefu-direct-secure-probe \
             --output target/live-qualification
       - uses: actions/upload-artifact@v4
         if: always()

@@ -1,0 +1,11 @@
+/var/log/bridgefu/bridgefu.log {
+    size 16M
+    rotate 6
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0640 bridgefu bridgefu
+    su bridgefu bridgefu
+}

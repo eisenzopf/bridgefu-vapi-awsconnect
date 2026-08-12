@@ -5,6 +5,7 @@ Parameters:
   DeploymentId: {Type: String}
   ArtifactBucket: {Type: String}
   ConfigurationArtifactKey: {Type: String}
+  ConfigurationArtifactVersion: {Type: String, MinLength: 1}
   ConnectInstanceArn: {Type: String}
   TargetContactFlowArn: {Type: String}
   PublicHostedZoneId: {Type: String}
@@ -63,6 +64,7 @@ Resources:
       Code:
         S3Bucket: !Ref ArtifactBucket
         S3Key: !Ref ConfigurationArtifactKey
+        S3ObjectVersion: !Ref ConfigurationArtifactVersion
 
   Configuration:
     Type: Custom::BridgefuConfiguration
