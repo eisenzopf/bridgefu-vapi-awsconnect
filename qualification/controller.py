@@ -63,6 +63,7 @@ AGENT_OBSERVER_PRODUCER = "bridgefu-agent-workspace-playwright@1"
 MAX_OBJECT_VERSION_PAGES = 100
 MAX_OBJECT_VERSIONS = 10_000
 MAX_DELETE_OBJECTS = 1_000
+BROWSER_READINESS_TIMEOUT_SECONDS = 210
 VAPI_DESTINATION_SECURITY_EVENT = "bridgefu_vapi_destination_security_evidence"
 VAPI_DESTINATION_SECURITY_FIELDS = {
     "event",
@@ -963,16 +964,33 @@ def purge_object_versions_exact(
                 bucket,
                 "--delete",
                 json.dumps(
-                    {"Objects": chunk, "Quiet": True},
+                    {"Objects": chunk, "Quiet": False},
                     separators=(",", ":"),
                     sort_keys=True,
                 ),
             ],
             timeout=120,
         )
-        if not isinstance(response, Mapping) or response.get("Errors") not in (
-            None,
-            [],
+        deleted = response.get("Deleted") if isinstance(response, Mapping) else None
+        errors = response.get("Errors") if isinstance(response, Mapping) else None
+        expected_identities = {(item["Key"], item["VersionId"]) for item in chunk}
+        deleted_identities: set[tuple[str, str]] = set()
+        if isinstance(deleted, list):
+            for item in deleted:
+                key = item.get("Key") if isinstance(item, Mapping) else None
+                version_id = (
+                    item.get("VersionId") if isinstance(item, Mapping) else None
+                )
+                if not isinstance(key, str) or not isinstance(version_id, str):
+                    deleted_identities.clear()
+                    break
+                deleted_identities.add((key, version_id))
+        if (
+            not isinstance(response, Mapping)
+            or errors not in (None, [])
+            or not isinstance(deleted, list)
+            or len(deleted) != len(deleted_identities)
+            or deleted_identities != expected_identities
         ):
             raise QualificationError("qualification object version deletion failed")
     if list_object_versions_exact(aws, bucket, prefix, exact_key=exact_key):
@@ -2817,13 +2835,38 @@ class Controller:
         self.processes.remove(process)
         return storage
 
-    def wait_for_file(self, path: Path, timeout: int) -> Any:
+    def wait_for_process_file(
+        self,
+        process: subprocess.Popen[str],
+        path: Path,
+        timeout: int,
+        label: str,
+    ) -> Any:
+        """Wait for a browser readiness file while retaining bounded failure detail."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if path.is_file():
                 return read_private_json(path)
+            if process.poll() is not None:
+                _, stderr = process.communicate(timeout=10)
+                if process in self.processes:
+                    self.processes.remove(process)
+                raise QualificationError(
+                    f"{label} exited before readiness: "
+                    + sanitize_diagnostic(stderr, 512)
+                )
             time.sleep(0.25)
-        raise QualificationError("qualification browser handshake timed out")
+        process.terminate()
+        try:
+            _, stderr = process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            _, stderr = process.communicate()
+        if process in self.processes:
+            self.processes.remove(process)
+        raise QualificationError(
+            f"{label} readiness timed out: " + sanitize_diagnostic(stderr, 512)
+        )
 
     def start_agent(
         self, session: Path, storage: Path, scenario: str
@@ -2859,9 +2902,18 @@ class Controller:
         self.processes.append(process)
         return process, observation, screenshot, ready
 
-    def wait_for_agent_readiness(self, ready: Path, scenario: str) -> None:
+    def wait_for_agent_readiness(
+        self, process: subprocess.Popen[str], ready: Path, scenario: str
+    ) -> None:
         validate_agent_readiness(
-            self.wait_for_file(ready, 90), self.args.execution_id, scenario
+            self.wait_for_process_file(
+                process,
+                ready,
+                BROWSER_READINESS_TIMEOUT_SECONDS,
+                "Amazon Connect smoke observer",
+            ),
+            self.args.execution_id,
+            scenario,
         )
 
     def start_direct_secure_agent(
@@ -2888,7 +2940,12 @@ class Controller:
             ]
         )
         self.processes.append(process)
-        readiness = self.wait_for_file(ready, 90)
+        readiness = self.wait_for_process_file(
+            process,
+            ready,
+            BROWSER_READINESS_TIMEOUT_SECONDS,
+            "Amazon Connect direct secure observer",
+        )
         validate_direct_agent_readiness(readiness)
         return process, observation
 
@@ -3206,7 +3263,14 @@ class Controller:
             env=env,
         )
         self.processes.append(source_process)
-        ready_value = validate_web_source_readiness(self.wait_for_file(ready, 120))
+        ready_value = validate_web_source_readiness(
+            self.wait_for_process_file(
+                source_process,
+                ready,
+                BROWSER_READINESS_TIMEOUT_SECONDS,
+                "Vapi Web smoke source",
+            )
+        )
         call_id = str(ready_value["call_id"])
         call = self.wait_for_vapi_call(
             assistant_id=self.outputs["VapiAssistantId"],
@@ -3226,7 +3290,7 @@ class Controller:
         agent_process, agent_observation, _, agent_ready = self.start_agent(
             session_path, storage, scenario
         )
-        self.wait_for_agent_readiness(agent_ready, scenario)
+        self.wait_for_agent_readiness(agent_process, agent_ready, scenario)
         private_json(trigger, {"schema_version": 1, "execute": True})
         self.complete_process(source_process, "Vapi Web smoke source", 360)
         self.complete_process(agent_process, "Amazon Connect Web smoke observer", 360)
@@ -3535,7 +3599,7 @@ class Controller:
         agent_process, agent_observation, _, agent_ready = self.start_agent(
             session_path, storage, scenario
         )
-        self.wait_for_agent_readiness(agent_ready, scenario)
+        self.wait_for_agent_readiness(agent_process, agent_ready, scenario)
         commands = [
             "set -euo pipefail",
             f"install -d -m 0700 {remote_directory}",

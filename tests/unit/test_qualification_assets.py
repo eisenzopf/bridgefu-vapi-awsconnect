@@ -249,6 +249,16 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("modify-image-attribute", publication)
         self.assertNotIn("packer build", publication)
 
+    def test_qualification_aws_session_covers_the_bounded_live_run(self):
+        role = (ROOT / "publisher" / "qualification-role.yaml").read_text()
+        self.assertIn("MaxSessionDuration: 10800", role)
+        for workflow_name in ("candidate.yml", "remote-qualification.yml"):
+            workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text()
+            credential_block = workflow.split(
+                "role-to-assume: ${{ vars.AWS_QUALIFICATION_ROLE_ARN }}", 1
+            )[1].split("\n      - name:", 1)[0]
+            self.assertIn("role-duration-seconds: 10800", credential_block)
+
     def test_publication_requires_signed_secure_preflight_attestations(self):
         publication = (ROOT / ".github" / "workflows" / "release.yml").read_text()
         receipt_gate = publication.split(

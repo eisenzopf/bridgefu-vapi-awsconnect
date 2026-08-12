@@ -29,10 +29,13 @@
       "enum": [
         "initialization",
         "input_validation",
+        "web_site_validation",
         "preflight",
         "cloudformation_deploy",
         "web_site_build",
         "connect_authentication",
+        "direct_secure_preflight",
+        "credential_initialization",
         "vapi_web_transfer",
         "vapi_sip_transfer"
       ]

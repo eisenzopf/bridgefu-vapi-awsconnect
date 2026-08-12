@@ -83,12 +83,17 @@ delete_prefix_versions() {
     deletes="$(jq -c --arg prefix "$prefix" \
       '{Objects: (((.Versions // []) + (.DeleteMarkers // [])) |
         map(select(.Key | startswith($prefix)) |
-          {Key: .Key, VersionId: .VersionId}) | .[:1000]), Quiet: true}' \
+          {Key: .Key, VersionId: .VersionId}) | .[:1000]), Quiet: false}' \
       <<<"$listing")"
     [[ "$(jq '.Objects | length' <<<"$deletes")" = 0 ]] && return 0
     delete_response="$(aws s3api delete-objects --region "$region" \
       --bucket "$bucket" --delete "$deletes")"
-    jq -e '(.Errors // []) | length == 0' \
+    jq -e --argjson requested "$deletes" '
+      ((.Errors // []) | length == 0) and
+      ((.Deleted // []) | length == ($requested.Objects | length)) and
+      (((.Deleted // []) | map({Key, VersionId}) |
+          sort_by(.Key, .VersionId)) ==
+       ($requested.Objects | sort_by(.Key, .VersionId)))' \
       <<<"$delete_response" >/dev/null
   done
   listing="$(aws s3api list-object-versions --region "$region" \

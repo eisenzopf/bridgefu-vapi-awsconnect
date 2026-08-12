@@ -45,10 +45,13 @@ def cleanup_result(**changes: bool) -> dict[str, bool]:
 
 
 class FakeProcess:
-    def __init__(self, running: bool = False) -> None:
+    def __init__(
+        self, running: bool = False, *, returncode: int = 0, stderr: str = ""
+    ) -> None:
         self.running = running
-        self.returncode = None if running else 0
+        self.returncode = None if running else returncode
         self.terminated = False
+        self.stderr = stderr
 
     def poll(self):
         return None if self.running else self.returncode
@@ -63,7 +66,7 @@ class FakeProcess:
         self.returncode = -9
 
     def communicate(self, *args, **kwargs):
-        return "", ""
+        return "", self.stderr
 
 
 class FakeDirectAws:
@@ -186,6 +189,55 @@ class SecurePreflightGateTests(unittest.TestCase):
         controller.args.direct_secure_probe = link
         with self.assertRaises(CONTROLLER.QualificationError):
             controller.validate_inputs()
+
+    def test_browser_readiness_surfaces_bounded_redacted_early_exit(self):
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        process = FakeProcess(
+            returncode=1,
+            stderr="browser failed password=do-not-retain\nsecond line",
+        )
+        controller.processes = [process]
+        with self.assertRaisesRegex(
+            CONTROLLER.QualificationError, "exited before readiness"
+        ) as raised:
+            controller.wait_for_process_file(
+                process,
+                self.temporary / "missing.json",
+                CONTROLLER.BROWSER_READINESS_TIMEOUT_SECONDS,
+                "Amazon Connect smoke observer",
+            )
+        self.assertIn("password=[REDACTED]", str(raised.exception))
+        self.assertNotIn("do-not-retain", str(raised.exception))
+        self.assertNotIn(process, controller.processes)
+
+    def test_browser_readiness_timeout_terminates_owned_process(self):
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        process = FakeProcess(running=True, stderr="bounded timeout detail")
+        controller.processes = [process]
+        with (
+            mock.patch.object(
+                CONTROLLER.time, "monotonic", side_effect=(0.0, 0.0, 211.0)
+            ),
+            mock.patch.object(CONTROLLER.time, "sleep"),
+        ):
+            with self.assertRaisesRegex(
+                CONTROLLER.QualificationError,
+                "readiness timed out: bounded timeout detail",
+            ):
+                controller.wait_for_process_file(
+                    process,
+                    self.temporary / "missing.json",
+                    CONTROLLER.BROWSER_READINESS_TIMEOUT_SECONDS,
+                    "Vapi Web smoke source",
+                )
+        self.assertTrue(process.terminated)
+        self.assertNotIn(process, controller.processes)
+
+    def test_all_browser_readiness_paths_use_process_aware_upper_bound(self):
+        self.assertGreaterEqual(CONTROLLER.BROWSER_READINESS_TIMEOUT_SECONDS, 210)
+        controller = (ROOT / "qualification" / "controller.py").read_text()
+        self.assertNotIn("self.wait_for_file(", controller)
+        self.assertEqual(controller.count("self.wait_for_process_file("), 3)
 
     def test_success_uses_ready_observer_first_static_object_and_exact_cleanup(self):
         controller, _ = self.controller_for_direct()

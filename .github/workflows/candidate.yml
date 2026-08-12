@@ -523,6 +523,7 @@ jobs:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_QUALIFICATION_ROLE_ARN }}
+          role-duration-seconds: 10800
           aws-region: ${{ matrix.region }}
       - name: Install pinned qualification dependencies
         run: |
