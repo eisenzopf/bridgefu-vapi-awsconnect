@@ -64,7 +64,7 @@ describe_stack_exact() {
     rm -f "$error_file"
     return 0
   fi
-  if grep -Eq '^An error occurred \(ValidationError\) when calling the DescribeStacks operation: Stack with id .+ does not exist$' \
+  if grep -Eq '^(aws: \[ERROR\]: )?An error occurred \(ValidationError\) when calling the DescribeStacks operation: Stack with id .+ does not exist$' \
     "$error_file"; then
     rm -f "$destination" "$error_file"
     return 3
