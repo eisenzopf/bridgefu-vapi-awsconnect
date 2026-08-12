@@ -45,6 +45,8 @@ PROBE_PHASES = frozenset(
         "backup",
         "patch_configuration",
         "restart_patched_runtime",
+        "restart_patched_service",
+        "restart_patched_readiness",
         "reserve_and_probe",
         "restore",
         "validate_result",
@@ -426,7 +428,7 @@ _PROBE_SCRIPT = textwrap.dedent(
       restore_owned || status=1
       if [ "$status" -ne 0 ]; then
         case "$phase" in
-          preflight|preflight_identity|preflight_runtime_files|preflight_runtime_ownership|preflight_workspace|download_probe|backup|patch_configuration|restart_patched_runtime|reserve_and_probe|restore|validate_result|emit_result|complete)
+          preflight|preflight_identity|preflight_runtime_files|preflight_runtime_ownership|preflight_workspace|download_probe|backup|patch_configuration|restart_patched_runtime|restart_patched_service|restart_patched_readiness|reserve_and_probe|restore|validate_result|emit_result|complete)
             printf 'direct_secure_preflight_phase=%s\n' "$phase" >&3
             ;;
           *) printf 'direct_secure_preflight_phase=preflight\n' >&3 ;;
@@ -574,8 +576,13 @@ _PROBE_SCRIPT = textwrap.dedent(
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                # The remote shell intentionally uses umask 077. Apply the
+                # reviewed source mode and ownership to the already-open,
+                # exclusively-created inode so the bridgefu service user can
+                # still read the atomic replacement.
+                os.fchown(handle.fileno(), uid, gid)
+                os.fchmod(handle.fileno(), mode)
                 handle.write(value)
-            os.chown(path, uid, gid)
         except BaseException:
             path.unlink(missing_ok=True)
             raise
@@ -623,8 +630,9 @@ _PROBE_SCRIPT = textwrap.dedent(
     PY
     grep -Fq -- "$marker" "$config"
 
-    phase=restart_patched_runtime
+    phase=restart_patched_service
     systemctl restart bridgefu.service >/dev/null 2>&1
+    phase=restart_patched_readiness
     ready=false
     for _ in $(seq 1 120); do
       if systemctl is-active --quiet bridgefu.service \
