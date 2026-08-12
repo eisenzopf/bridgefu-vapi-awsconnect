@@ -371,21 +371,23 @@ class SecurePreflightGateTests(unittest.TestCase):
 
         command_id = controller.send_owned_shell(
             "i-0123456789abcdef0",
-            "set -euo pipefail\nvalue='safe (value)'\nprintf '%s\\n' \"$value\"",
+            "set -euo pipefail\nvalue='safe (value)' && printf '%s\\n' \"$value\"",
         )
 
         self.assertEqual(command_id, "command-probe")
         arguments = controller.aws.calls[-1]
         encoded = arguments[arguments.index("--parameters") + 1]
         self.assertEqual(
-            json.loads(encoded.removeprefix("commands=")),
-            [
-                "set -euo pipefail",
-                "value='safe (value)'",
-                "printf '%s\\n' \"$value\"",
-            ],
+            json.loads(encoded),
+            {
+                "commands": [
+                    "set -euo pipefail",
+                    "value='safe (value)' && printf '%s\\n' \"$value\"",
+                ]
+            },
         )
-        self.assertNotIn("\\n", json.loads(encoded.removeprefix("commands="))[0])
+        self.assertTrue(encoded.startswith("{"))
+        self.assertNotIn("\\n", json.loads(encoded)["commands"][0])
 
     def test_owned_shell_strips_blanks_and_rejects_empty_crlf_and_oversized_lines(self):
         controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
@@ -393,13 +395,18 @@ class SecurePreflightGateTests(unittest.TestCase):
         controller.ssm_commands = []
         controller.send_owned_shell("i-0123456789abcdef0", "one\n\ntwo")
         encoded = controller.aws.calls[-1][-3]
-        self.assertEqual(json.loads(encoded.removeprefix("commands=")), ["one", "two"])
+        self.assertEqual(json.loads(encoded), {"commands": ["one", "two"]})
         controller.aws.calls.clear()
         for script in ("", "one\r\ntwo", "x" * 8193):
             with self.subTest(script_length=len(script)):
                 with self.assertRaises(CONTROLLER.QualificationError):
                     controller.send_owned_shell("i-0123456789abcdef0", script)
         self.assertEqual(controller.aws.calls, [])
+
+    def test_all_controller_ssm_parameters_avoid_aws_cli_shorthand(self):
+        source = (ROOT / "qualification" / "controller.py").read_text(encoding="utf-8")
+        self.assertNotIn('"commands=" +', source)
+        self.assertNotIn("'commands=[", source)
 
     def test_browser_mode_has_private_readiness_and_no_session_contract(self):
         browser = ROOT / "qualification" / "browser" / "agent-workspace-playwright.mjs"

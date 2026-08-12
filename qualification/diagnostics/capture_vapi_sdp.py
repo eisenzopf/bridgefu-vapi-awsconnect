@@ -885,7 +885,7 @@ rm -f "$run/source.pid" "$run/source.json"
                 "--document-name",
                 "AWS-RunShellScript",
                 "--parameters",
-                "commands=" + json.dumps(commands, separators=(",", ":")),
+                json.dumps({"commands": commands}, separators=(",", ":")),
                 "--query",
                 "Command.CommandId",
             ],
