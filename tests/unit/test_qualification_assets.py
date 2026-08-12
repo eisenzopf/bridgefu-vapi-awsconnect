@@ -236,6 +236,11 @@ class QualificationAssetTests(unittest.TestCase):
             ci,
         )
         self.assertIn("cargo clippy --locked --all-targets", ci)
+        observer_job = ci.split("  sdp-diagnostics:\n", 1)[1].split(
+            "\n  qualification-client:\n", 1
+        )[0]
+        self.assertIn('select(.name == "rvoip-sip-core")', observer_job)
+        self.assertNotIn('select(.name == "rvoip-sip")', observer_job)
         for workflow in ("candidate.yml", "release.yml", "remote-qualification.yml"):
             self.assertNotIn(
                 "qualification/sdp-observer",
