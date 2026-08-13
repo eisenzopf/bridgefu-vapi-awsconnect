@@ -1588,3 +1588,26 @@ and full 226-test Python suite passed.
   and whether ICE packets crossed the instance boundary. No packet body, IP,
   port outside the fixed configured range, SDP, candidate string, or identifier
   will be retained.
+- The paired diagnostic captured one UDP packet entering the EC2 WebRTC media
+  range and 49 leaving it. Across 898 browser stats samples, Chromium reported
+  no remote candidate and no candidate-pair state, even though the SDK had
+  called `addIceCandidate` once and then applied ICE completion. This proves the
+  candidate crossed Bridgefu's WebSocket signaler but was not associated with a
+  browser media section; AWS ingress/egress was not completely blocked.
+- Exact crates.io source identifies the cause in `rvoip-rtc 0.3.7`:
+  `RTCIceCandidate::to_json()` serializes every trickled candidate with
+  `sdpMid: ""`, `sdpMLineIndex: 0`, and no username fragment. The empty MID
+  names no SDP media section, while the valid zero m-line index is sufficient.
+  The Bridgefu SDK now removes only an invalid empty `sdpMid` when a bounded
+  integer `sdpMLineIndex` is present, preserving all nonempty MIDs and the exact
+  candidate. Its regression passes a real rvoip-0.3.7-shaped candidate and
+  asserts the browser receives the candidate plus m-line index without the
+  empty selector. SDK typecheck, build, and all 20 tests pass.
+- The SDK fix is committed and pushed on the existing Bridgefu qualification
+  branch as `1fa3b364ba30f972600d904667563a1b4c0a156c`; no local rvoip fork is
+  used. The distribution source lock now pins that remote commit, and a new
+  deterministic demo-site artifact was built from it with archive SHA-256
+  `e375ae9ede5cd0c737fff7880f3153df8d97ba8a0353d4d4477a4905fb529bdf`.
+  The next permitted action is one retained Web smoke using exactly that sealed
+  site. It tests the proven SDK correction at the current gate only; SIP-source
+  smoke remains blocked until Web passes.
