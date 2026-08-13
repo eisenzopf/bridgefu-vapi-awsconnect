@@ -64,7 +64,7 @@ and fresh regional qualifications pass.
 | Repository | `eisenzopf/bridgefu-vapi-awsconnect` |
 | Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
 | Branch | `codex/staged-vapi-qualification` |
-| Implementation commit | `7b3d399bd28d1b910849263f4b65022962d2f942` |
+| Implementation commit | `6ba97cdb2996607911fe999950e56ac640f85336` |
 | Local delta | Status-ledger updates only; implementation source is committed and pushed |
 | Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
 | PR state at last update | Draft, open, not merged |
@@ -1238,3 +1238,24 @@ and full 226-test Python suite passed.
 - Cleanup was re-proven after this failure: zero owned Vapi phone/tool/prompt,
   empty disposable auth secret, zero Web-runtime object versions, no media
   rule, and a successful EC2 cleanup receipt with Bridgefu ready.
+- The next Web attempt passed the closed runtime install receipt and advanced to
+  port-forward setup, then stopped before dialing because this workstation did
+  not have AWS's `session-manager-plugin`. This was a local dependency preflight
+  omission; the EC2 service, Vapi destination, SIP exchange, Connect contact,
+  and media path were not exercised.
+- The controller now requires `session-manager-plugin` during its initial input
+  validation, before AWS or Vapi mutation. Candidate and remote-qualification
+  workflows install AWS version `1.2.835.0` from the versioned AWS S3 URL and
+  require exact package SHA-256
+  `7c6dcad12518571cc7959a713e6a8ae1bdf6ed66fd9bee37dc189e39ca58ae03`.
+  The workstation uses the same `1.2.835.0` binary extracted from AWS's signed,
+  Apple-notarized package in `/Users/jonathan/.local/bin`; source and installed
+  binary digests match.
+- The new preflight/workflow regression passed, the full unit suite passed
+  **261/261**, actionlint passed for both live workflows, and local release
+  validation passed. The fix was committed and pushed as
+  `6ba97cdb2996607911fe999950e56ac640f85336`.
+- Cleanup was again proven before retry: zero owned Vapi phone/tool/prompt,
+  empty disposable auth secret, zero Web-runtime versions, no media rule, no
+  runtime overlay/drop-in/temp-secret file, and active/ready Bridgefu on the
+  unchanged `f6754354…` digest.
