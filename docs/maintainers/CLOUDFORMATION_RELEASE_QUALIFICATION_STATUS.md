@@ -64,7 +64,7 @@ and fresh regional qualifications pass.
 | Repository | `eisenzopf/bridgefu-vapi-awsconnect` |
 | Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
 | Branch | `codex/staged-vapi-qualification` |
-| Implementation commit | `0fc67f71623e88a3474e86d513b92a095df2c34a` |
+| Implementation commit | `13be5aea6eb51d931e7c3a0e0862d9003ba02dce` |
 | Local delta | Status-ledger updates only; implementation source is committed and pushed |
 | Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
 | PR state at last update | Draft, open, not merged |
@@ -1203,3 +1203,22 @@ and full 226-test Python suite passed.
   systemd drop-in, or temporary runtime secret file. Bridgefu remains active
   and ready with unchanged installed binary digest `f6754354…`; both retained
   CloudFormation stacks remain `CREATE_COMPLETE`.
+- The next Web-only retry crossed the fixed Secrets Manager boundary but still
+  stopped before a call. Exact SSM stderr showed that the Web runtime installer's
+  embedded Python had received `rstrip("\\n")` and its output newline as two
+  physical AWS command lines. Bash accepted the outer heredoc, but Python
+  rejected the resulting unterminated string literal. This was another harness
+  serialization defect, not a Vapi, Bridgefu, WebRTC, SIP, Connect, or media
+  result.
+- The generator now preserves those Python newline escapes. The regression
+  extracts and validates all three actual program layers: the outer SSM shell
+  passes `bash -n`, the emitted runtime wrapper passes `bash -n`, and the
+  embedded Python compiles. The complete unit suite again passed **260/260**,
+  Ruff passed for the changed files, and local release validation passed. The
+  fix was committed and pushed as
+  `13be5aea6eb51d931e7c3a0e0862d9003ba02dce`.
+- Post-failure cleanup again passed before retry authority: zero owned Vapi
+  phones, direct tools, and prompt markers; empty disposable SIP-auth secret;
+  zero Web-runtime S3 versions; no browser media rule; no EC2 Web runtime,
+  systemd drop-in, or temporary secret file; active/ready Bridgefu with the
+  unchanged `f6754354…` digest.
