@@ -639,6 +639,27 @@ class QualificationAssetTests(unittest.TestCase):
             sip.index('"send-command"'),
         )
 
+    def test_web_smoke_preserves_both_browser_failure_diagnostics(self):
+        controller = (QUALIFICATION / "controller.py").read_text()
+        web = controller.split("    def web_smoke(", 1)[1].split(
+            "    def cleanup_sip_transients(", 1
+        )[0]
+        self.assertIn("browser_errors: list[str] = []", web)
+        self.assertIn("Bridgefu Web SDK smoke source", web)
+        self.assertIn("Amazon Connect Web smoke observer", web)
+        self.assertIn('QualificationError("; ".join(browser_errors))', web)
+
+        agent = (
+            QUALIFICATION / "browser" / "agent-workspace-playwright.mjs"
+        ).read_text()
+        for diagnostic in (
+            "received_packets=",
+            "received_bytes=",
+            "active_frames=",
+            "max_rms=",
+        ):
+            self.assertIn(diagnostic, agent)
+
 
 if __name__ == "__main__":
     unittest.main()

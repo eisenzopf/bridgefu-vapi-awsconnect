@@ -2097,3 +2097,45 @@ and full 226-test Python suite passed.
   candidate, GitHub workflow, or publication was started. The only permitted
   next live action is atomic installation of the exact Bridgefu build followed
   by one retained Web SDK smoke and its full cleanup proof.
+
+### 2026-08-13 — Connect delivery passed; SQLite recovery restart root cause isolated
+
+- The retained Web SDK retry did log the disposable Amazon Connect agent into
+  Agent Workspace, explicitly selected `Available`, and auto-accepted one
+  connected VOICE contact. The contact contained the exact `correlation_id`,
+  `context_available=true`, and the four configured screen-pop fields in the
+  configured order. This proves Vapi invoked the dedicated direct tool,
+  Bridgefu replaced the Vapi leg, Amazon Connect received the call, and the
+  lookup path populated the agent screen.
+- The media gate did not pass. The source browser observed a remote audio track
+  but not the required 880-Hz marker or DTMF. Its earlier reported packet/byte
+  numbers were outbound RTP counters, not inbound evidence. The agent observer
+  result was then hidden when the controller raised the source failure first.
+  The browser probes now separately report inbound/outbound RTP, decoded-audio
+  active-frame count and maximum RMS, and the controller retains both browser
+  failure reports. No media conclusion will be drawn from the mislabeled
+  counters.
+- Cleanup intentionally stopped Bridgefu at 23:20:39 UTC. The subsequent
+  restart loop was not initiated by a Rust panic. The `durable work claim task
+  panicked` message occurred only after systemd had begun stopping the service
+  and was a cancelled task mislabeled as a panic.
+- The actual restart failure was `durable call execution recovery timed out`.
+  The call database contained 260 durable commands: 250 media-deadline refresh
+  commands plus normal lifecycle work. Those refreshes produced approximately
+  500 schedule/cancel coordination effects. With eight SQLite pool connections
+  competing for SQLite's single writer, startup recovery spent seconds waiting
+  on the coordination projection lock, exceeded the 15-second startup budget,
+  and exited fail-closed. Later attempts could also exhaust the 30-second
+  worker lease during recovery and latch `call_runtime=lease_lost`.
+- The product fix configures standalone SQLite explicitly as WAL with NORMAL
+  synchronization and a one-connection pool. WAL prevents health/read probes
+  from blocking the writer; the one connection serializes all mutations before
+  SQLite instead of creating a writer thundering herd that can starve lease
+  renewal and recovery. The regression proves the WAL/synchronous pragmas and
+  that a second pool acquisition cannot proceed until the single connection is
+  returned. Repository conformance and Clippy with warnings denied pass.
+- The next permitted live action is not another call. Commit and build this
+  exact SQLite fix, install it atomically on the retained instance, and prove
+  the existing durable database reaches and continuously holds healthy
+  readiness without a restart loop. Only after that recovery gate passes may
+  one bounded Web SDK media retry run with the corrected two-sided diagnostics.

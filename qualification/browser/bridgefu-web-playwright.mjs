@@ -591,6 +591,8 @@ function installProbe() {
     dtmfAgentToSourceObserved: false,
     dtmfActive: false,
     remoteAudioTracks: 0,
+    remoteAudioActiveFrames: 0,
+    remoteAudioMaxRms: 0,
     iceCandidateSummary: newCandidateSummary(),
     remoteIceCandidateSummary: newCandidateSummary(),
     remoteIceComplete: 0,
@@ -649,6 +651,8 @@ function installProbe() {
       let energy = 0;
       for (const sample of samples) energy += sample * sample;
       const rms = Math.sqrt(energy / samples.length);
+      state.remoteAudioMaxRms = Math.max(state.remoteAudioMaxRms, rms);
+      if (rms > 0.01) state.remoteAudioActiveFrames += 1;
       const marker = rms > 0.01 && power(samples, context.sampleRate, AGENT_MARKER_HZ) > 0.0003;
       if (marker) {
         state.agentMarkerFrames += 1;
@@ -791,6 +795,8 @@ async function probeSnapshot(page) {
     if (!state) return null;
     let audioPacketsSent = 0;
     let audioBytesSent = 0;
+    let audioPacketsReceived = 0;
+    let audioBytesReceived = 0;
     let telephoneEventPacketsReceived = 0;
     for (const peer of globalThis.__bridgefuVapiPeers ?? []) {
       try {
@@ -810,6 +816,10 @@ async function probeSnapshot(page) {
             audioPacketsSent += Number(row.packetsSent ?? 0);
             audioBytesSent += Number(row.bytesSent ?? 0);
           }
+          if (row.type === "inbound-rtp" && row.kind === "audio" && !row.isRemote) {
+            audioPacketsReceived += Number(row.packetsReceived ?? 0);
+            audioBytesReceived += Number(row.bytesReceived ?? 0);
+          }
           if (
             row.type === "inbound-rtp" &&
             telephoneEventCodecs.has(row.codecId)
@@ -828,8 +838,12 @@ async function probeSnapshot(page) {
       agentMarkerFrames: state.agentMarkerFrames,
       dtmfAgentToSourceObserved: state.dtmfAgentToSourceObserved,
       remoteAudioTracks: state.remoteAudioTracks,
+      remoteAudioActiveFrames: state.remoteAudioActiveFrames,
+      remoteAudioMaxRms: state.remoteAudioMaxRms,
       audioPacketsSent,
       audioBytesSent,
+      audioPacketsReceived,
+      audioBytesReceived,
       telephoneEventPacketsReceived,
     };
   });
@@ -1273,8 +1287,12 @@ async function observe(options) {
         + `frames=${probe?.agentMarkerFrames ?? 0} `
         + `dtmf=${probe?.dtmfAgentToSourceObserved === true ? 1 : 0} `
         + `tracks=${probe?.remoteAudioTracks ?? 0} `
-        + `packets=${probe?.audioPacketsSent ?? 0} `
-        + `bytes=${probe?.audioBytesSent ?? 0}`,
+        + `sent_packets=${probe?.audioPacketsSent ?? 0} `
+        + `sent_bytes=${probe?.audioBytesSent ?? 0} `
+        + `received_packets=${probe?.audioPacketsReceived ?? 0} `
+        + `received_bytes=${probe?.audioBytesReceived ?? 0} `
+        + `active_frames=${probe?.remoteAudioActiveFrames ?? 0} `
+        + `max_rms=${Number(probe?.remoteAudioMaxRms ?? 0).toFixed(6)}`,
       );
     }
     let localEndCompleted = false;

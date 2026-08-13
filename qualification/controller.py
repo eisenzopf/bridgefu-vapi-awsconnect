@@ -5267,10 +5267,17 @@ class Controller:
             )
             private_json(session_path, session)
             private_json(trigger, {"schema_version": 1, "execute": True})
-            self.complete_process(source_process, "Bridgefu Web SDK smoke source", 360)
-            self.complete_process(
-                agent_process, "Amazon Connect Web smoke observer", 360
-            )
+            browser_errors: list[str] = []
+            for process, label in (
+                (source_process, "Bridgefu Web SDK smoke source"),
+                (agent_process, "Amazon Connect Web smoke observer"),
+            ):
+                try:
+                    self.complete_process(process, label, 360)
+                except QualificationError as error:
+                    browser_errors.append(str(error))
+            if browser_errors:
+                raise QualificationError("; ".join(browser_errors))
             self.verify_scenario(
                 scenario, session, source_observation, agent_observation
             )

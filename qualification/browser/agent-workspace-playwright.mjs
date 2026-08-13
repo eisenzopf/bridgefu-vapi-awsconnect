@@ -653,6 +653,8 @@ async function probeSnapshot(page) {
         if (!state) return null;
         let audioPacketsSent = 0;
         let audioBytesSent = 0;
+        let audioPacketsReceived = 0;
+        let audioBytesReceived = 0;
         let activeContacts = null;
         const streams = globalThis.connect;
         if (typeof streams?.Agent === "function") {
@@ -676,6 +678,10 @@ async function probeSnapshot(page) {
                 audioPacketsSent += Number(row.packetsSent ?? 0);
                 audioBytesSent += Number(row.bytesSent ?? 0);
               }
+              if (row.type === "inbound-rtp" && row.kind === "audio" && !row.isRemote) {
+                audioPacketsReceived += Number(row.packetsReceived ?? 0);
+                audioBytesReceived += Number(row.bytesReceived ?? 0);
+              }
             }
           } catch {
             // Closed peer; its last counters are not evidence for this snapshot.
@@ -688,8 +694,12 @@ async function probeSnapshot(page) {
           sourceMarkerFrames: state.sourceMarkerFrames,
           dtmfSourceToAgentObserved: state.dtmfSourceToAgentObserved,
           remoteAudioTracks: state.remoteAudioTracks,
+          remoteAudioActiveFrames: state.remoteAudioActiveFrames,
+          remoteAudioMaxRms: state.remoteAudioMaxRms,
           audioPacketsSent,
           audioBytesSent,
+          audioPacketsReceived,
+          audioBytesReceived,
           activeContacts,
         };
       });
@@ -725,6 +735,22 @@ async function probeSnapshot(page) {
     ),
     audioBytesSent: snapshots.reduce(
       (total, item) => total + item.audioBytesSent,
+      0,
+    ),
+    audioPacketsReceived: snapshots.reduce(
+      (total, item) => total + item.audioPacketsReceived,
+      0,
+    ),
+    audioBytesReceived: snapshots.reduce(
+      (total, item) => total + item.audioBytesReceived,
+      0,
+    ),
+    remoteAudioActiveFrames: snapshots.reduce(
+      (total, item) => total + item.remoteAudioActiveFrames,
+      0,
+    ),
+    remoteAudioMaxRms: snapshots.reduce(
+      (maximum, item) => Math.max(maximum, item.remoteAudioMaxRms),
       0,
     ),
     activeContacts: snapshots
@@ -783,6 +809,8 @@ function installProbe() {
     dtmfSourceToAgentObserved: false,
     dtmfConsecutiveFrames: 0,
     remoteAudioTracks: 0,
+    remoteAudioActiveFrames: 0,
+    remoteAudioMaxRms: 0,
   };
   globalThis.__bridgefuAgentProbe = state;
   globalThis.__bridgefuAgentPeerConnections = [];
@@ -835,6 +863,8 @@ function installProbe() {
       let energy = 0;
       for (const sample of samples) energy += sample * sample;
       const rms = Math.sqrt(energy / samples.length);
+      state.remoteAudioMaxRms = Math.max(state.remoteAudioMaxRms, rms);
+      if (rms > 0.001) state.remoteAudioActiveFrames += 1;
       const marker = rms > 0.01 && power(samples, context.sampleRate, 997) > 0.0003;
       if (marker) {
         state.sourceMarkerFrames += 1;
@@ -1201,28 +1231,44 @@ async function observe(options) {
         "Agent Workspace did not render the exact synthetic screen pop",
       );
     }
-    await waitUntil(
-      async () => {
-        const probe = await probeSnapshot(page);
-        const sourceMediaReadyAtMs = probe.sourceMarkerObservedAtMs[0];
-        return (
-          probe.sourceMarkerObservedAtMs.length >= 5 &&
-          probe.dtmfSourceToAgentObserved &&
-          probe.captureRequestedAtMs &&
-          Number.isInteger(sourceMediaReadyAtMs) &&
-          agentMarkerSchedule(
-            probe.captureRequestedAtMs,
-            sourceMediaReadyAtMs,
-            Date.now(),
-          ).length >= 5 &&
-          probe.remoteAudioTracks > 0 &&
-          probe.audioPacketsSent > 0 &&
-          probe.audioBytesSent > 0
-        );
-      },
-      Math.min(timeoutMs, 90_000),
-      "Agent Workspace media browser observations did not converge",
-    );
+    try {
+      await waitUntil(
+        async () => {
+          const probe = await probeSnapshot(page);
+          const sourceMediaReadyAtMs = probe.sourceMarkerObservedAtMs[0];
+          return (
+            probe.sourceMarkerObservedAtMs.length >= 5 &&
+            probe.dtmfSourceToAgentObserved &&
+            probe.captureRequestedAtMs &&
+            Number.isInteger(sourceMediaReadyAtMs) &&
+            agentMarkerSchedule(
+              probe.captureRequestedAtMs,
+              sourceMediaReadyAtMs,
+              Date.now(),
+            ).length >= 5 &&
+            probe.remoteAudioTracks > 0 &&
+            probe.audioPacketsSent > 0 &&
+            probe.audioBytesSent > 0
+          );
+        },
+        Math.min(timeoutMs, 90_000),
+        "Agent Workspace media browser observations did not converge",
+      );
+    } catch {
+      const probe = await probeSnapshot(page);
+      fail(
+        "Agent Workspace media browser observations did not converge " +
+          `markers=${probe.sourceMarkerObservedAtMs.length} ` +
+          `marker_frames=${probe.sourceMarkerFrames} ` +
+          `dtmf=${probe.dtmfSourceToAgentObserved ? "yes" : "no"} ` +
+          `tracks=${probe.remoteAudioTracks} ` +
+          `sent_packets=${probe.audioPacketsSent} sent_bytes=${probe.audioBytesSent} ` +
+          `received_packets=${probe.audioPacketsReceived} ` +
+          `received_bytes=${probe.audioBytesReceived} ` +
+          `active_frames=${probe.remoteAudioActiveFrames} ` +
+          `max_rms=${probe.remoteAudioMaxRms.toFixed(6)}`,
+      );
+    }
     const mediaProbe = await probeSnapshot(page);
     await page.screenshot({ path: screenshotPath, fullPage: false });
     chmodSync(screenshotPath, 0o600);
