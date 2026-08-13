@@ -2056,3 +2056,42 @@ and full 226-test Python suite passed.
   local bits into the one retained Oregon diagnostic environment and run one
   Web SDK smoke. The SIP-source smoke, Virginia, candidate sealing, and release
   publication remain blocked until that Web smoke passes and cleans up.
+
+### 2026-08-13 — Missing Connect correlation root cause reproduced and fixed
+
+- The most recent retained Web call did reach the available Amazon Connect
+  agent. AWS recorded one connected VOICE contact with `AgentInfo` and queue
+  ownership. The contact nevertheless contained no `correlation_id`, and the
+  lookup Lambda returned the closed result `unavailable`; this was not an agent
+  availability failure.
+- Source tracing found the exact loss boundary in Bridgefu. The one-use WebRTC
+  route durably stored the server-owned correlation and handoff-token context.
+  Initial named-route dialing knows how to use that context, but the leg-
+  replacement executor looked only for a browser-sent initial-context row. The
+  production Web qualification intentionally did not trust the browser to
+  restate the correlation. Consequently Amazon Connect started with only the
+  route's static attributes.
+- Bridgefu commit `7b54a4fb7f83685af0ed59cd8dd578733615a316`
+  now gives the authenticated server-owned named-route context precedence for
+  replacements, with the existing signed browser-context row retained as the
+  fallback. The Amazon replacement integration now exercises that exact
+  server-owned path and proves `correlation_id` plus allowlisted metadata reach
+  `StartWebRTCContact`; the original browser-supplied path remains covered.
+  The focused end-to-end integration, 37 execution unit tests, formatting,
+  Clippy with warnings denied, and diff checks passed. The commit is pushed to
+  `origin/codex/vapi-tls-rtp-evidence` and the distribution source lock is
+  repinned to it.
+- The live trace also exposed an independent idempotency defect. Vapi retried
+  the already accepted direct webhook after the record was `RESERVED`, while
+  `prepare_direct` allowed only `MAPPED` or `PREPARED`, producing a misleading
+  later `direct_handoff_conflict`. Distribution commit `60c73cb` now admits
+  `RESERVED` only when the same token, unexpired record, content hash, and Vapi
+  identity hash all match, then replays the exact replacement receipt. Changed
+  retries still fail closed. All 291 Python unit tests and Ruff passed.
+- The exact Bridgefu commit is building on the retained Oregon ARM instance
+  using its preexisting Cargo cache. The prior installed binary remains active
+  during the build. The direct Lambda has been atomically updated to the retry-
+  safe package and reports Active/Successful. No CloudFormation stack, release
+  candidate, GitHub workflow, or publication was started. The only permitted
+  next live action is atomic installation of the exact Bridgefu build followed
+  by one retained Web SDK smoke and its full cleanup proof.
