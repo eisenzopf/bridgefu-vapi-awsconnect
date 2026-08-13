@@ -59,7 +59,7 @@ selects the correct URI contract.
 | Repository | `eisenzopf/bridgefu-vapi-awsconnect` |
 | Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
 | Branch | `codex/staged-vapi-qualification` |
-| Commit | `1b2c22025949ea7f76a28ef55f296da7a2edab80` plus the pending SSM gate/documentation commit |
+| Implementation commit | `40c175b` |
 | Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
 | PR state at last update | Draft, open, not merged |
 
@@ -154,7 +154,7 @@ Blocked on a signed, sealed candidate.
 
 ## Current CI state
 
-Last observed on 2026-08-12:
+Last observed on 2026-08-12 after pushing implementation commit `40c175b`:
 
 ### Bridgefu PR #4
 
@@ -166,12 +166,11 @@ Last observed on 2026-08-12:
 
 ### Distribution PR #26
 
-- `validate`: passed.
-- `sdp-diagnostics`: passed.
-- `qualification-client`: running at last observation.
+- `validate`: running.
+- `sdp-diagnostics`: running.
+- `qualification-client`: running.
 
-The distribution branch is being updated with the exact SSM gate and these
-documents. Its CI must rerun before Stage 1 can pass.
+CI run: `31661830627`. All three checks must pass before Stage 1 can pass.
 
 CI monitors are not running locally. CI completion must be read explicitly
 before updating these states.
@@ -234,3 +233,6 @@ The next actions, in order, are:
 - Full distribution Python suite: 226 passed.
 - Deterministic packaging and local release validation passed.
 - Read final Bridgefu PR #4 checks: all passed.
+- Committed and pushed the exact SSM gate and plan/status documents as
+  distribution implementation commit `40c175b`.
+- Distribution CI run `31661830627` started against that commit.
