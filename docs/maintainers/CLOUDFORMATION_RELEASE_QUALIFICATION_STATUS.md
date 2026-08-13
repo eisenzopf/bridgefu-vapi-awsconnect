@@ -35,7 +35,7 @@ happened.
 | Vapi SIP/SDP A/B | **PASSED** — optional mode uses `sip:...;transport=tls` over observed TLS with RTP/AVP |
 | Direct mandatory-SRTP control | **PASSED** — SIPS/TLS plus RTP/SAVP/SDES-SRTP |
 | Prior Web smoke | **INVALID / SUPERSEDED** — used stock `@vapi-ai/web`, not Bridgefu's SDK |
-| Next permitted AWS action | Retained Oregon only: one instrumented Bridgefu Web SDK smoke; SIP-source smoke remains blocked until Web passes |
+| Next permitted AWS action | Retained Oregon only: review and execute a two-rule qualification TLS-egress change set, prove EC2-to-Vapi TLS reachability, then rerun the Web SDK smoke; SIP-source smoke remains blocked |
 
 ## Source under evaluation
 
@@ -65,7 +65,7 @@ and fresh regional qualifications pass.
 | Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
 | Branch | `codex/staged-vapi-qualification` |
 | Implementation commit | `b41417b44efad39c92dc28ae7f6d15d29a064ec3` |
-| Local delta | Status-ledger update only; implementation source is committed and pushed |
+| Local delta | Qualification-only Vapi TLS egress, preflight, SIP-over-TLS target correction, tests, and this ledger update; pending commit |
 | Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
 | PR state at last update | Draft, open, not merged |
 
@@ -239,13 +239,16 @@ before updating these states.
 
 The next actions, in order, are:
 
-1. Expose the already-deployed child outputs through a diagnostic-only
-   compatibility root whose reviewed change set contains no replacement.
-2. Update the retained Oregon runtime with those exact diagnostic bits and run
-   the Bridgefu Web SDK source once, without rebuilding the environment between
-   diagnosis attempts.
-3. Run the rvoip SIP source, Vapi create/delete/recreate cycle, and exact
-   retained-environment cleanup/zero-resource proof.
+1. Create and inspect a retained diagnostic add-on change set containing only
+   two outbound TCP/5061 rules to Vapi's published US signaling `/32`s. Reject
+   the change set if it replaces any resource or changes the customer stack.
+2. Execute that change set and require the closed EC2-side reachability probe to
+   prove DNS, TCP, and certificate-verified TLS before creating any Vapi
+   resource.
+3. Run only the Bridgefu Web SDK smoke against the same retained environment.
+   If it fails, diagnose that same call; do not run the SIP source.
+4. After Web passes, run the rvoip SIP source, Vapi create/delete/recreate
+   cycle, and exact retained-environment cleanup/zero-resource proof.
 
 ### 2026-08-12 — Retained Oregon deployment started
 
@@ -1370,3 +1373,45 @@ and full 226-test Python suite passed.
   `b41417b44efad39c92dc28ae7f6d15d29a064ec3`; all **265** unit tests and local
   release validation passed. The next permitted action remains exactly one
   retained Web-only rerun.
+- That full-gather rerun failed with the same closed browser result:
+  `signaling-failed`, peer `new`, ICE `new`, gathering `complete`, signaling
+  `stable`. A bounded Vapi query found zero calls for the stack-owned assistant
+  in the attempt window. Full gathering therefore did not correct the failure
+  and is rejected as the cause; the qualification overlay has been restored to
+  its prior trickle-ICE posture.
+- Correlated runtime evidence identified the earlier causal boundary. At
+  `2026-08-13T13:10:28.290642Z`, the rvoip client INVITE transaction emitted
+  exactly one `Failed to send initial request from Calling state` with the
+  closed `operation_error` category. It then surfaced as one transaction-runner
+  enter-state failure and one session state-machine failure. No Vapi call
+  record existed because the outbound SIP request never reached Vapi.
+- An independent, secret-free SSM probe ran on the retained EC2 and emitted
+  only closed facts. DNS for the US Vapi SIP host passed, but TCP to its
+  documented TLS listener on port 5061 timed out before a socket or TLS session
+  was established: `dns=true`, `tcp=false`, `tls=false`, `category=timeout`.
+  This reproduces the rvoip failure without Bridgefu, WebRTC, SIP parsing, SDP,
+  authentication, or Vapi provisioning.
+- Root cause in the deployed template: the Bridgefu gateway security group
+  allowed outbound TCP/443 and UDP, but no outbound TCP/5061. Its inbound 5061
+  rules made the security posture look symmetric during prior reviews. The
+  customer call path is inbound Vapi -> Bridgefu and does not need this new
+  egress; the corrected Bridgefu Web SDK qualification path deliberately
+  originates Bridgefu -> Vapi and does.
+- The code fix adds two qualification-only `AWS::EC2::SecurityGroupEgress`
+  resources for TCP/5061 to Vapi's published US signaling addresses
+  `44.229.228.186/32` and `44.238.177.138/32`. It does not add EU support or
+  broaden the customer runtime security group. The Web overlay now dials the
+  documented US TLS endpoint as `sip:<owned-user>@sip.vapi.ai:5061;transport=tls`
+  and requires the independent Bridgefu event to prove actual TLS while keeping
+  the URI scheme classified separately as `sip`.
+- A new EC2-side DNS/TCP/TLS preflight runs before any temporary Vapi phone,
+  tool, prompt overlay, or runtime secret is created. It retains no resolved
+  address, certificate, socket error, SIP URI, credential, or remote response;
+  any result other than all three closed booleans true stops the Web gate.
+- One focused test command incorrectly used an unsupported dotted module path
+  and ran zero tests. The supported discovery rerun exposed one fixture value
+  mismatch, which was corrected without changing implementation behavior.
+  Final local results: **267 unit tests passed**, deterministic release
+  validation including rendered CloudFormation lint passed, Ruff passed, both
+  browser Node syntax checks passed, and `git diff --check` passed. No release
+  workflow, SIP-source smoke, Virginia run, candidate, or publication ran.

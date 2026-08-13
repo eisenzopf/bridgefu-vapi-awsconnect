@@ -299,6 +299,38 @@ class ReleaseContractTests(unittest.TestCase):
                 nested[name],
             )
 
+    def test_web_sdk_smoke_owns_exact_us_vapi_tls_egress(self):
+        qualification = (
+            ROOT / "qualification" / "cloudformation" / "template.yaml"
+        ).read_text()
+        customer_runtime = (
+            ROOT / "cloudformation" / "nested" / "runtime.yaml"
+        ).read_text()
+        for logical_id, next_logical_id, cidr in (
+            (
+                "QualificationVapiTlsEgress1",
+                "QualificationVapiTlsEgress2",
+                "44.229.228.186/32",
+            ),
+            (
+                "QualificationVapiTlsEgress2",
+                "DirectHandoffLogGroup",
+                "44.238.177.138/32",
+            ),
+        ):
+            resource = qualification.split(f"  {logical_id}:\n", 1)[1].split(
+                f"\n  {next_logical_id}:\n", 1
+            )[0]
+            self.assertIn("Type: AWS::EC2::SecurityGroupEgress", resource)
+            self.assertIn(
+                "GroupId: !GetAtt Candidate.Outputs.BridgefuGatewaySecurityGroupId",
+                resource,
+            )
+            self.assertIn("FromPort: 5061", resource)
+            self.assertIn("ToPort: 5061", resource)
+            self.assertIn(f"CidrIp: {cidr}", resource)
+        self.assertNotIn("QualificationVapiTlsEgress", customer_runtime)
+
     def test_release_contains_versioned_quick_create_links_and_no_secrets(self):
         with tempfile.TemporaryDirectory() as directory:
             subprocess.run(

@@ -48,6 +48,15 @@ CLEANUP_RESULT_KEYS = {
     "bridgefu_ready",
     "redacted",
 }
+VAPI_TLS_RESULT_KEYS = {
+    "schema_version",
+    "producer",
+    "dns",
+    "tcp",
+    "tls",
+    "category",
+    "redacted",
+}
 
 
 class WebRuntimeContractError(ValueError):
@@ -65,6 +74,68 @@ def validation_environment(base: Mapping[str, str]) -> dict[str, str]:
         }
     )
     return result
+
+
+def vapi_tls_reachability_script() -> str:
+    """Prove the retained EC2 can reach Vapi's US TLS listener.
+
+    The remote program emits only closed booleans and a fixed category. It
+    never prints resolved addresses, certificates, socket errors, or remote
+    data, and it runs before any temporary Vapi resource is created.
+    """
+    return r"""set -euo pipefail
+python3 - <<'PY'
+import json
+import socket
+import ssl
+
+result = {
+    "schema_version": 1,
+    "producer": "bridgefu-vapi-tls-reachability@1",
+    "dns": False,
+    "tcp": False,
+    "tls": False,
+    "category": "unknown",
+    "redacted": True,
+}
+try:
+    socket.getaddrinfo("sip.vapi.ai", 5061, type=socket.SOCK_STREAM)
+    result["dns"] = True
+    connection = socket.create_connection(("sip.vapi.ai", 5061), timeout=12)
+    result["tcp"] = True
+    context = ssl.create_default_context()
+    with context.wrap_socket(connection, server_hostname="sip.vapi.ai"):
+        result["tls"] = True
+    result["category"] = "passed"
+except socket.gaierror:
+    result["category"] = "dns-error"
+except socket.timeout:
+    result["category"] = "timeout"
+except ssl.SSLError:
+    result["category"] = "tls-error"
+except OSError:
+    result["category"] = "socket-error"
+print(json.dumps(result, separators=(",", ":"), sort_keys=True))
+PY"""
+
+
+def validate_vapi_tls_reachability(value: Any) -> Mapping[str, Any]:
+    expected = {
+        "schema_version": 1,
+        "producer": "bridgefu-vapi-tls-reachability@1",
+        "dns": True,
+        "tcp": True,
+        "tls": True,
+        "category": "passed",
+        "redacted": True,
+    }
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != VAPI_TLS_RESULT_KEYS
+        or value != expected
+    ):
+        raise WebRuntimeContractError("Vapi TLS reachability preflight failed")
+    return value
 
 
 def build_runtime_config(
@@ -98,7 +169,11 @@ def build_runtime_config(
             "Bridgefu Web runtime public address is invalid"
         ) from error
 
-    target = f"sips:{vapi_sip_username}@sip.vapi.ai;transport=tls"
+    # Vapi publishes its US TLS listener on 5061. Use SIP-over-TLS rather
+    # than SIPS here because Vapi's response Contact is not guaranteed to
+    # preserve the SIPS scheme. Transport security is proved independently
+    # from the URI scheme by Bridgefu's redacted wire evidence.
+    target = f"sip:{vapi_sip_username}@sip.vapi.ai:5061;transport=tls"
     signaling_origin = f"wss://{sip_hostname}:{signaling_port}"
     signing_uri = f"{signaling_origin}/webrtc"
     connect_destination = {
@@ -252,12 +327,7 @@ def build_runtime_config(
                 "nat_1to1_candidate_type": "host",
                 "gather_timeout_secs": 10,
                 "connection_timeout_secs": 30,
-                # The retained live trace proved that rvoip 0.3.7 can consume
-                # the browser's trickled candidates but its WSS answerer does
-                # not reliably deliver its own gathered candidate back to the
-                # browser. Full gathering embeds the stack's public candidate
-                # in the SDP answer and removes that signaling race.
-                "trickle_ice": False,
+                "trickle_ice": True,
             },
         },
         "persistence": {

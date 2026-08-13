@@ -2025,7 +2025,7 @@ class QualificationControllerTests(unittest.TestCase):
                             "event": "bridgefu_vapi_source_security_evidence",
                             "correlation_fingerprint": fingerprint,
                             "leg": "bridgefu-to-vapi",
-                            "uri_scheme": "sips",
+                            "uri_scheme": "sip",
                             "signaling_transport": "tls",
                             "media_profile": "RTP/AVP",
                             "media_keying": "none",

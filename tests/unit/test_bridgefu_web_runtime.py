@@ -67,7 +67,19 @@ class BridgefuWebRuntimeTests(unittest.TestCase):
             value["api"]["route_attachments"]["webrtc"]["signaling_uri"],
             "wss://bfq-runtime-test.vapi-internal.com:18443/webrtc",
         )
-        self.assertIs(value["generic_bridge"]["webrtc"]["trickle_ice"], False)
+        self.assertEqual(value["generic_bridge"]["sip_bind"], "127.0.0.1:5070")
+        target = "sip:bfq_runtime_test@sip.vapi.ai:5061;transport=tls"
+        self.assertEqual(
+            value["api"]["routes"][RUNTIME.WEB_ROUTE_ID]["destination"]["endpoint"][
+                "config"
+            ]["uri"],
+            target,
+        )
+        self.assertEqual(
+            value["sip_profiles"]["qualification-vapi-assistant"]["allowed_targets"],
+            [target],
+        )
+        self.assertIs(value["generic_bridge"]["webrtc"]["trickle_ice"], True)
 
     @unittest.skipUnless(BRIDGEFU.is_file(), "pinned Bridgefu binary is unavailable")
     def test_exact_pinned_bridgefu_accepts_the_generated_overlay(self):
@@ -119,7 +131,8 @@ class BridgefuWebRuntimeTests(unittest.TestCase):
             ),
         )
         cleanup = RUNTIME.cleanup_script(execution_id="bfq-runtime-test")
-        for script in (install, cleanup):
+        reachability = RUNTIME.vapi_tls_reachability_script()
+        for script in (install, cleanup, reachability):
             self.assertNotIn("vapi-password", script)
             result = subprocess.run(
                 ["bash", "-n"],
@@ -155,6 +168,12 @@ class BridgefuWebRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(install.count("printf '%s\\n' '{\"schema_version\":1"), 1)
 
+        reachability_python = reachability.split("python3 - <<'PY'\n", 1)[1].split(
+            "\nPY", 1
+        )[0]
+        compile(reachability_python, "bridgefu-vapi-tls-reachability", "exec")
+        self.assertNotIn("print(", reachability_python.rsplit("print(", 1)[0])
+
     def test_closed_runtime_results_are_exact(self):
         install = {
             "schema_version": 1,
@@ -176,9 +195,35 @@ class BridgefuWebRuntimeTests(unittest.TestCase):
         }
         self.assertEqual(RUNTIME.validate_install_result(install), install)
         self.assertEqual(RUNTIME.validate_cleanup_result(cleanup), cleanup)
+        reachability = {
+            "schema_version": 1,
+            "producer": "bridgefu-vapi-tls-reachability@1",
+            "dns": True,
+            "tcp": True,
+            "tls": True,
+            "category": "passed",
+            "redacted": True,
+        }
+        self.assertEqual(
+            RUNTIME.validate_vapi_tls_reachability(reachability), reachability
+        )
         changed = dict(cleanup, bridgefu_ready=False)
         with self.assertRaises(RUNTIME.WebRuntimeContractError):
             RUNTIME.validate_cleanup_result(changed)
+        with self.assertRaises(RUNTIME.WebRuntimeContractError):
+            RUNTIME.validate_vapi_tls_reachability(
+                dict(reachability, tcp=False, tls=False, category="timeout")
+            )
+
+    def test_vapi_tls_preflight_runs_before_temporary_resource_creation(self):
+        source = (ROOT / "qualification" / "controller.py").read_text()
+        web_smoke = source.split("    def _web_smoke(\n", 1)[1].split(
+            "\n    def cleanup_sip_transients", 1
+        )[0]
+        self.assertLess(
+            web_smoke.index("vapi_tls_reachability_script"),
+            web_smoke.index("provision_temporary_vapi_phone"),
+        )
 
 
 if __name__ == "__main__":

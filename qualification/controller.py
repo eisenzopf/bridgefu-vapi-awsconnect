@@ -2196,7 +2196,10 @@ def verify_log_evidence(
     if not re.fullmatch(r"[0-9a-f]{12}", fingerprint):
         raise QualificationError("correlation fingerprint is invalid")
     if scenario == WEB_SCENARIO:
-        expected_uri_scheme = "sips"
+        # Vapi's documented TLS listener is addressed as
+        # sip:...:5061;transport=tls. URI scheme and transport are separate
+        # evidence: the URI remains SIP while the trace must prove actual TLS.
+        expected_uri_scheme = "sip"
         expected_event = VAPI_SOURCE_SECURITY_EVENT
         expected_leg = "bridgefu-to-vapi"
         expected_message = "established Bridgefu Vapi source leg"
@@ -4312,6 +4315,11 @@ class Controller:
         if self.vapi is None:
             raise QualificationError("Vapi client is unavailable")
         scenario = WEB_SCENARIO
+        reachability = self.run_web_runtime_ssm(
+            bridgefu_web_runtime.vapi_tls_reachability_script(),
+            "Vapi TLS reachability preflight",
+        )
+        bridgefu_web_runtime.validate_vapi_tls_reachability(reachability)
         authentication, phone_id, _ = self.provision_temporary_vapi_phone()
         self.install_direct_assistant_overlay()
         signaling_port = self.reserve_local_port()

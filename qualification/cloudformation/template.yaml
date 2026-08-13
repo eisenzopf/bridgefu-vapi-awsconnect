@@ -158,6 +158,30 @@ Resources:
             Action: secretsmanager:GetSecretValue
             Resource: !Ref DirectVapiSipAuthSecret
 
+  # The customer path is Vapi -> Bridgefu and needs only inbound 5061. The
+  # Bridgefu Web SDK qualification source deliberately originates the first
+  # SIP leg from Bridgefu to Vapi, so the disposable outer stack owns the two
+  # exact US Vapi TLS egress rules needed only for that smoke.
+  QualificationVapiTlsEgress1:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !GetAtt Candidate.Outputs.BridgefuGatewaySecurityGroupId
+      IpProtocol: tcp
+      FromPort: 5061
+      ToPort: 5061
+      CidrIp: 44.229.228.186/32
+      Description: Qualification-only TLS to US Vapi signaling 1
+
+  QualificationVapiTlsEgress2:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !GetAtt Candidate.Outputs.BridgefuGatewaySecurityGroupId
+      IpProtocol: tcp
+      FromPort: 5061
+      ToPort: 5061
+      CidrIp: 44.238.177.138/32
+      Description: Qualification-only TLS to US Vapi signaling 2
+
   DirectHandoffLogGroup:
     Type: AWS::Logs::LogGroup
     DeletionPolicy: Delete
