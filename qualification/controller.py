@@ -2870,6 +2870,7 @@ class Controller:
         self.direct_tool_prompt_sha256: str | None = None
         self.direct_tool_desired: dict[str, Any] | None = None
         self.direct_assistant_overlay_installed = False
+        self.direct_context_correlation_id: str | None = None
         self.web_runtime_object_key: str | None = None
         self.web_runtime_cleanup_required = False
         self.web_runtime_restoration_passed = False
@@ -4218,6 +4219,68 @@ class Controller:
             input_text=json.dumps(item, separators=(",", ":"), sort_keys=True),
             timeout=120,
         )
+        self.direct_context_correlation_id = correlation_id
+
+    def cleanup_direct_context(self) -> list[str]:
+        correlation_id = getattr(self, "direct_context_correlation_id", None)
+        if correlation_id is None:
+            return []
+        if not re.fullmatch(r"bf1_[A-Za-z0-9_-]{43}", correlation_id):
+            return ["Bridgefu direct context ownership proof is invalid"]
+        key = json.dumps(
+            {"correlation_id": {"S": correlation_id}},
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        try:
+            self.runner.run(
+                [
+                    "aws",
+                    "dynamodb",
+                    "delete-item",
+                    "--region",
+                    self.args.region,
+                    "--table-name",
+                    self.outputs["HandoffTableName"],
+                    "--key",
+                    "file:///dev/stdin",
+                    "--return-values",
+                    "NONE",
+                    "--output",
+                    "json",
+                ],
+                input_text=key,
+                timeout=120,
+            )
+            raw = self.runner.run(
+                [
+                    "aws",
+                    "dynamodb",
+                    "get-item",
+                    "--region",
+                    self.args.region,
+                    "--table-name",
+                    self.outputs["HandoffTableName"],
+                    "--key",
+                    "file:///dev/stdin",
+                    "--consistent-read",
+                    "--projection-expression",
+                    "correlation_id",
+                    "--output",
+                    "json",
+                ],
+                input_text=key,
+                timeout=120,
+            )
+            value = json.loads(raw)
+            if not isinstance(value, Mapping) or "Item" in value:
+                raise QualificationError(
+                    "Bridgefu direct context deletion was not verified"
+                )
+            self.direct_context_correlation_id = None
+            return []
+        except (QualificationError, json.JSONDecodeError):
+            return ["Bridgefu direct context deletion failed"]
 
     def web_smoke(
         self, site: Path, site_digest: str, storage: Path, correlation_key: str
@@ -4228,6 +4291,7 @@ class Controller:
         except BaseException as error:
             primary_error = error
         cleanup_errors = self.stop_active_work()
+        cleanup_errors.extend(self.cleanup_direct_context())
         cleanup_errors.extend(self.cleanup_web_runtime())
         cleanup_errors.extend(self.cleanup_direct_assistant_overlay())
         cleanup_errors.extend(self.cleanup_sip_transients())
@@ -4947,6 +5011,7 @@ class Controller:
 
     def cleanup(self) -> dict[str, Any]:
         errors = self.stop_active_work()
+        errors.extend(self.cleanup_direct_context())
         errors.extend(self.cleanup_web_runtime())
         try:
             self.initialize_cleanup_vapi_verifier()

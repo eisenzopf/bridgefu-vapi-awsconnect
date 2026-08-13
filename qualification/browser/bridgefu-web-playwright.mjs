@@ -79,6 +79,29 @@ const DTMF_START_MS = 6_000;
 const DTMF_DURATION_MS = 350;
 const PROMPT_START_MS = 1_000;
 const PROMPT_SAMPLE_RATE = 8_000;
+const STARTUP_ERROR_TYPES = new Set([
+  "invalid-attachment",
+  "invalid-credential",
+  "invalid-state",
+  "media-unavailable",
+  "signaling-failed",
+  "protocol-error",
+  "timeout",
+  "data-channel-unavailable",
+  "dtmf-unavailable",
+  "unknown",
+]);
+const PEER_CONNECTION_STATES = new Set([
+  "new", "connecting", "connected", "disconnected", "failed", "closed",
+]);
+const ICE_CONNECTION_STATES = new Set([
+  "new", "checking", "connected", "completed", "disconnected", "failed", "closed",
+]);
+const ICE_GATHERING_STATES = new Set(["new", "gathering", "complete"]);
+const SIGNALING_STATES = new Set([
+  "stable", "have-local-offer", "have-remote-offer", "have-local-pranswer",
+  "have-remote-pranswer", "closed",
+]);
 
 class HarnessError extends Error {}
 
@@ -592,10 +615,32 @@ function sourceDtmfSchedule(captureStartedAtMs, triggerAtMs, observedAtMs) {
 }
 
 async function applicationSnapshot(page, nonce) {
-  return page.evaluate(
+  const value = await page.evaluate(
     (qualificationNonce) =>
       globalThis.__BRIDGEFU_RECIPE_QUALIFICATION__?.snapshot(qualificationNonce) ?? null,
     nonce,
+  );
+  if (value === null) return null;
+  if (
+    !value || typeof value !== "object" || Array.isArray(value)
+    || (value.errorType !== null && !STARTUP_ERROR_TYPES.has(value.errorType))
+    || !PEER_CONNECTION_STATES.has(value.peerConnectionState)
+    || !ICE_CONNECTION_STATES.has(value.iceConnectionState)
+    || !ICE_GATHERING_STATES.has(value.iceGatheringState)
+    || !SIGNALING_STATES.has(value.signalingState)
+  ) {
+    fail("Bridgefu WebRTC application returned invalid diagnostic state");
+  }
+  return value;
+}
+
+function failStartup(value) {
+  if (value?.status !== "failed") return;
+  const errorType = value.errorType ?? "unknown";
+  fail(
+    `Bridgefu WebRTC call failed error=${errorType} peer=${value.peerConnectionState} `
+    + `ice=${value.iceConnectionState} gathering=${value.iceGatheringState} `
+    + `signaling=${value.signalingState}`,
   );
 }
 
@@ -774,6 +819,7 @@ async function observe(options) {
     const initial = await waitUntil(
       async () => {
         const value = await applicationSnapshot(page, nonce);
+        failStartup(value);
         return value?.callStartObserved && typeof value.callId === "string" ? value : false;
       },
       Math.min(timeoutMs, 90_000),

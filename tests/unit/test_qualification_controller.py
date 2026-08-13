@@ -1870,6 +1870,35 @@ class QualificationControllerTests(unittest.TestCase):
         item = json.loads(controller.runner.input_text)
         self.assertEqual(item["correlation_id"], {"S": correlation})
         self.assertEqual(item["direct_token_id"], {"S": token})
+        self.assertEqual(controller.direct_context_correlation_id, correlation)
+
+    def test_direct_context_cleanup_uses_private_stdin_and_verifies_absence(self):
+        class Runner:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, arguments, *, input_text=None, timeout=60, **_kwargs):
+                self.calls.append((arguments, input_text, timeout))
+                return "{}"
+
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.args = SimpleNamespace(region="us-west-2")
+        controller.outputs = {"HandoffTableName": "bridgefu-bfq-test1234-handoffs"}
+        controller.runner = Runner()
+        correlation = "bf1_" + "a" * 43
+        controller.direct_context_correlation_id = correlation
+
+        self.assertEqual(controller.cleanup_direct_context(), [])
+        self.assertIsNone(controller.direct_context_correlation_id)
+        self.assertEqual(len(controller.runner.calls), 2)
+        for arguments, private_stdin, _timeout in controller.runner.calls:
+            self.assertIn("file:///dev/stdin", arguments)
+            self.assertNotIn(correlation, arguments)
+            self.assertEqual(
+                json.loads(private_stdin), {"correlation_id": {"S": correlation}}
+            )
+        self.assertIn("delete-item", controller.runner.calls[0][0])
+        self.assertIn("get-item", controller.runner.calls[1][0])
 
     def test_secret_write_uses_stdin_and_never_places_secret_on_argv(self):
         class Runner:

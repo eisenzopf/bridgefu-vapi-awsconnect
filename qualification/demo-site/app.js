@@ -21,6 +21,10 @@ const safeState = {
   remoteAudioTracks: 0,
   handoffStates: [],
   errorType: null,
+  peerConnectionState: "new",
+  iceConnectionState: "new",
+  iceGatheringState: "new",
+  signalingState: "stable",
 };
 window.__BRIDGEFU_RECIPE_TEST__ = safeState;
 
@@ -37,6 +41,34 @@ function setStatus(status, text) {
 function safeErrorType(value) {
   const normalized = String(value ?? "unknown").toLowerCase();
   return /^[a-z0-9._-]{1,64}$/.test(normalized) ? normalized : "unknown";
+}
+
+function capturePeerStates() {
+  const peer = client?.peerConnection;
+  if (!peer) return;
+  const allowed = {
+    peerConnectionState: new Set([
+      "new", "connecting", "connected", "disconnected", "failed", "closed",
+    ]),
+    iceConnectionState: new Set([
+      "new", "checking", "connected", "completed", "disconnected", "failed", "closed",
+    ]),
+    iceGatheringState: new Set(["new", "gathering", "complete"]),
+    signalingState: new Set([
+      "stable", "have-local-offer", "have-remote-offer", "have-local-pranswer",
+      "have-remote-pranswer", "closed",
+    ]),
+  };
+  const observed = {
+    peerConnectionState: peer.connectionState,
+    iceConnectionState: peer.iceConnectionState,
+    iceGatheringState: peer.iceGatheringState,
+    signalingState: peer.signalingState,
+  };
+  for (const [name, values] of Object.entries(allowed)) {
+    const value = observed[name];
+    if (values.has(value)) safeState[name] = value;
+  }
 }
 
 function validQualificationNonce(value) {
@@ -57,6 +89,7 @@ function installQualificationControl(config) {
   window.__BRIDGEFU_RECIPE_QUALIFICATION__ = Object.freeze({
     snapshot(nonce) {
       if (!authorize(nonce)) return null;
+      capturePeerStates();
       return {
         callId: attachment?.callId ?? null,
         serverHandoffTriggered: state.serverHandoffTriggered,
@@ -65,6 +98,11 @@ function installQualificationControl(config) {
         callEndObserved: safeState.callEndObserved,
         handoffStates: [...safeState.handoffStates],
         status: safeState.status,
+        errorType: safeState.errorType,
+        peerConnectionState: safeState.peerConnectionState,
+        iceConnectionState: safeState.iceConnectionState,
+        iceGatheringState: safeState.iceGatheringState,
+        signalingState: safeState.signalingState,
       };
     },
     markServerHandoffTriggered(nonce) {

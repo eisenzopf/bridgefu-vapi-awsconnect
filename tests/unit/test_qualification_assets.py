@@ -576,6 +576,22 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("dtmf_source_to_agent_frames_sent", sip)
         self.assertIn('"dtmf_source_to_agent": {"const": true}', evidence_schema)
 
+    def test_web_smoke_reports_only_closed_startup_failure_categories(self):
+        demo = (QUALIFICATION / "demo-site" / "app.js").read_text()
+        web = (QUALIFICATION / "browser" / "bridgefu-web-playwright.mjs").read_text()
+        for field in (
+            "errorType",
+            "peerConnectionState",
+            "iceConnectionState",
+            "iceGatheringState",
+            "signalingState",
+        ):
+            self.assertIn(field, demo)
+            self.assertIn(field, web)
+        self.assertIn("STARTUP_ERROR_TYPES", web)
+        self.assertIn("failStartup(value)", web)
+        self.assertIn("Bridgefu WebRTC call failed error=", web)
+
     def test_connect_available_is_selected_before_either_source_starts(self):
         controller = (QUALIFICATION / "controller.py").read_text()
         web = controller.split("    def web_smoke(", 1)[1].split(
