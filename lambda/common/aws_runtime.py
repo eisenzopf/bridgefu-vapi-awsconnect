@@ -395,7 +395,7 @@ class DynamoHandoffStore:
                 ),
                 ConditionExpression=(
                     "direct_token_id = :token AND expires_at > :updated AND "
-                    "#status IN (:mapped, :prepared) AND "
+                    "#status IN (:mapped, :prepared, :reserved) AND "
                     "(attribute_not_exists(content_hash) OR content_hash = :content) AND "
                     "(attribute_not_exists(vapi_call_fingerprint) OR "
                     "vapi_call_fingerprint = :identity)"
@@ -406,6 +406,7 @@ class DynamoHandoffStore:
                     ":updated": {"N": str(updated_at)},
                     ":mapped": {"S": "MAPPED"},
                     ":prepared": {"S": "PREPARED"},
+                    ":reserved": {"S": "RESERVED"},
                     ":values": _encode_value(values),
                     ":content": {"S": content_hash},
                     ":identity": {"S": identity_hash},

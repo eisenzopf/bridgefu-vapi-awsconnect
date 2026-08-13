@@ -199,6 +199,27 @@ class AwsRuntimeTests(unittest.TestCase):
             aws_runtime._decode_item(client.item)["handoff_status"], "RESERVED"
         )
 
+        # Vapi may retry an already accepted webhook. The same token, call
+        # identity, and values must replay the exact Bridgefu replacement
+        # receipt rather than turning the successful handoff into a 409.
+        replayed = store.prepare_direct(
+            "bf1_" + "a" * 43,
+            "token_001",
+            VapiIdentity("org_001", "vapi_call_001"),
+            {"customer_name": "Synthetic"},
+            1_800_000_002,
+        )
+        self.assertEqual(replayed, result)
+        self.assertIn(":reserved", client.last_update["ConditionExpression"])
+        self.assertEqual(
+            client.last_update["ExpressionAttributeValues"][":reserved"],
+            {"S": "RESERVED"},
+        )
+        store.mark_direct_started("bf1_" + "a" * 43, 1_800_000_003)
+        self.assertEqual(
+            aws_runtime._decode_item(client.item)["handoff_status"], "RESERVED"
+        )
+
     def test_bridgefu_replace_uses_exact_server_route_and_bounded_response(self):
         client = aws_runtime.BridgefuRouteClient(
             "https://control.example.test",
