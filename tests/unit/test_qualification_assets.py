@@ -87,6 +87,17 @@ class QualificationAssetTests(unittest.TestCase):
             "npm --prefix target/pinned-bridgefu/sdk/typescript test", workflow
         )
 
+    def test_manual_qualification_gate_restores_the_pinned_browser(self):
+        makefile = (ROOT / "Makefile").read_text()
+        npm_ci = "npm --prefix qualification ci --ignore-scripts"
+        browser_install = (
+            "PLAYWRIGHT_BROWSERS_PATH=0 npm --prefix qualification exec "
+            "playwright install chromium"
+        )
+        self.assertIn(npm_ci, makefile)
+        self.assertIn(browser_install, makefile)
+        self.assertLess(makefile.index(npm_ci), makefile.index(browser_install))
+
     def test_bridgefu_web_demo_site_is_owned_and_built_by_this_repository(self):
         controller = (QUALIFICATION / "controller.py").read_text()
         package = json.loads((QUALIFICATION / "package.json").read_text())

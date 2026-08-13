@@ -1506,3 +1506,20 @@ and full 226-test Python suite passed.
   started. The next permitted live action is exactly one retained Oregon Web
   SDK smoke with this STUN-bound attachment; the SIP-source smoke remains
   blocked until it passes.
+- The first post-STUN invocation stopped before `web_smoke` while launching the
+  Amazon Connect authentication browser. It created no Vapi call or WebRTC
+  attempt and is not counted as the permitted STUN-bound Web retry. Exact local
+  cause: `make qualification-test` runs `npm ci --ignore-scripts`, which removes
+  Playwright's package-local Chromium. The auth harness intentionally resolves
+  that package-local browser, while the manual Make target previously restored
+  only the Node packages. The release workflows already installed Chromium
+  after `npm ci`; the direct/manual gate did not.
+- `make qualification-test` now installs the exact lockfile-selected Playwright
+  Chromium immediately after `npm ci`. A source contract locks that ordering.
+  The corrected target passed all Rust tests, formatting, Clippy, browser
+  installation, and both Node syntax checks. After that exact target completed,
+  the local STUN preflight again produced one public IPv4/UDP server-reflexive
+  candidate, and an isolated retained Connect authentication probe passed with
+  a private storage-state file. Neither probe created a Vapi resource or call.
+  Exactly one retained STUN-bound Web SDK smoke remains permitted; SIP remains
+  blocked until it passes.
