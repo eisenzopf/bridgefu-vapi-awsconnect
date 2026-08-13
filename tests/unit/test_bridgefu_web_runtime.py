@@ -30,6 +30,26 @@ def runtime_config() -> dict:
 
 
 class BridgefuWebRuntimeTests(unittest.TestCase):
+    def test_local_validation_environment_uses_only_synthetic_placeholders(self):
+        value = RUNTIME.validation_environment(
+            {
+                "PATH": "/usr/bin",
+                "BRIDGEFU_API_BEARER_TOKEN": "customer-bearer",
+                "BRIDGEFU_CONTROL_HMAC_KEY": "customer-control",
+                RUNTIME.VAPI_PASSWORD_ENV: "customer-vapi-password",
+            }
+        )
+        self.assertEqual(value["PATH"], "/usr/bin")
+        self.assertEqual(
+            {
+                value["BRIDGEFU_API_BEARER_TOKEN"],
+                value["BRIDGEFU_CONTROL_HMAC_KEY"],
+                value[RUNTIME.VAPI_PASSWORD_ENV],
+            },
+            {RUNTIME.LOCAL_VALIDATION_SECRET},
+        )
+        self.assertNotIn("customer", "".join(value.values()))
+
     def test_config_is_canonical_secret_free_and_owns_exact_routes(self):
         value = runtime_config()
         encoded = RUNTIME.encode_runtime_config(value)

@@ -64,7 +64,7 @@ and fresh regional qualifications pass.
 | Repository | `eisenzopf/bridgefu-vapi-awsconnect` |
 | Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
 | Branch | `codex/staged-vapi-qualification` |
-| Implementation commit | `11a1ae62add89fc3e7955eaa80cd245cc88d8d49` |
+| Implementation commit | `99c172bdef9c6ebac8fcbe95fa6756d75c8c82c3` |
 | Local delta | Status-ledger updates only; implementation source is committed and pushed |
 | Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
 | PR state at last update | Draft, open, not merged |
@@ -218,7 +218,7 @@ before updating these states.
 | Qualification plan | `docs/maintainers/CLOUDFORMATION_RELEASE_QUALIFICATION_PLAN.md` | Committed and pushed |
 | Status ledger | `docs/maintainers/CLOUDFORMATION_RELEASE_QUALIFICATION_STATUS.md` | Committed and pushed; this update is local pending the next implementation commit |
 | Bridgefu implementation commit | `2fb2eaede9420c7d6980c5e0cfeb74eb786a2add` | Pushed, unmerged |
-| Distribution implementation commit | `19854f1fb4fd2a48571584a5a628067952ebf585` | Pushed, unmerged |
+| Distribution implementation commit | `99c172bdef9c6ebac8fcbe95fa6756d75c8c82c3` | Pushed, unmerged |
 | Local test results | Current task execution logs | Passed as listed above |
 | Remote template-body validation | AWS account `225478700523`, both supported regions | Passed against current branch render |
 | Oregon A/B SIP/SDP traces | Retained diagnostic execution `bfq-d19854f1-1` | Passed; `sip:...;transport=tls` produced actual TLS plus RTP/AVP in optional mode |
@@ -1113,3 +1113,69 @@ and full 226-test Python suite passed.
   and blocks stack deletion if cleanup cannot be proven. Full unit suite:
   **259 passed**; Ruff and diff checks passed. No live Vapi resilience mutation
   was attempted before this fix.
+- The cleanup correction was committed and pushed as distribution commit
+  `99c172bdef9c6ebac8fcbe95fa6756d75c8c82c3`. The retained Web, SIP, and Vapi
+  resilience wrappers identify that exact diagnostic harness source.
+- The exact Bridgefu `2fb2eaed` source is compiling on retained ARM instance
+  `i-0aa9e3747232e17dd`. The remote build checked the Git commit and pinned
+  Cargo.lock SHA-256 before compilation; observed rvoip paths are crates.io
+  `0.3.7`. The currently installed service remains active and `/readyz` remains
+  healthy; no binary replacement or live call has occurred yet.
+- The first clean ARM build command reached the AWS-RunShellScript default
+  3,600-second execution limit while compiling the final Bridgefu executable.
+  This was an orchestration timeout, not a Rust compiler failure: all pinned
+  dependencies had compiled, the target cache remained intact, no candidate
+  binary was installed, and the existing service stayed active and ready. The
+  same verified source/cache is being resumed with an explicit 7,200-second
+  SSM document execution timeout; no dependency, configuration, or runtime
+  input changed.
+- The resumed exact build succeeded. Candidate binary SHA-256 is
+  `f67543541105ff7a2e2b39774e86ba495d11248d09c08c49059b96feccf84bff`;
+  Cargo reported a successful optimized release build of Bridgefu v0.9.0.
+- The prior installed binary SHA-256
+  `8bf8fbde0a7dd3c67f3e7e301fd2ef8dc79e3e6c3b4dc69c43db06dc5feace3d`
+  was copied to the root-only diagnostic backup, the candidate was installed
+  atomically, and Bridgefu was restarted once. Systemd is active, `/readyz`
+  passed after startup, the installed digest matches `f6754354…`, and the
+  backup digest remains exact. No live call has run against the new runtime
+  yet; the next gate is the independent direct mandatory-SRTP control.
+- The first post-install direct-control attempt stopped before browser
+  navigation or any call. Exact root cause: the local `make qualification-test`
+  gate ran `npm ci`, which correctly removed the previously downloaded
+  Playwright browser; the harness's pinned Chromium executable path therefore
+  did not exist and browser launch failed. This is a local prerequisite defect,
+  not a Bridgefu, SIP, SRTP, Connect, or Vapi call failure. The candidate and
+  remote workflows already install pinned Chromium explicitly. The retained
+  workstation will now run that same pinned install command and verify the
+  executable before retrying this gate.
+- Pinned Playwright Chromium 151.0.7922.34 was installed with the same command
+  used by the candidate workflow and its exact executable path was verified.
+- The direct mandatory-SRTP control then passed on runtime digest `f6754354…`.
+  All 24 closed checks are true: agent readiness/contact/media/hangup, SIP 200,
+  ACK, exact one correlation header, DNS/SIPS/TLS Contact, actual TLS, SIPS,
+  RTP/SAVP, SDES-SRTP, installed contexts, answer, private DNS, terminal SSM
+  commands, absent probe/run artifacts, restored configuration, and Bridgefu
+  readiness. Evidence is in
+  `target/diagnostic/bfq-d19854f1-1/qualification/`
+  `direct-secure-control-99c172b/direct-secure-control.json`.
+- The first corrected Bridgefu browser SDK smoke exited without a pass
+  artifact. Its retained-only wrapper phase was outside the production failure
+  evidence schema, so the wrapper's best-effort evidence call wrote no receipt
+  and the sanitized error was not preserved. This is a diagnostic-wrapper
+  observability defect; no source result is claimed. Cleanup audit proves zero
+  owner-equivalent temporary Vapi phones, absent temporary Web runtime, active
+  and ready Bridgefu with unchanged `f6754354…` digest, and only expected
+  versioned cleanup-journal history in S3. The retained wrappers now write a
+  bounded redacted failure receipt before the schema-bound best-effort capture.
+  The Web gate will be rerun; the SIP-source gate remains blocked on it.
+- The preserved Web failure receipt identifies the exact pre-call cause:
+  local `bridgefu validate` correctly resolved the generated runtime's
+  `env:` references, but the workstation subprocess lacked values that exist
+  only on EC2. The controller now supplies bounded synthetic placeholders for
+  bearer, control-HMAC, and Vapi SIP-password references only to that local
+  semantic-validation subprocess. The serialized/uploaded configuration still
+  contains only `env:` references; no real secret is copied into source,
+  arguments, config, logs, or evidence. Focused tests: **55 passed**; full unit
+  suite: **260 passed**; Ruff and local release validation passed. The failed
+  Web attempt placed no call and its temporary phone/runtime cleanup remained
+  proven.

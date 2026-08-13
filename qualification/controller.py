@@ -797,12 +797,14 @@ class CommandRunner:
         *,
         input_text: str | None = None,
         cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
         timeout: int = 900,
     ) -> str:
         try:
             result = subprocess.run(
                 arguments,
                 cwd=cwd,
+                env=dict(env) if env is not None else None,
                 input=input_text,
                 text=True,
                 capture_output=True,
@@ -4000,6 +4002,7 @@ class Controller:
                 "validate",
             ],
             cwd=self.args.bridgefu_checkout,
+            env=bridgefu_web_runtime.validation_environment(os.environ),
             timeout=1800,
         )
         bucket = self.outputs["ArtifactBucket"]

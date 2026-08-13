@@ -29,6 +29,7 @@ VAPI_CIDRS = ["44.229.228.186/32", "44.238.177.138/32"]
 WEB_ROUTE_ID = "vapi-direct-assistant"
 CONNECT_ROUTE_ID = "amazon-connect"
 VAPI_PASSWORD_ENV = "BRIDGEFU_QUALIFICATION_VAPI_SIP_PASSWORD"  # noqa: S105
+LOCAL_VALIDATION_SECRET = "bridgefu-local-validation-placeholder"  # noqa: S105
 INSTALL_RESULT_KEYS = {
     "schema_version",
     "producer",
@@ -51,6 +52,19 @@ CLEANUP_RESULT_KEYS = {
 
 class WebRuntimeContractError(ValueError):
     """The qualification runtime overlay crossed a closed boundary."""
+
+
+def validation_environment(base: Mapping[str, str]) -> dict[str, str]:
+    """Supply non-secret placeholders only for local semantic validation."""
+    result = dict(base)
+    result.update(
+        {
+            "BRIDGEFU_API_BEARER_TOKEN": LOCAL_VALIDATION_SECRET,
+            "BRIDGEFU_CONTROL_HMAC_KEY": LOCAL_VALIDATION_SECRET,
+            VAPI_PASSWORD_ENV: LOCAL_VALIDATION_SECRET,
+        }
+    )
+    return result
 
 
 def build_runtime_config(
