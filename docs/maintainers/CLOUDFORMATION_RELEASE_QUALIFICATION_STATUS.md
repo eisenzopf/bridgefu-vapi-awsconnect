@@ -64,7 +64,7 @@ and fresh regional qualifications pass.
 | Repository | `eisenzopf/bridgefu-vapi-awsconnect` |
 | Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
 | Branch | `codex/staged-vapi-qualification` |
-| Implementation commit | `ba033da642c16b62720e7d0ac78bad2029299265` |
+| Implementation commit | `66a871530f68fe5248e2e4905c4f1e62f33ccc00` |
 | Local delta | Status-ledger updates only; implementation source is committed and pushed |
 | Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
 | PR state at last update | Draft, open, not merged |
@@ -1297,3 +1297,18 @@ and full 226-test Python suite passed.
 - Cleanup passed before another retry: zero owned Vapi phone/tool/prompt, empty
   auth secret, zero Web-runtime versions, no media rule, and no retained Web
   runtime on EC2.
+- The corrected route contract passed on the next attempt. The harness created
+  the Bridgefu WebRTC route and then stopped at the required store-before-
+  transfer boundary: this AWS CLI also rejects DynamoDB
+  `--cli-input-json file:///dev/stdin`. The DynamoDB item was not written and
+  no Vapi call was created, so the ordering gate behaved correctly.
+- A non-mutating request to a nonexistent table proved this CLI accepts the
+  private item through `--item file:///dev/stdin`. The harness now puts the
+  non-secret table name and fixed condition expression on argv while keeping
+  the correlation ID, one-use token ID, and synthetic context only on stdin.
+  The regression proves those private values never enter argv and validates
+  the exact item shape. All **263** unit tests and local release validation
+  passed. The fix was committed and pushed as
+  `66a871530f68fe5248e2e4905c4f1e62f33ccc00`.
+- Cleanup passed again: zero owned Vapi phone, no media rule, empty auth secret,
+  and the retained handoff table still contains zero records.
