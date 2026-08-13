@@ -2071,7 +2071,7 @@ and full 226-test Python suite passed.
   production Web qualification intentionally did not trust the browser to
   restate the correlation. Consequently Amazon Connect started with only the
   route's static attributes.
-- Bridgefu commit `7b54a4fb7f83685af0ed59cd8dd578733615a316`
+- Bridgefu commit `cb2eb2d51010ff59f912aa293d255dfeb5ef6a8a`
   now gives the authenticated server-owned named-route context precedence for
   replacements, with the existing signed browser-context row retained as the
   fallback. The Amazon replacement integration now exercises that exact
@@ -2080,7 +2080,9 @@ and full 226-test Python suite passed.
   The focused end-to-end integration, 37 execution unit tests, formatting,
   Clippy with warnings denied, and diff checks passed. The commit is pushed to
   `origin/codex/vapi-tls-rtp-evidence` and the distribution source lock is
-  repinned to it.
+  repinned to it. The same regression also proves the private handoff token is
+  sent only to the authenticated Vapi SIP leg and is excluded from Amazon
+  Connect contact attributes.
 - The live trace also exposed an independent idempotency defect. Vapi retried
   the already accepted direct webhook after the record was `RESERVED`, while
   `prepare_direct` allowed only `MAPPED` or `PREPARED`, producing a misleading
