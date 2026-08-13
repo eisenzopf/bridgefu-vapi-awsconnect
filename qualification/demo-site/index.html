@@ -10,7 +10,7 @@
   <body>
     <main>
       <p class="eyebrow">Bridgefu qualification</p>
-      <h1>Vapi to Amazon Connect</h1>
+      <h1>Bridgefu to Vapi to Amazon Connect</h1>
       <p class="lede">
         Controlled synthetic call source for the Bridgefu release qualification.
       </p>
@@ -19,6 +19,7 @@
         <h2 id="status-heading">Call status</h2>
         <output id="status" aria-live="polite">Loading test configuration…</output>
         <p id="transcript" class="transcript" aria-live="polite"></p>
+        <audio id="remote-audio" autoplay></audio>
         <div class="actions">
           <button id="start" type="button" disabled>Start test call</button>
           <button id="mute" type="button" disabled>Mute</button>
@@ -27,8 +28,8 @@
       </section>
 
       <p class="notice">
-        Nonproduction test page. It receives a Vapi public key and assistant ID
-        only—never an AWS, Vapi private, or Bridgefu control credential.
+        Nonproduction test page. It receives one short-lived Bridgefu WebRTC
+        attachment—never an AWS, Vapi, or Bridgefu control credential.
       </p>
     </main>
     <script type="module" src="./app.js"></script>

@@ -27,6 +27,7 @@ SAFE_EVENTS = {
     "prepare_handoff",
     "transfer_destination",
     "connect_lookup",
+    "direct_browser_handoff",
     "vapi_provisioner",
 }
 SAFE_RESULTS = {
@@ -39,6 +40,7 @@ SAFE_RESULTS = {
     "update_success",
     "delete_success",
     "delete_retained",
+    "direct_started",
     "provisioning_failed",
     "authentication_unavailable",
     "bridgefu_configuration_invalid",
@@ -47,6 +49,9 @@ SAFE_RESULTS = {
     "bridgefu_reservation_failed",
     "bridgefu_reservation_unavailable",
     "bridgefu_response_invalid",
+    "bridgefu_replacement_failed",
+    "bridgefu_replacement_invalid",
+    "bridgefu_replacement_unavailable",
     "conflicting_tool_arguments",
     "context_too_large",
     "correlation_derivation_failed",
@@ -56,6 +61,10 @@ SAFE_RESULTS = {
     "handoff_replay_conflict",
     "handoff_state_conflict",
     "handoff_store_invalid",
+    "direct_handoff_binding_invalid",
+    "direct_handoff_conflict",
+    "invalid_direct_handoff_key",
+    "invalid_direct_handoff_token",
     "invalid_context_ttl",
     "invalid_correlation_key",
     "invalid_http_request",
@@ -231,7 +240,8 @@ class DynamoHandoffStore:
                 "verification_status,vapi_call_reference,vapi_call_fingerprint,"
                 "content_hash,created_at,updated_at,expires_at,handoff_status,"
                 "bridgefu_call_id,attachment_expires_at,screen_pop_values,"
-                "screen_pop_schema_hash"
+                "screen_pop_schema_hash,direct_token_id,direct_leg_id,"
+                "direct_route_id,direct_idempotency_key"
             ),
         )
         item = response.get("Item")
@@ -289,6 +299,92 @@ class DynamoHandoffStore:
         except Exception as error:
             if _conditional_failure(error):
                 raise HandoffError("handoff_state_conflict", 409) from None
+            raise
+
+    def prepare_direct(
+        self,
+        session_id: str,
+        token_id: str,
+        identity,
+        values: Mapping[str, str],
+        updated_at: int,
+    ) -> Mapping[str, str]:
+        content_hash = hashlib.sha256(
+            json.dumps(
+                dict(values),
+                separators=(",", ":"),
+                sort_keys=True,
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        identity_hash = hashlib.sha256(
+            f"direct-vapi|{identity.org_id}|{identity.call_id}".encode("ascii")
+        ).hexdigest()
+        try:
+            response = self._client.update_item(
+                TableName=self._table_name,
+                Key={"correlation_id": {"S": session_id}},
+                UpdateExpression=(
+                    "SET #status = :prepared, updated_at = :updated, "
+                    "screen_pop_values = :values, content_hash = :content, "
+                    "vapi_call_fingerprint = :identity"
+                ),
+                ConditionExpression=(
+                    "direct_token_id = :token AND expires_at > :updated AND "
+                    "#status IN (:mapped, :prepared) AND "
+                    "(attribute_not_exists(content_hash) OR content_hash = :content) AND "
+                    "(attribute_not_exists(vapi_call_fingerprint) OR "
+                    "vapi_call_fingerprint = :identity)"
+                ),
+                ExpressionAttributeNames={"#status": "handoff_status"},
+                ExpressionAttributeValues={
+                    ":token": {"S": token_id},
+                    ":updated": {"N": str(updated_at)},
+                    ":mapped": {"S": "MAPPED"},
+                    ":prepared": {"S": "PREPARED"},
+                    ":values": _encode_value(values),
+                    ":content": {"S": content_hash},
+                    ":identity": {"S": identity_hash},
+                },
+                ReturnValues="ALL_NEW",
+            )
+        except Exception as error:
+            if _conditional_failure(error):
+                raise HandoffError("direct_handoff_conflict", 409) from None
+            raise
+        attributes = response.get("Attributes")
+        record = _decode_item(attributes) if isinstance(attributes, Mapping) else {}
+        expected = {
+            "call_id": record.get("bridgefu_call_id"),
+            "leg_id": record.get("direct_leg_id"),
+            "route_id": record.get("direct_route_id"),
+            "idempotency_key": record.get("direct_idempotency_key"),
+        }
+        if any(
+            not isinstance(value, str)
+            or not value.replace("-", "").replace("_", "").isalnum()
+            for value in expected.values()
+        ):
+            raise HandoffError("direct_handoff_binding_invalid", 500)
+        return expected
+
+    def mark_direct_started(self, session_id: str, updated_at: int) -> None:
+        try:
+            self._client.update_item(
+                TableName=self._table_name,
+                Key={"correlation_id": {"S": session_id}},
+                UpdateExpression="SET #status = :reserved, updated_at = :updated",
+                ConditionExpression="#status IN (:prepared, :reserved)",
+                ExpressionAttributeNames={"#status": "handoff_status"},
+                ExpressionAttributeValues={
+                    ":prepared": {"S": "PREPARED"},
+                    ":reserved": {"S": "RESERVED"},
+                    ":updated": {"N": str(updated_at)},
+                },
+            )
+        except Exception as error:
+            if _conditional_failure(error):
+                raise HandoffError("direct_handoff_conflict", 409) from None
             raise
 
 
@@ -402,3 +498,55 @@ class BridgefuRouteClient:
         except ValueError:
             raise HandoffError("bridgefu_response_invalid", 502) from None
         return SipReservation(uri=uri, call_id=call_id, expires_at=expires_at)
+
+    def replace(
+        self,
+        call_id: str,
+        leg_id: str,
+        route_id: str,
+        idempotency_key: str,
+    ) -> None:
+        identifiers = (call_id, leg_id, route_id, idempotency_key)
+        if (
+            any(
+                not isinstance(value, str)
+                or not value.replace("-", "").replace("_", "").isalnum()
+                for value in identifiers
+            )
+            or route_id != self._route_id
+        ):
+            raise HandoffError("bridgefu_replacement_invalid", 500)
+        url = (
+            f"{self._base_url}/v1/calls/{urllib.parse.quote(call_id, safe='')}/"
+            f"legs/{urllib.parse.quote(leg_id, safe='')}/replace"
+        )
+        request = urllib.request.Request(
+            url,
+            data=json.dumps({"route_id": route_id}, separators=(",", ":")).encode(
+                "utf-8"
+            ),
+            method="POST",
+            headers={
+                "authorization": f"Bearer {self._bearer_token}",
+                "content-type": "application/json",
+                "idempotency-key": idempotency_key,
+                "user-agent": "bridgefu-recipe-direct-handoff/1",
+            },
+        )
+        try:
+            with self._opener.open(request, timeout=self._timeout_seconds) as response:
+                if response.status != 202:
+                    raise HandoffError("bridgefu_replacement_failed", 502)
+                raw = response.read(16_385)
+        except HandoffError:
+            raise
+        except (urllib.error.URLError, TimeoutError, OSError):
+            raise HandoffError("bridgefu_replacement_unavailable", 503) from None
+        if len(raw) > 16_384:
+            raise HandoffError("bridgefu_response_invalid", 502)
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            raise HandoffError("bridgefu_response_invalid", 502) from None
+        if not isinstance(payload, Mapping) or payload.get("call_id") != call_id:
+            raise HandoffError("bridgefu_response_invalid", 502)

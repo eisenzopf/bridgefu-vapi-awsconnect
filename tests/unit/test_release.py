@@ -564,6 +564,16 @@ class ReleaseContractTests(unittest.TestCase):
                 "passed": True,
                 "checks": {name: True for name in secure_required},
             },
+            "vapi_provisioning_resilience": {
+                "schema_version": 1,
+                "producer": "bridgefu-vapi-provisioning-resilience@1",
+                "ambiguous_create_reconciled": True,
+                "first_cycle_deleted": True,
+                "second_cycle_recreated": True,
+                "exact_owner_resources_present": True,
+                "redacted": True,
+                "passed": True,
+            },
             "scenarios": [
                 {
                     "id": "vapi-sip-transfer",
@@ -571,7 +581,7 @@ class ReleaseContractTests(unittest.TestCase):
                     "checks": dict(checks),
                 },
                 {
-                    "id": "vapi-web-transfer",
+                    "id": "bridgefu-web-sdk-handoff",
                     "passed": True,
                     "checks": {**checks, "dtmf_agent_to_source": True},
                 },
@@ -607,6 +617,10 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertEqual(evidence_status(evidence), 0)
         for path in (
             ("secure_preflight", "checks", "tls_transport"),
+            (
+                "vapi_provisioning_resilience",
+                "ambiguous_create_reconciled",
+            ),
             ("scenarios", 0, "passed"),
             ("scenarios", 1, "checks", "audio_agent_to_source"),
             ("teardown", "customer_stack_absent"),
@@ -627,7 +641,7 @@ class ReleaseContractTests(unittest.TestCase):
         if computation_match is None:
             self.fail("candidate receipt computation jq filter is missing")
         changed = json.loads(json.dumps(evidence))
-        changed["scenarios"][0]["passed"] = "false"
+        changed["vapi_provisioning_resilience"]["passed"] = "false"
         computed = subprocess.run(  # noqa: S603
             [jq, "-c", computation_match.group(1)],
             input=json.dumps(changed),
@@ -691,7 +705,7 @@ class ReleaseContractTests(unittest.TestCase):
             ".evidence_schema_version == 2",
             ".secure_preflight_passed == true",
             ".required_checks_passed == true",
-            '.scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"]',
+            '.scenario_ids == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"]',
             ".zero_resource_proof == true",
             '.release_objects | type == "array" and length > 0',
         ):
@@ -711,7 +725,7 @@ class ReleaseContractTests(unittest.TestCase):
             "evidence_schema_version": 2,
             "secure_preflight_passed": True,
             "required_checks_passed": True,
-            "scenario_ids": ["vapi-sip-transfer", "vapi-web-transfer"],
+            "scenario_ids": ["bridgefu-web-sdk-handoff", "vapi-sip-transfer"],
             "zero_resource_proof": True,
         }
         receipt = {

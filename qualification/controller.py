@@ -22,6 +22,7 @@ import shutil
 import socket
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -39,8 +40,59 @@ try:
 except ModuleNotFoundError:  # Imported as a repository module by unit tests.
     from qualification import direct_secure_preflight
 
+try:
+    import bridgefu_web_handoff
+    import bridgefu_web_runtime
+except ModuleNotFoundError:  # Imported as a repository module by unit tests.
+    from qualification import bridgefu_web_handoff, bridgefu_web_runtime
+
 ROOT = Path(__file__).resolve().parents[1]
 QUALIFICATION = ROOT / "qualification"
+LAMBDA_COMMON = ROOT / "lambda" / "common"
+if os.fspath(LAMBDA_COMMON) not in sys.path:
+    sys.path.insert(0, os.fspath(LAMBDA_COMMON))
+
+from vapi_provisioning import (  # noqa: E402
+    ProvisioningConfig,
+    VapiHttpClient,
+    VapiProvisioningError,
+    provision_create,
+    provision_delete,
+)
+from vapi_provisioning import (
+    VapiAmbiguousWriteError as ProvisioningAmbiguousWriteError,
+)
+
+
+class LostAssistantCreateResponseClient:
+    """Commit one assistant POST, then simulate its lost HTTP response once."""
+
+    def __init__(self, delegate: VapiHttpClient) -> None:
+        self.delegate = delegate
+        self.injected = False
+
+    def list(self, resource: str) -> list[Mapping[str, Any]]:
+        return self.delegate.list(resource)
+
+    def get(self, resource: str, resource_id: str) -> Mapping[str, Any] | None:
+        return self.delegate.get(resource, resource_id)
+
+    def create(self, resource: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        result = self.delegate.create(resource, payload)
+        if resource == "assistant" and not self.injected:
+            self.injected = True
+            raise ProvisioningAmbiguousWriteError("POST", "assistant", None)
+        return result
+
+    def update(
+        self, resource: str, resource_id: str, payload: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        return self.delegate.update(resource, resource_id, payload)
+
+    def delete(self, resource: str, resource_id: str) -> None:
+        self.delegate.delete(resource, resource_id)
+
+
 PRODUCER = "bridgefu-vapi-awsconnect-qualification@1"
 RECIPE = "vapi-amazon-connect-screen-pop@1"
 VAPI_BASE_URL = "https://api.vapi.ai"
@@ -50,12 +102,19 @@ VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$")
 RESOURCE_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 S3_BUCKET = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
-SCENARIOS = ("vapi-web-transfer", "vapi-sip-transfer")
+WEB_SCENARIO = "bridgefu-web-sdk-handoff"
+SCENARIOS = (WEB_SCENARIO, "vapi-sip-transfer")
 CONTEXT = {
     "customer_name": "Bridgefu Synthetic Caller",
     "intent": "qualification",
     "verification_status": "synthetic",
 }
+SCREEN_POP_KEYS = (
+    "customer_name",
+    "issue_summary",
+    "intent",
+    "verification_status",
+)
 DIAGNOSTIC_LIMIT = 2048
 PHONE_OWNERSHIP_PRODUCER = "bridgefu-vapi-phone-ownership@1"
 PHONE_INTENT_PRODUCER = "bridgefu-vapi-phone-intent@1"
@@ -65,6 +124,7 @@ MAX_OBJECT_VERSIONS = 10_000
 MAX_DELETE_OBJECTS = 1_000
 BROWSER_READINESS_TIMEOUT_SECONDS = 210
 VAPI_DESTINATION_SECURITY_EVENT = "bridgefu_vapi_destination_security_evidence"
+VAPI_SOURCE_SECURITY_EVENT = "bridgefu_vapi_source_security_evidence"
 VAPI_DESTINATION_SECURITY_FIELDS = {
     "event",
     "correlation_fingerprint",
@@ -133,6 +193,17 @@ def canonical_sha256(value: Mapping[str, Any]) -> str:
     return sha256_bytes(
         json.dumps(value, separators=(",", ":"), sort_keys=True).encode("utf-8")
     )
+
+
+def desired_payload_present(actual: Any, desired: Any) -> bool:
+    if isinstance(desired, Mapping):
+        return isinstance(actual, Mapping) and all(
+            key in actual and desired_payload_present(actual[key], value)
+            for key, value in desired.items()
+        )
+    if isinstance(desired, list):
+        return isinstance(actual, list) and actual == desired
+    return actual == desired
 
 
 def vapi_phone_owned_name(execution_id: str) -> str:
@@ -1486,6 +1557,121 @@ class Vapi:
             raise QualificationError("Vapi API call list has an invalid shape")
         return list(value)
 
+    def find_direct_tool(
+        self,
+        *,
+        execution_id: str,
+        endpoint_url: str,
+        credential_id: str,
+        desired: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        matches = [
+            tool
+            for tool in self.list("tool")
+            if bridgefu_web_handoff.direct_tool_owned(
+                tool,
+                execution_id=execution_id,
+                endpoint_url=endpoint_url,
+                credential_id=credential_id,
+            )
+        ]
+        if len(matches) > 1:
+            raise QualificationError("direct Vapi tool ownership is ambiguous")
+        if not matches:
+            return None
+        if not desired_payload_present(matches[0], desired):
+            raise QualificationError("direct Vapi tool ownership conflicts")
+        return matches[0]
+
+    def create_direct_tool(
+        self,
+        *,
+        execution_id: str,
+        endpoint_url: str,
+        credential_id: str,
+        desired: Mapping[str, Any],
+        reconcile_timeout: int = 10,
+    ) -> Mapping[str, Any]:
+        existing = self.find_direct_tool(
+            execution_id=execution_id,
+            endpoint_url=endpoint_url,
+            credential_id=credential_id,
+            desired=desired,
+        )
+        if existing is not None:
+            return existing
+        try:
+            created = self.request("POST", "/tool", desired)
+        except VapiAmbiguousWriteError as error:
+            deadline = time.monotonic() + reconcile_timeout
+            while True:
+                found = self.find_direct_tool(
+                    execution_id=execution_id,
+                    endpoint_url=endpoint_url,
+                    credential_id=credential_id,
+                    desired=desired,
+                )
+                if found is not None:
+                    return found
+                if time.monotonic() >= deadline:
+                    raise QualificationError(
+                        "direct Vapi tool creation could not be reconciled"
+                    ) from error
+                time.sleep(0.5)
+        resource_id = created.get("id") if isinstance(created, Mapping) else None
+        if not isinstance(resource_id, str) or not RESOURCE_ID.fullmatch(resource_id):
+            raise QualificationError("direct Vapi tool creation returned no identity")
+        exact = self.get("tool", resource_id)
+        owned = self.find_direct_tool(
+            execution_id=execution_id,
+            endpoint_url=endpoint_url,
+            credential_id=credential_id,
+            desired=desired,
+        )
+        if exact is None or owned is None or owned.get("id") != resource_id:
+            raise QualificationError("direct Vapi tool creation was not verified")
+        return owned
+
+    def delete_direct_tool(
+        self,
+        resource_id: str,
+        *,
+        execution_id: str,
+        endpoint_url: str,
+        credential_id: str,
+    ) -> None:
+        exact = self.get("tool", resource_id)
+        if exact is None:
+            return
+        if not bridgefu_web_handoff.direct_tool_owned(
+            exact,
+            execution_id=execution_id,
+            endpoint_url=endpoint_url,
+            credential_id=credential_id,
+        ):
+            raise QualificationError("direct Vapi tool deletion target is not owned")
+        self.request("DELETE", f"/tool/{resource_id}", allow_missing=True)
+        deadline = time.monotonic() + 30
+        while self.get("tool", resource_id) is not None:
+            if time.monotonic() >= deadline:
+                raise QualificationError("direct Vapi tool deletion timed out")
+            time.sleep(0.5)
+
+    def patch_assistant_model(
+        self, assistant_id: str, model: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        if not RESOURCE_ID.fullmatch(assistant_id) or not isinstance(model, Mapping):
+            raise QualificationError("Vapi assistant model update is invalid")
+        payload = {"model": json.loads(json.dumps(model))}
+        try:
+            self.request("PATCH", f"/assistant/{assistant_id}", payload)
+        except VapiAmbiguousWriteError:
+            pass
+        exact = self.get("assistant", assistant_id)
+        if exact is None or exact.get("model") != payload["model"]:
+            raise QualificationError("Vapi assistant model update was not verified")
+        return exact
+
     def create_phone(
         self,
         execution_id: str,
@@ -1693,11 +1879,85 @@ def synthetic_context(scenario: str) -> dict[str, str]:
     issue = (
         "Qualification SIP transfer source hangup."
         if scenario == "vapi-sip-transfer"
-        else f"Qualification {scenario} source hangup."
+        else "Qualification Bridgefu Web SDK source hangup."
     )
     return {
-        **CONTEXT,
+        "customer_name": CONTEXT["customer_name"],
         "issue_summary": issue,
+        "intent": CONTEXT["intent"],
+        "verification_status": CONTEXT["verification_status"],
+    }
+
+
+def qualification_field_schema() -> dict[str, Any]:
+    descriptions = {
+        "customer_name": "Synthetic customer name for the agent screen pop.",
+        "issue_summary": "Short synthetic reason for the handoff.",
+        "intent": "Synthetic qualification intent.",
+        "verification_status": "Synthetic verification result.",
+    }
+    limits = {
+        "customer_name": 256,
+        "issue_summary": 1024,
+        "intent": 256,
+        "verification_status": 128,
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            key: {
+                "type": "string",
+                "description": descriptions[key],
+                "minLength": 1,
+                "maxLength": limits[key],
+            }
+            for key in SCREEN_POP_KEYS
+        },
+        "required": list(SCREEN_POP_KEYS),
+    }
+
+
+def direct_context_item(
+    *,
+    correlation_id: str,
+    token_id: str,
+    binding: bridgefu_web_handoff.DirectRouteBinding,
+    schema_hash: str,
+    now: int,
+) -> dict[str, dict[str, str]]:
+    if (
+        not re.fullmatch(r"bf1_[A-Za-z0-9_-]{43}", correlation_id)
+        or not RESOURCE_ID.fullmatch(token_id)
+        or not SHA256.fullmatch(schema_hash)
+        or now <= 0
+    ):
+        raise QualificationError("direct handoff context identity is invalid")
+    idempotency = (
+        "bfq_"
+        + hashlib.sha256(
+            f"{correlation_id}|{binding.call_id}|{binding.destination_leg_id}".encode(
+                "ascii"
+            )
+        ).hexdigest()[:32]
+    )
+    fields: dict[str, int | str] = {
+        "schema_version": 2,
+        "correlation_id": correlation_id,
+        "created_at": now,
+        "updated_at": now,
+        "expires_at": now + 3600,
+        "handoff_status": "MAPPED",
+        "screen_pop_schema_hash": schema_hash,
+        "direct_token_id": token_id,
+        "bridgefu_call_id": binding.call_id,
+        "direct_leg_id": binding.destination_leg_id,
+        "direct_route_id": bridgefu_web_runtime.CONNECT_ROUTE_ID,
+        "direct_idempotency_key": idempotency,
+    }
+    return {
+        key: {"N": str(value)} if isinstance(value, int) else {"S": value}
+        for key, value in fields.items()
     }
 
 
@@ -1710,12 +1970,21 @@ def make_session(
     bridgefu_commit: str,
     release: str,
     sip_uri: str | None,
+    source_call_id: str | None = None,
+    correlation_id: str | None = None,
 ) -> dict[str, Any]:
-    call_id = call.get("id")
+    vapi_call_id = call.get("id")
     org_id = call.get("orgId")
-    if not isinstance(call_id, str) or not isinstance(org_id, str):
+    if not isinstance(vapi_call_id, str) or not isinstance(org_id, str):
         raise QualificationError("Vapi call is missing its exact identity")
-    correlation = derive_correlation_id(correlation_key, execution_id, org_id, call_id)
+    effective_source_call_id = source_call_id or vapi_call_id
+    if not RESOURCE_ID.fullmatch(effective_source_call_id):
+        raise QualificationError("smoke source call identity is invalid")
+    correlation = correlation_id or derive_correlation_id(
+        correlation_key, execution_id, org_id, vapi_call_id
+    )
+    if not re.fullmatch(r"bf1_[A-Za-z0-9_-]{43}", correlation):
+        raise QualificationError("smoke correlation identity is invalid")
     started = (
         call.get("createdAt") if isinstance(call.get("createdAt"), str) else utc_now()
     )
@@ -1728,11 +1997,13 @@ def make_session(
             bridgefu_commit.encode("ascii")
         ).hexdigest(),
         "image": f"bridgefu@sha256:{hashlib.sha256((release + bridgefu_commit).encode()).hexdigest()}",
-        "session_id": hashlib.sha256(f"{scenario}:{call_id}".encode()).hexdigest()[:24],
+        "session_id": hashlib.sha256(
+            f"{scenario}:{effective_source_call_id}".encode()
+        ).hexdigest()[:24],
         "scenario_id": scenario,
         "hangup_origin": "source",
         "security": "sips_optional_srtp",
-        "codec": "negotiated" if scenario == "vapi-web-transfer" else "pcmu",
+        "codec": "negotiated" if scenario == WEB_SCENARIO else "pcmu",
         "network_profile": "baseline",
         "network_contract": {
             "delay_ms": 0,
@@ -1744,9 +2015,12 @@ def make_session(
         "started_epoch_ms": int(time.time() * 1000),
         "correlation_id": correlation,
         "correlation_fingerprint": sha256_bytes(correlation.encode("ascii"))[:12],
-        "source_call_id": call_id,
+        "source_call_id": effective_source_call_id,
+        "vapi_call_id": vapi_call_id,
         "source_org_id": org_id,
-        "source_call_fingerprint": sha256_bytes(call_id.encode("ascii"))[:12],
+        "source_call_fingerprint": sha256_bytes(
+            effective_source_call_id.encode("ascii")
+        )[:12],
         "sip_uri": sip_uri,
         "sip_header": {"name": "X-Correlation-Id", "value": correlation},
         "expected_context": synthetic_context(scenario),
@@ -1778,13 +2052,28 @@ def stack_outputs(value: Any) -> dict[str, str]:
         "BridgefuInstanceId",
         "ArtifactBucket",
         "VapiAssistantId",
+        "VapiProvisioningStackId",
+        "VapiPrepareUrl",
+        "VapiTransferUrl",
+        "VapiModel",
+        "VapiVoiceId",
+        "ScreenPopFieldsJson",
         "VapiPrepareToolId",
         "VapiWebhookCredentialId",
+        "VapiWebhookSecretArn",
         "HandoffTableName",
         "CorrelationKeySecretArn",
         "RuntimeLogGroupName",
         "LookupLogGroupName",
         "QualificationSipPrivateHostedZoneId",
+        "DirectHandoffUrl",
+        "DirectHandoffSigningKeyArn",
+        "DirectVapiSipAuthSecretArn",
+        "BridgefuApiBearerSecretArn",
+        "BridgefuPublicIp",
+        "BridgefuGatewaySecurityGroupId",
+        "ConnectWrapperFlowArn",
+        "ScreenPopSchemaHash",
     }
     if not required.issubset(result):
         raise QualificationError("qualification stack is missing required outputs")
@@ -1860,14 +2149,27 @@ def json_objects_from_logs(
 
 
 def verify_log_evidence(
-    runtime: Any, lookup: Any, fingerprint: str, sip_security: str
+    runtime: Any,
+    lookup: Any,
+    fingerprint: str,
+    sip_security: str,
+    scenario: str = "vapi-sip-transfer",
 ) -> dict[str, Any]:
     if not re.fullmatch(r"[0-9a-f]{12}", fingerprint):
         raise QualificationError("correlation fingerprint is invalid")
-    expected_uri_scheme = {
-        "sips_optional_srtp": "sip",
-        "sips_srtp": "sips",
-    }.get(sip_security)
+    if scenario == WEB_SCENARIO:
+        expected_uri_scheme = "sips"
+        expected_event = VAPI_SOURCE_SECURITY_EVENT
+        expected_leg = "bridgefu-to-vapi"
+        expected_message = "established Bridgefu Vapi source leg"
+    else:
+        expected_uri_scheme = {
+            "sips_optional_srtp": "sip",
+            "sips_srtp": "sips",
+        }.get(sip_security)
+        expected_event = VAPI_DESTINATION_SECURITY_EVENT
+        expected_leg = "vapi-to-bridgefu"
+        expected_message = "accepted Vapi destination leg"
     if expected_uri_scheme is None:
         raise QualificationError("Vapi destination security policy is invalid")
     runtime_events = runtime.get("events", []) if isinstance(runtime, Mapping) else []
@@ -1890,7 +2192,7 @@ def verify_log_evidence(
     security_events = [
         value
         for value in runtime_values
-        if value.get("event") == VAPI_DESTINATION_SECURITY_EVENT
+        if value.get("event") == expected_event
         and value.get("correlation_fingerprint") == fingerprint
     ]
     if len(security_events) != 1:
@@ -1901,10 +2203,14 @@ def verify_log_evidence(
     security_keys = set(security_event)
     if security_keys != VAPI_DESTINATION_SECURITY_FIELDS | {"message"}:
         raise QualificationError("Vapi destination security event shape is invalid")
-    if security_event.get("message") != "accepted Vapi destination leg":
+    if security_event.get("message") != expected_message:
         raise QualificationError("Vapi destination security event shape is invalid")
     expected_security = {
-        **VAPI_DESTINATION_SECURITY_EXPECTED,
+        "event": expected_event,
+        "leg": expected_leg,
+        "signaling_transport": "tls",
+        "answered": True,
+        "redacted": True,
         "correlation_fingerprint": fingerprint,
         "uri_scheme": expected_uri_scheme,
     }
@@ -1931,6 +2237,11 @@ def verify_log_evidence(
         security_event.get(name) == expected
         for name, expected in expected_security.items()
     ) and (secure_media or plain_media)
+    if scenario == WEB_SCENARIO:
+        # The outbound event itself requires one exact redacted correlation
+        # header on the TLS INVITE; the inbound admission-only event does not
+        # exist for Bridgefu-originated Vapi legs.
+        header = security
     if not header or not available or not security:
         raise QualificationError(
             "correlated Bridgefu, destination security, and Connect log evidence did not converge"
@@ -2001,8 +2312,8 @@ def derive_scenario_checks(
         len(source_media.get("dtmf_source_to_agent_sent_at_ms", [])) >= 1
         and agent_media.get("dtmf_source_to_agent_observed") is True
     )
-    if scenario == "vapi-web-transfer":
-        source_connected = source.get("vapi", {}).get("web_call_started") is True
+    if scenario == WEB_SCENARIO:
+        source_connected = source.get("bridgefu", {}).get("webrtc_call_started") is True
         ended = source.get("hangup", {}).get("local_end_completed") is True
     else:
         signaling = source.get("signaling")
@@ -2014,7 +2325,7 @@ def derive_scenario_checks(
         ended = source.get("hangup", {}).get("local_bye_completed") is True
     checks = {
         "vapi_call_connected": source_connected and call.get("status") == "ended",
-        "vapi_transfer_invoked": call_contains_transfer(call),
+        "vapi_transfer_invoked": call_contains_transfer(call, scenario),
         "handoff_context_stored": (
             handoff.get("correlation_id") is not None
             and handoff.get("handoff_status") in {"RESERVED", "CONSUMED"}
@@ -2048,7 +2359,7 @@ def derive_scenario_checks(
         "source_call_ended": ended
         and source.get("hangup", {}).get("cleanup_observed") is True,
     }
-    if scenario == "vapi-web-transfer":
+    if scenario == WEB_SCENARIO:
         checks["dtmf_agent_to_source"] = (
             len(agent_media.get("dtmf_agent_to_source_sent_at_ms", [])) >= 1
             and source_media.get("dtmf_agent_to_source_observed") is True
@@ -2056,8 +2367,8 @@ def derive_scenario_checks(
     return checks
 
 
-def call_contains_transfer(value: Any) -> bool:
-    """Require both the owned tool and transfer activity in the final Vapi call."""
+def call_contains_transfer(value: Any, scenario: str = "vapi-sip-transfer") -> bool:
+    """Require the scenario's exact owned tool and terminal handoff behavior."""
     names: set[str] = set()
     transfer = False
 
@@ -2092,13 +2403,11 @@ def call_contains_transfer(value: Any) -> bool:
         and len(transfers) > 0
         or ended_reason == "assistant-forwarded-call"
     )
-    return (
-        isinstance(value, Mapping)
-        and value.get("status") == "ended"
-        and "prepare_handoff" in names
-        and "transferCall" in names
-        and transfer
-    )
+    if not isinstance(value, Mapping) or value.get("status") != "ended":
+        return False
+    if scenario == WEB_SCENARIO:
+        return bridgefu_web_handoff.DIRECT_TOOL_NAME in names
+    return "prepare_handoff" in names and "transferCall" in names and transfer
 
 
 def create_failure_arguments(retain_on_failure: bool) -> list[str]:
@@ -2519,6 +2828,15 @@ class Controller:
         self.temp_sip_auth_object: str | None = None
         self.temp_phone_intent_journal_object: str | None = None
         self.temp_phone_journal_object: str | None = None
+        self.direct_tool_id: str | None = None
+        self.direct_tool_prompt_sha256: str | None = None
+        self.direct_tool_desired: dict[str, Any] | None = None
+        self.direct_assistant_overlay_installed = False
+        self.web_runtime_object_key: str | None = None
+        self.web_runtime_cleanup_required = False
+        self.web_runtime_restoration_passed = False
+        self.web_runtime_media_permission: dict[str, Any] | None = None
+        self.web_runtime_secret_written = False
         self.acm_validation_journal: dict[str, Any] | None = None
         self.acm_validation_journal_object: str | None = None
         self.acm_validation_discovery_complete = False
@@ -2531,6 +2849,8 @@ class Controller:
         self.phase = "initialization"
         self.scenario_evidence: list[dict[str, Any]] = []
         self.secure_preflight_evidence: dict[str, Any] | None = None
+        self.vapi_provisioning_resilience_evidence: dict[str, Any] | None = None
+        self.vapi_provisioning_cleanup_required = False
         self.secure_preflight_binary_sha256: str | None = None
         self.secure_preflight_object_key: str | None = None
         self.secure_preflight_cleanup_required = False
@@ -2626,6 +2946,88 @@ class Controller:
             for phone in self.vapi.list("phone-number")
         ):
             raise QualificationError("execution Vapi SIP endpoint already exists")
+
+    def provisioning_config(self) -> ProvisioningConfig:
+        """Reconstruct the exact stack-owned Vapi desired state in memory."""
+        return ProvisioningConfig(
+            stack_id=self.outputs["VapiProvisioningStackId"],
+            deployment_id=self.args.execution_id,
+            prepare_url=self.outputs["VapiPrepareUrl"],
+            transfer_url=self.outputs["VapiTransferUrl"],
+            model=self.outputs["VapiModel"],
+            voice_id=self.outputs["VapiVoiceId"],
+            screen_pop_fields_json=self.outputs["ScreenPopFieldsJson"],
+            webhook_token=self.aws.secret(self.outputs["VapiWebhookSecretArn"]),
+            asset_root=ROOT / "vapi",
+        )
+
+    def vapi_provisioning_resilience(self) -> None:
+        """Prove delete/recreate and lost-POST reconciliation against live Vapi."""
+        if (
+            self.temp_phone_id is not None
+            or getattr(self, "temp_phone_intent", None) is not None
+            or getattr(self, "direct_assistant_overlay_installed", False)
+            or getattr(self, "direct_tool_id", None) is not None
+            or getattr(self, "web_runtime_cleanup_required", False)
+        ):
+            raise QualificationError(
+                "Vapi provisioning resilience requires clean smoke transients"
+            )
+        config = self.provisioning_config()
+        api_key = extract_vapi_key(self.aws.secret(self.args.vapi_secret_arn))
+        client = VapiHttpClient(api_key)
+        current_physical_id = (
+            "bridgefu-vapi-v2:"
+            f"{self.outputs['VapiAssistantId']}:"
+            f"{self.outputs['VapiPrepareToolId']}:"
+            f"{self.outputs['VapiWebhookCredentialId']}"
+        )
+        try:
+            self.vapi_provisioning_cleanup_required = True
+            provision_delete(client, config, current_physical_id)
+            ambiguous_client = LostAssistantCreateResponseClient(client)
+            first = provision_create(ambiguous_client, config)
+            self.outputs["VapiAssistantId"] = first.assistant_id
+            self.outputs["VapiPrepareToolId"] = first.prepare_tool_id
+            self.outputs["VapiWebhookCredentialId"] = first.webhook_credential_id
+            first_verified = provision_create(client, config)
+            if (
+                not ambiguous_client.injected
+                or first_verified.physical_id != first.physical_id
+            ):
+                raise VapiProvisioningError("vapi_resilience_reconciliation_failed")
+
+            provision_delete(client, config, first.physical_id)
+            if any(
+                client.get(resource, resource_id) is not None
+                for resource, resource_id in (
+                    ("assistant", first.assistant_id),
+                    ("tool", first.prepare_tool_id),
+                    ("credential", first.webhook_credential_id),
+                )
+            ):
+                raise VapiProvisioningError("vapi_resilience_delete_failed")
+
+            second = provision_create(client, config)
+            self.outputs["VapiAssistantId"] = second.assistant_id
+            self.outputs["VapiPrepareToolId"] = second.prepare_tool_id
+            self.outputs["VapiWebhookCredentialId"] = second.webhook_credential_id
+            second_verified = provision_create(client, config)
+            if second_verified.physical_id != second.physical_id:
+                raise VapiProvisioningError("vapi_resilience_recreate_failed")
+        except VapiProvisioningError as error:
+            raise QualificationError("Vapi provisioning resilience failed") from error
+
+        self.vapi_provisioning_resilience_evidence = {
+            "schema_version": 1,
+            "producer": "bridgefu-vapi-provisioning-resilience@1",
+            "ambiguous_create_reconciled": True,
+            "first_cycle_deleted": True,
+            "second_cycle_recreated": True,
+            "exact_owner_resources_present": True,
+            "redacted": True,
+            "passed": True,
+        }
 
     def initialize_cleanup_vapi_verifier(self) -> None:
         """Bind a read-only exact-ID verifier even after an early run failure."""
@@ -3245,79 +3647,702 @@ class Controller:
             time.sleep(0.5)
         raise QualificationError("Vapi smoke call did not become observable")
 
+    def provision_temporary_vapi_phone(
+        self,
+    ) -> tuple[dict[str, str], str, str]:
+        if self.vapi is None:
+            raise QualificationError("Vapi client is unavailable")
+        if any(
+            value is not None
+            for value in (
+                self.temp_phone_id,
+                getattr(self, "temp_phone_intent", None),
+                getattr(self, "temp_phone_intent_journal_object", None),
+                getattr(self, "temp_phone_journal_object", None),
+            )
+        ):
+            raise QualificationError("temporary Vapi endpoint state is not clean")
+        authentication = {
+            "realm": "sip.vapi.ai",
+            "username": f"bfq_{secrets.token_hex(8)}",
+            "password": secrets.token_urlsafe(24),
+        }
+        intent = vapi_phone_intent(
+            self.args.execution_id,
+            self.outputs["VapiAssistantId"],
+            authentication,
+        )
+        self.temp_phone_intent = intent
+        self.write_phone_intent_journal(intent)
+        try:
+            phone = self.vapi.create_phone(
+                self.args.execution_id,
+                self.outputs["VapiAssistantId"],
+                authentication,
+            )
+        except VapiPhoneReconciliationError:
+            self.temp_phone_creation_ambiguous = True
+            raise
+        phone_id = phone.get("id")
+        sip_uri = phone.get("sipUri")
+        if not isinstance(phone_id, str) or not RESOURCE_ID.fullmatch(phone_id):
+            raise QualificationError("temporary Vapi SIP endpoint is invalid")
+        self.temp_phone_id = phone_id
+        self.write_phone_ownership_journal(phone_id, self.outputs["VapiAssistantId"])
+        if sip_uri != intent["sip_uri"]:
+            raise QualificationError("temporary Vapi SIP endpoint is invalid")
+        wait_for_vapi_phone_active(
+            self.vapi,
+            phone_id,
+            str(sip_uri),
+            self.outputs["VapiAssistantId"],
+        )
+        return authentication, phone_id, str(sip_uri)
+
+    def put_secret_json(self, secret_arn: str, value: Mapping[str, Any]) -> None:
+        if not secret_arn.startswith("arn:aws"):
+            raise QualificationError("qualification secret identity is invalid")
+        request = {
+            "SecretId": secret_arn,
+            "SecretString": json.dumps(value, separators=(",", ":"), sort_keys=True),
+        }
+        self.runner.run(
+            [
+                "aws",
+                "secretsmanager",
+                "put-secret-value",
+                "--region",
+                self.args.region,
+                "--cli-input-json",
+                "file:///dev/stdin",
+                "--output",
+                "json",
+            ],
+            input_text=json.dumps(request, separators=(",", ":"), sort_keys=True),
+            timeout=120,
+        )
+
+    def install_direct_assistant_overlay(self) -> None:
+        if self.vapi is None:
+            raise QualificationError("Vapi client is unavailable")
+        endpoint = self.outputs["DirectHandoffUrl"]
+        credential_id = self.outputs["VapiWebhookCredentialId"]
+        try:
+            desired_tool = bridgefu_web_handoff.direct_tool_payload(
+                endpoint_url=endpoint,
+                credential_id=credential_id,
+                field_schema=qualification_field_schema(),
+                execution_id=self.args.execution_id,
+            )
+        except bridgefu_web_handoff.DirectHandoffContractError as error:
+            raise QualificationError("direct Vapi tool contract is invalid") from error
+        tool = self.vapi.create_direct_tool(
+            execution_id=self.args.execution_id,
+            endpoint_url=endpoint,
+            credential_id=credential_id,
+            desired=desired_tool,
+        )
+        tool_id = tool.get("id")
+        if not isinstance(tool_id, str) or not RESOURCE_ID.fullmatch(tool_id):
+            raise QualificationError("direct Vapi tool identity is invalid")
+        self.direct_tool_id = tool_id
+        self.direct_tool_desired = desired_tool
+        assistant_id = self.outputs["VapiAssistantId"]
+        baseline = self.vapi.get("assistant", assistant_id)
+        if baseline is None:
+            raise QualificationError("Vapi assistant is unavailable")
+        try:
+            desired_assistant, prompt_hash = (
+                bridgefu_web_handoff.apply_assistant_overlay(baseline, tool_id)
+            )
+        except bridgefu_web_handoff.DirectHandoffContractError as error:
+            raise QualificationError(
+                "direct Vapi assistant overlay is invalid"
+            ) from error
+        current = self.vapi.get("assistant", assistant_id)
+        if current != baseline:
+            raise QualificationError("Vapi assistant changed during overlay planning")
+        model = desired_assistant.get("model")
+        if not isinstance(model, Mapping):
+            raise QualificationError("direct Vapi assistant model is invalid")
+        self.vapi.patch_assistant_model(assistant_id, model)
+        self.direct_tool_prompt_sha256 = prompt_hash
+        self.direct_assistant_overlay_installed = True
+
+    def cleanup_direct_assistant_overlay(self) -> list[str]:
+        errors: list[str] = []
+        endpoint = self.outputs.get("DirectHandoffUrl")
+        credential_id = self.outputs.get("VapiWebhookCredentialId")
+        assistant_id = self.outputs.get("VapiAssistantId")
+        if getattr(self, "direct_assistant_overlay_installed", False):
+            try:
+                if (
+                    self.vapi is None
+                    or not isinstance(assistant_id, str)
+                    or getattr(self, "direct_tool_id", None) is None
+                    or getattr(self, "direct_tool_prompt_sha256", None) is None
+                ):
+                    raise QualificationError(
+                        "direct Vapi overlay ownership proof is unavailable"
+                    )
+                current = self.vapi.get("assistant", assistant_id)
+                if current is None:
+                    raise QualificationError("Vapi assistant is unavailable")
+                restored = bridgefu_web_handoff.remove_assistant_overlay(
+                    current,
+                    self.direct_tool_id,
+                    self.direct_tool_prompt_sha256,
+                )
+                model = restored.get("model")
+                if not isinstance(model, Mapping):
+                    raise QualificationError("direct Vapi assistant model is invalid")
+                self.vapi.patch_assistant_model(assistant_id, model)
+                self.direct_assistant_overlay_installed = False
+                self.direct_tool_prompt_sha256 = None
+            except (
+                QualificationError,
+                bridgefu_web_handoff.DirectHandoffContractError,
+            ):
+                errors.append("direct Vapi assistant overlay removal failed")
+        if getattr(self, "direct_tool_id", None) is not None and not getattr(
+            self, "direct_assistant_overlay_installed", False
+        ):
+            try:
+                if (
+                    self.vapi is None
+                    or not isinstance(endpoint, str)
+                    or not isinstance(credential_id, str)
+                ):
+                    raise QualificationError(
+                        "direct Vapi tool ownership proof is unavailable"
+                    )
+                self.vapi.delete_direct_tool(
+                    self.direct_tool_id,
+                    execution_id=self.args.execution_id,
+                    endpoint_url=endpoint,
+                    credential_id=credential_id,
+                )
+                self.direct_tool_id = None
+                self.direct_tool_desired = None
+            except QualificationError:
+                errors.append("direct Vapi tool deletion failed")
+        return errors
+
+    @staticmethod
+    def reserve_local_port() -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            return int(listener.getsockname()[1])
+
+    def start_ssm_tunnel(
+        self, remote_port: int, local_port: int
+    ) -> subprocess.Popen[str]:
+        if not 1 <= remote_port <= 65535 or not 1024 <= local_port <= 65535:
+            raise QualificationError("SSM tunnel port is invalid")
+        process = self.runner.popen(
+            [
+                "aws",
+                "ssm",
+                "start-session",
+                "--region",
+                self.args.region,
+                "--target",
+                self.outputs["BridgefuInstanceId"],
+                "--document-name",
+                "AWS-StartPortForwardingSession",
+                "--parameters",
+                json.dumps(
+                    {
+                        "portNumber": [str(remote_port)],
+                        "localPortNumber": [str(local_port)],
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            ]
+        )
+        self.processes.append(process)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                _, stderr = process.communicate(timeout=5)
+                self.processes.remove(process)
+                raise QualificationError(
+                    "SSM local tunnel failed: " + sanitize_diagnostic(stderr, 256)
+                )
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.2)
+                if probe.connect_ex(("127.0.0.1", local_port)) == 0:
+                    return process
+            time.sleep(0.25)
+        process.terminate()
+        process.communicate(timeout=10)
+        self.processes.remove(process)
+        raise QualificationError("SSM local tunnel did not become ready")
+
+    def stop_local_process(self, process: subprocess.Popen[str]) -> None:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+        if process in self.processes:
+            self.processes.remove(process)
+
+    def run_web_runtime_ssm(self, script: str, label: str) -> Mapping[str, Any]:
+        command_id = self.aws.text(
+            [
+                "ssm",
+                "send-command",
+                "--instance-ids",
+                self.outputs["BridgefuInstanceId"],
+                "--document-name",
+                "AWS-RunShellScript",
+                "--parameters",
+                encode_ssm_shell_parameters(script.splitlines()),
+                "--query",
+                "Command.CommandId",
+            ]
+        )
+        self.ssm_commands.append(command_id)
+        wait_for_ssm_command(
+            self.aws,
+            command_id,
+            self.outputs["BridgefuInstanceId"],
+            timeout=420,
+        )
+        result = self.aws.json(
+            [
+                "ssm",
+                "get-command-invocation",
+                "--command-id",
+                command_id,
+                "--instance-id",
+                self.outputs["BridgefuInstanceId"],
+            ]
+        )
+        self.ssm_commands.remove(command_id)
+        output = result.get("StandardOutputContent")
+        if not isinstance(output, str) or len(output.encode("utf-8")) > 4096:
+            raise QualificationError(f"{label} returned invalid evidence")
+        try:
+            value = json.loads(output.strip())
+        except json.JSONDecodeError as error:
+            raise QualificationError(f"{label} returned invalid evidence") from error
+        if not isinstance(value, Mapping):
+            raise QualificationError(f"{label} returned invalid evidence")
+        return value
+
+    def install_web_runtime(
+        self,
+        *,
+        authentication: Mapping[str, str],
+        signaling_port: int,
+    ) -> None:
+        connect_flow_id = self.outputs["ConnectWrapperFlowArn"].rsplit("/", 1)[-1]
+        sip_hostname = (
+            f"{self.args.execution_id}.{self.args.hosted_zone_name.rstrip('.')}"
+        )
+        config = bridgefu_web_runtime.build_runtime_config(
+            region=self.args.region,
+            deployment_id=self.args.execution_id,
+            sip_hostname=sip_hostname,
+            public_ip=self.outputs["BridgefuPublicIp"],
+            connect_instance_arn=self.outputs["ConnectInstanceArn"],
+            connect_flow_id=connect_flow_id,
+            vapi_sip_username=authentication["username"],
+            signaling_port=signaling_port,
+        )
+        encoded = bridgefu_web_runtime.encode_runtime_config(config)
+        config_path = self.work / "bridgefu-web-runtime.json"
+        config_path.write_bytes(encoded)
+        config_path.chmod(0o600)
+        self.runner.run(
+            [
+                "cargo",
+                "run",
+                "--locked",
+                "--quiet",
+                "--bin",
+                "bridgefu",
+                "--",
+                "--config",
+                os.fspath(config_path),
+                "validate",
+            ],
+            cwd=self.args.bridgefu_checkout,
+            timeout=1800,
+        )
+        bucket = self.outputs["ArtifactBucket"]
+        object_key = f"qualification/{self.args.execution_id}/web-runtime/bridgefu.json"
+        self.web_runtime_object_key = object_key
+        self.aws.text(
+            [
+                "s3",
+                "cp",
+                os.fspath(config_path),
+                f"s3://{bucket}/{object_key}",
+                "--sse",
+                "AES256",
+                "--only-show-errors",
+            ]
+        )
+        self.put_secret_json(self.outputs["DirectVapiSipAuthSecretArn"], authentication)
+        self.web_runtime_secret_written = True
+        script = bridgefu_web_runtime.install_script(
+            execution_id=self.args.execution_id,
+            region=self.args.region,
+            bucket=bucket,
+            object_key=object_key,
+            config_sha256=sha256_bytes(encoded),
+            auth_secret_arn=self.outputs["DirectVapiSipAuthSecretArn"],
+        )
+        self.web_runtime_cleanup_required = True
+        result = self.run_web_runtime_ssm(script, "Bridgefu Web runtime install")
+        bridgefu_web_runtime.validate_install_result(result)
+
+    def cleanup_web_runtime(self) -> list[str]:
+        errors: list[str] = []
+        if getattr(self, "web_runtime_cleanup_required", False):
+            try:
+                result = self.run_web_runtime_ssm(
+                    bridgefu_web_runtime.cleanup_script(
+                        execution_id=self.args.execution_id
+                    ),
+                    "Bridgefu Web runtime cleanup",
+                )
+                bridgefu_web_runtime.validate_cleanup_result(result)
+                self.web_runtime_cleanup_required = False
+                self.web_runtime_restoration_passed = True
+            except (
+                QualificationError,
+                bridgefu_web_runtime.WebRuntimeContractError,
+            ):
+                errors.append("Bridgefu Web runtime restoration failed")
+        if getattr(self, "web_runtime_media_permission", None) is not None:
+            try:
+                permission = self.web_runtime_media_permission
+                self.aws.json(
+                    [
+                        "ec2",
+                        "revoke-security-group-ingress",
+                        "--group-id",
+                        self.outputs["BridgefuGatewaySecurityGroupId"],
+                        "--ip-permissions",
+                        json.dumps([permission], separators=(",", ":"), sort_keys=True),
+                    ]
+                )
+                self.web_runtime_media_permission = None
+            except QualificationError:
+                errors.append("Bridgefu Web media admission cleanup failed")
+        if getattr(self, "web_runtime_secret_written", False):
+            try:
+                self.put_secret_json(self.outputs["DirectVapiSipAuthSecretArn"], {})
+                self.web_runtime_secret_written = False
+            except QualificationError:
+                errors.append("Bridgefu Web SIP secret cleanup failed")
+        if getattr(self, "web_runtime_object_key", None) is not None:
+            try:
+                purge_object_versions_exact(
+                    self.aws,
+                    self.outputs["ArtifactBucket"],
+                    self.web_runtime_object_key,
+                    exact_key=True,
+                )
+                self.web_runtime_object_key = None
+            except QualificationError:
+                errors.append("Bridgefu Web runtime object cleanup failed")
+        return errors
+
+    def authorize_web_media(self) -> None:
+        try:
+            with urllib.request.urlopen(  # noqa: S310
+                "https://checkip.amazonaws.com", timeout=10
+            ) as response:
+                raw = response.read(128).decode("ascii").strip()
+            source = str(socket.inet_ntoa(socket.inet_aton(raw))) + "/32"
+        except (OSError, UnicodeError) as error:
+            raise QualificationError("browser public address is unavailable") from error
+        permission = {
+            "IpProtocol": "udp",
+            "FromPort": 20000,
+            "ToPort": 20399,
+            "IpRanges": [
+                {
+                    "CidrIp": source,
+                    "Description": f"BFQ {self.args.execution_id} browser media",
+                }
+            ],
+        }
+        self.aws.json(
+            [
+                "ec2",
+                "authorize-security-group-ingress",
+                "--group-id",
+                self.outputs["BridgefuGatewaySecurityGroupId"],
+                "--ip-permissions",
+                json.dumps([permission], separators=(",", ":"), sort_keys=True),
+            ]
+        )
+        self.web_runtime_media_permission = permission
+
+    def create_direct_route(
+        self,
+        *,
+        control_port: int,
+        correlation_id: str,
+        handoff_token: str,
+    ) -> bridgefu_web_handoff.DirectRouteBinding:
+        payload = bridgefu_web_handoff.route_request(correlation_id, handoff_token)
+        bearer = self.aws.secret(self.outputs["BridgefuApiBearerSecretArn"])
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{control_port}/v1/routes/"
+            f"{bridgefu_web_runtime.WEB_ROUTE_ID}/calls",
+            data=json.dumps(payload, separators=(",", ":"), sort_keys=True).encode(
+                "utf-8"
+            ),
+            headers={
+                "Authorization": f"Bearer {bearer}",
+                "Content-Type": "application/json",
+                "Idempotency-Key": f"bfq-{secrets.token_hex(16)}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+                raw = response.read(1024 * 1024 + 1)
+                status = response.status
+        except (urllib.error.HTTPError, OSError) as error:
+            raise QualificationError("Bridgefu direct route creation failed") from error
+        if status != 201 or len(raw) > 1024 * 1024:
+            raise QualificationError("Bridgefu direct route creation failed")
+        try:
+            value = json.loads(raw)
+            return bridgefu_web_handoff.parse_route_response(
+                value, bridgefu_web_runtime.WEB_ROUTE_ID
+            )
+        except (
+            json.JSONDecodeError,
+            bridgefu_web_handoff.DirectHandoffContractError,
+        ) as error:
+            raise QualificationError(
+                "Bridgefu direct route response is invalid"
+            ) from error
+
+    def stage_direct_context(
+        self,
+        *,
+        correlation_id: str,
+        token_id: str,
+        binding: bridgefu_web_handoff.DirectRouteBinding,
+        now: int,
+    ) -> None:
+        item = direct_context_item(
+            correlation_id=correlation_id,
+            token_id=token_id,
+            binding=binding,
+            schema_hash=self.outputs["ScreenPopSchemaHash"],
+            now=now,
+        )
+        request = {
+            "TableName": self.outputs["HandoffTableName"],
+            "Item": item,
+            "ConditionExpression": "attribute_not_exists(correlation_id)",
+        }
+        self.runner.run(
+            [
+                "aws",
+                "dynamodb",
+                "put-item",
+                "--region",
+                self.args.region,
+                "--cli-input-json",
+                "file:///dev/stdin",
+                "--output",
+                "json",
+            ],
+            input_text=json.dumps(request, separators=(",", ":"), sort_keys=True),
+            timeout=120,
+        )
+
     def web_smoke(
         self, site: Path, site_digest: str, storage: Path, correlation_key: str
     ) -> None:
-        scenario = "vapi-web-transfer"
-        # Make the disposable agent routable before even starting the source;
-        # the observer will only confirm the API-selected status.
-        ensure_connect_agent_available(self.aws, self.outputs)
-        session_path = self.work / f"{scenario}-session.json"
-        ready = self.work / f"{scenario}-ready.json"
-        trigger = self.work / f"{scenario}-trigger.json"
-        source_observation = self.work / f"{scenario}-source.json"
-        env = dict(os.environ)
-        env["VAPI_PUBLIC_KEY"] = self.args.vapi_public_key
-        started = dt.datetime.now(dt.UTC)
-        source_process = self.runner.popen(
-            [
-                "node",
-                os.fspath(QUALIFICATION / "browser" / "vapi-web-playwright.mjs"),
-                "observe",
-                "--site-dir",
-                os.fspath(site),
-                "--assistant-id",
-                self.outputs["VapiAssistantId"],
-                "--session",
-                os.fspath(session_path),
-                "--ready",
-                os.fspath(ready),
-                "--trigger",
-                os.fspath(trigger),
-                "--observation",
-                os.fspath(source_observation),
-                "--site-bundle-sha256",
-                site_digest,
-                "--hangup-origin",
-                "source",
-                "--timeout-seconds",
-                "300",
-            ],
-            env=env,
+        primary_error: BaseException | None = None
+        try:
+            self._web_smoke(site, site_digest, storage, correlation_key)
+        except BaseException as error:
+            primary_error = error
+        cleanup_errors = self.stop_active_work()
+        cleanup_errors.extend(self.cleanup_web_runtime())
+        cleanup_errors.extend(self.cleanup_direct_assistant_overlay())
+        cleanup_errors.extend(self.cleanup_sip_transients())
+        if primary_error is not None:
+            if cleanup_errors:
+                raise QualificationError(
+                    sanitize_diagnostic(str(primary_error))
+                    + "; "
+                    + "; ".join(cleanup_errors)
+                ) from primary_error
+            raise primary_error
+        if cleanup_errors:
+            raise QualificationError("; ".join(cleanup_errors))
+
+    def _web_smoke(
+        self, site: Path, site_digest: str, storage: Path, correlation_key: str
+    ) -> None:
+        if self.vapi is None:
+            raise QualificationError("Vapi client is unavailable")
+        scenario = WEB_SCENARIO
+        authentication, phone_id, _ = self.provision_temporary_vapi_phone()
+        self.install_direct_assistant_overlay()
+        signaling_port = self.reserve_local_port()
+        control_port = self.reserve_local_port()
+        self.install_web_runtime(
+            authentication=authentication,
+            signaling_port=signaling_port,
         )
-        self.processes.append(source_process)
-        ready_value = validate_web_source_readiness(
-            self.wait_for_process_file(
-                source_process,
-                ready,
-                BROWSER_READINESS_TIMEOUT_SECONDS,
-                "Vapi Web smoke source",
+        self.authorize_web_media()
+        wss_tunnel = self.start_ssm_tunnel(8080, signaling_port)
+        control_tunnel = self.start_ssm_tunnel(9090, control_port)
+        try:
+            ensure_connect_agent_available(self.aws, self.outputs)
+            session_path = self.work / f"{scenario}-session.json"
+            agent_process, agent_observation, _, agent_ready = self.start_agent(
+                session_path, storage, scenario
             )
-        )
-        call_id = str(ready_value["call_id"])
-        call = self.wait_for_vapi_call(
-            assistant_id=self.outputs["VapiAssistantId"],
-            started_after=started,
-            call_id=call_id,
-        )
-        session = make_session(
-            execution_id=self.args.execution_id,
-            scenario=scenario,
-            call=call,
-            correlation_key=correlation_key,
-            bridgefu_commit=self.bridgefu_lock["commit"],
-            release=self.args.release,
-            sip_uri=None,
-        )
-        private_json(session_path, session)
-        agent_process, agent_observation, _, agent_ready = self.start_agent(
-            session_path, storage, scenario
-        )
-        self.wait_for_agent_readiness(agent_process, agent_ready, scenario)
-        private_json(trigger, {"schema_version": 1, "execute": True})
-        self.complete_process(source_process, "Vapi Web smoke source", 360)
-        self.complete_process(agent_process, "Amazon Connect Web smoke observer", 360)
-        self.verify_scenario(scenario, session, source_observation, agent_observation)
+            self.wait_for_agent_readiness(agent_process, agent_ready, scenario)
+
+            correlation_id = "bf1_" + secrets.token_urlsafe(32)
+            token_id = "bfq_" + secrets.token_hex(16)
+            signing_key = self.aws.secret(self.outputs["DirectHandoffSigningKeyArn"])
+            handoff_token = bridgefu_web_handoff.issue_handoff_token(
+                signing_key,
+                correlation_id,
+                token_id,
+            )
+            started = dt.datetime.now(dt.UTC)
+            binding = self.create_direct_route(
+                control_port=control_port,
+                correlation_id=correlation_id,
+                handoff_token=handoff_token,
+            )
+            self.stage_direct_context(
+                correlation_id=correlation_id,
+                token_id=token_id,
+                binding=binding,
+                now=int(started.timestamp()),
+            )
+            route_attachment = self.work / f"{scenario}-route.json"
+            private_json(route_attachment, binding.browser_input())
+            prompt = self.work / "web-prompt.pcm"
+            speech = (
+                "This is an automated Bridgefu qualification. My customer name is "
+                "Bridgefu Synthetic Caller. My issue summary is exactly: Qualification "
+                "Bridgefu Web SDK source hangup. My intent is qualification. "
+                "My verification status is synthetic. Please call the Bridgefu direct "
+                "handoff tool with exactly those values and connect me to a human now."
+            )
+            self.runner.run(
+                [
+                    "aws",
+                    "polly",
+                    "synthesize-speech",
+                    "--region",
+                    self.args.region,
+                    "--output-format",
+                    "pcm",
+                    "--sample-rate",
+                    "8000",
+                    "--voice-id",
+                    "Joanna",
+                    "--text",
+                    speech,
+                    os.fspath(prompt),
+                ],
+                timeout=120,
+            )
+            prompt.chmod(0o600)
+            ready = self.work / f"{scenario}-ready.json"
+            trigger = self.work / f"{scenario}-trigger.json"
+            source_observation = self.work / f"{scenario}-source.json"
+            hostname = (
+                f"{self.args.execution_id}.{self.args.hosted_zone_name.rstrip('.')}"
+            )
+            source_process = self.runner.popen(
+                [
+                    "node",
+                    os.fspath(
+                        QUALIFICATION / "browser" / "bridgefu-web-playwright.mjs"
+                    ),
+                    "observe",
+                    "--site-dir",
+                    os.fspath(site),
+                    "--route-attachment",
+                    os.fspath(route_attachment),
+                    "--prompt-pcm",
+                    os.fspath(prompt),
+                    "--signaling-hostname",
+                    hostname,
+                    "--session",
+                    os.fspath(session_path),
+                    "--ready",
+                    os.fspath(ready),
+                    "--trigger",
+                    os.fspath(trigger),
+                    "--observation",
+                    os.fspath(source_observation),
+                    "--site-bundle-sha256",
+                    site_digest,
+                    "--hangup-origin",
+                    "source",
+                    "--timeout-seconds",
+                    "300",
+                ]
+            )
+            self.processes.append(source_process)
+            ready_value = validate_web_source_readiness(
+                self.wait_for_process_file(
+                    source_process,
+                    ready,
+                    BROWSER_READINESS_TIMEOUT_SECONDS,
+                    "Bridgefu Web SDK smoke source",
+                )
+            )
+            bridgefu_call_id = str(ready_value["call_id"])
+            if bridgefu_call_id != binding.call_id:
+                raise QualificationError("Bridgefu WebRTC call identity changed")
+            call = self.wait_for_vapi_call(
+                assistant_id=self.outputs["VapiAssistantId"],
+                started_after=started,
+                phone_id=phone_id,
+                timeout=120,
+            )
+            session = make_session(
+                execution_id=self.args.execution_id,
+                scenario=scenario,
+                call=call,
+                correlation_key=correlation_key,
+                bridgefu_commit=self.bridgefu_lock["commit"],
+                release=self.args.release,
+                sip_uri=None,
+                source_call_id=bridgefu_call_id,
+                correlation_id=correlation_id,
+            )
+            private_json(session_path, session)
+            private_json(trigger, {"schema_version": 1, "execute": True})
+            self.complete_process(source_process, "Bridgefu Web SDK smoke source", 360)
+            self.complete_process(
+                agent_process, "Amazon Connect Web smoke observer", 360
+            )
+            self.verify_scenario(
+                scenario, session, source_observation, agent_observation
+            )
+        finally:
+            self.stop_local_process(control_tunnel)
+            self.stop_local_process(wss_tunnel)
 
     def cleanup_sip_transients(self) -> list[str]:
         errors: list[str] = []
@@ -3504,42 +4529,7 @@ class Controller:
         # Unlike the Web smoke, this source can ask Vapi to transfer as soon as
         # its prompt arrives, so status selection must precede SSM dispatch.
         ensure_connect_agent_available(self.aws, self.outputs)
-        authentication = {
-            "realm": "sip.vapi.ai",
-            "username": f"bfq_{secrets.token_hex(8)}",
-            "password": secrets.token_urlsafe(24),
-        }
-        phone_intent = vapi_phone_intent(
-            self.args.execution_id,
-            self.outputs["VapiAssistantId"],
-            authentication,
-        )
-        self.temp_phone_intent = phone_intent
-        self.write_phone_intent_journal(phone_intent)
-        try:
-            phone = self.vapi.create_phone(
-                self.args.execution_id,
-                self.outputs["VapiAssistantId"],
-                authentication,
-            )
-        except VapiPhoneReconciliationError:
-            self.temp_phone_creation_ambiguous = True
-            raise
-        phone_id = phone.get("id")
-        sip_uri = phone.get("sipUri")
-        expected_sip_uri = phone_intent["sip_uri"]
-        if not isinstance(phone_id, str) or not RESOURCE_ID.fullmatch(phone_id):
-            raise QualificationError("temporary Vapi SIP endpoint is invalid")
-        self.temp_phone_id = phone_id
-        self.write_phone_ownership_journal(phone_id, self.outputs["VapiAssistantId"])
-        if sip_uri != expected_sip_uri:
-            raise QualificationError("temporary Vapi SIP endpoint is invalid")
-        wait_for_vapi_phone_active(
-            self.vapi,
-            phone_id,
-            sip_uri,
-            self.outputs["VapiAssistantId"],
-        )
+        authentication, phone_id, sip_uri = self.provision_temporary_vapi_phone()
         prompt = self.work / "sip-prompt.pcm"
         speech = (
             "This is an automated Bridgefu qualification. My customer name is Bridgefu Synthetic Caller. "
@@ -3697,8 +4687,8 @@ class Controller:
         agent = read_json(agent_path)
         validate_schema(
             source,
-            "vapi-source-observation-v1.schema.json"
-            if scenario == "vapi-web-transfer"
+            "bridgefu-browser-source-observation-v1.schema.json"
+            if scenario == WEB_SCENARIO
             else "source-observation-v1.schema.json",
         )
         validate_schema(agent, "participant-observation-v1.schema.json")
@@ -3716,9 +4706,9 @@ class Controller:
         deadline = time.monotonic() + 180
         while True:
             latest = (
-                self.vapi.get("call", session["source_call_id"]) if self.vapi else None
+                self.vapi.get("call", session["vapi_call_id"]) if self.vapi else None
             )
-            if latest is not None and call_contains_transfer(latest):
+            if latest is not None and call_contains_transfer(latest, scenario):
                 break
             if time.monotonic() >= deadline:
                 raise QualificationError(
@@ -3769,7 +4759,11 @@ class Controller:
             )
             try:
                 log_proof = verify_log_evidence(
-                    runtime, lookup, fingerprint, str(session["security"])
+                    runtime,
+                    lookup,
+                    fingerprint,
+                    str(session["security"]),
+                    scenario,
                 )
                 break
             except QualificationError:
@@ -3904,10 +4898,12 @@ class Controller:
 
     def cleanup(self) -> dict[str, Any]:
         errors = self.stop_active_work()
+        errors.extend(self.cleanup_web_runtime())
         try:
             self.initialize_cleanup_vapi_verifier()
         except QualificationError:
             errors.append("Vapi cleanup verifier initialization failed")
+        errors.extend(self.cleanup_direct_assistant_overlay())
         errors.extend(self.cleanup_sip_transients())
         try:
             self.ensure_acm_validation_journal()
@@ -3923,13 +4919,25 @@ class Controller:
         acm_recovery_required = (
             self.created_stack and not self.acm_validation_discovery_complete
         )
-        ownership_recovery_required = phone_recovery_required or acm_recovery_required
+        direct_vapi_recovery_required = (
+            getattr(self, "direct_assistant_overlay_installed", False)
+            or getattr(self, "direct_tool_id", None) is not None
+        )
+        ownership_recovery_required = (
+            phone_recovery_required
+            or direct_vapi_recovery_required
+            or acm_recovery_required
+        )
         if phone_recovery_required and not any(
             "Vapi" in error or "journal" in error for error in errors
         ):
             errors.append("temporary Vapi endpoint ownership cleanup is incomplete")
         if acm_recovery_required and not any("ACM" in error for error in errors):
             errors.append("qualification ACM ownership cleanup is incomplete")
+        if direct_vapi_recovery_required and not any(
+            "direct Vapi" in error for error in errors
+        ):
+            errors.append("direct Vapi overlay ownership cleanup is incomplete")
         if (
             self.created_stack
             and not ownership_recovery_required
@@ -4095,6 +5103,8 @@ class Controller:
             self.web_smoke(site, site_digest, storage, correlation_key)
             self.phase = "vapi_sip_transfer"
             self.sip_smoke(storage, correlation_key)
+            self.phase = "vapi_provisioning_resilience"
+            self.vapi_provisioning_resilience()
         except BaseException as error:
             primary_error = error
             try:
@@ -4113,6 +5123,10 @@ class Controller:
                     not self.secure_preflight_cleanup_required
                     or self.secure_preflight_cleanup_passed
                 )
+                and not getattr(self, "web_runtime_cleanup_required", False)
+                and not getattr(self, "direct_assistant_overlay_installed", False)
+                and getattr(self, "direct_tool_id", None) is None
+                and not getattr(self, "vapi_provisioning_cleanup_required", False)
             )
             if retain_environment:
                 self.phase = "retained_after_failure"
@@ -4154,6 +5168,7 @@ class Controller:
         if (
             zero is None
             or self.secure_preflight_evidence is None
+            or self.vapi_provisioning_resilience_evidence is None
             or {item["id"] for item in self.scenario_evidence} != set(SCENARIOS)
             or len(self.scenario_evidence) != len(SCENARIOS)
         ):
@@ -4169,6 +5184,9 @@ class Controller:
             "ended_at": utc_now(),
             "bridgefu_commit": self.bridgefu_lock["commit"],
             "secure_preflight": self.secure_preflight_evidence,
+            "vapi_provisioning_resilience": (
+                self.vapi_provisioning_resilience_evidence
+            ),
             "scenarios": sorted(self.scenario_evidence, key=lambda item: item["id"]),
             "teardown": {
                 "customer_stack_absent": zero["customer_stack_absent"],
@@ -4199,9 +5217,6 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--region", required=True, choices=sorted(REGIONS))
     value.add_argument("--template-url", required=True)
     value.add_argument("--vapi-secret-arn", required=True)
-    value.add_argument(
-        "--vapi-public-key", default=os.environ.get("VAPI_PUBLIC_KEY", "")
-    )
     value.add_argument("--hosted-zone-id", required=True)
     value.add_argument("--hosted-zone-name", required=True)
     value.add_argument("--cloudformation-role-arn", required=True)

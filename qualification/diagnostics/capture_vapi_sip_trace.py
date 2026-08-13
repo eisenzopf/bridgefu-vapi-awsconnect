@@ -161,7 +161,9 @@ def validate_trace(value: Any) -> Mapping[str, Any]:
             or message["body_type"] not in {"none", "application/sdp", "other"}
             or NO_PRIVATE_VALUE.search("\n".join(strings))
         ):
-            raise DiagnosticError("SIP trace message is invalid or insufficiently redacted")
+            raise DiagnosticError(
+                "SIP trace message is invalid or insufficiently redacted"
+            )
     return root
 
 
@@ -308,8 +310,7 @@ phase=complete
             for rule in rules
         )
         verify = " && ".join(
-            f"! iptables -t nat -C PREROUTING {rule} >/dev/null 2>&1"
-            for rule in rules
+            f"! iptables -t nat -C PREROUTING {rule} >/dev/null 2>&1" for rule in rules
         )
         return f"""set +e
 run={run}
@@ -367,15 +368,16 @@ exit 0"""
 
     def execute(self) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
         self.target = self.discover_target()
-        self.vapi = self.connect_vapi(self.target)
         primary: BaseException | None = None
         trace: Mapping[str, Any] | None = None
         try:
-            authentication, _ = self.prepare_phone(self.target)
-            self.upload_auth(self.target, authentication)
             preflight = self.remote_cleanup(self.target)
             if not all(preflight.values()):
                 raise DiagnosticError("remote trace preflight cleanup failed")
+            self.verify_remote_prerequisites(self.target)
+            self.vapi = self.connect_vapi(self.target)
+            authentication, _ = self.prepare_phone(self.target)
+            self.upload_auth(self.target, authentication)
             self.observer_command_id = self.send_shell(
                 self.target, self.observer_script(self.target)
             )
@@ -393,7 +395,9 @@ exit 0"""
         self.cleanup_receipt = receipt
         if primary is not None:
             if isinstance(primary, (DiagnosticError, QualificationError)):
-                raise DiagnosticError(sanitize_diagnostic(str(primary), 512)) from primary
+                raise DiagnosticError(
+                    sanitize_diagnostic(str(primary), 512)
+                ) from primary
             raise DiagnosticError("SIP trace capture failed unexpectedly") from primary
         if trace is None or receipt["passed"] is not True:
             raise DiagnosticError("SIP trace or cleanup did not pass")

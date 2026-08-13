@@ -793,6 +793,8 @@ Outputs:
       - !Sub 'http://${ControlHostname}:443'
   GatewaySecurityGroupId:
     Value: !Ref GatewaySecurityGroup
+  GatewayRoleName:
+    Value: !Ref GatewayRole
   CertificateArn:
     Value: !If [SecureSip, !Ref PublicCertificate, none]
   BridgefuControlHmacSecretArn:

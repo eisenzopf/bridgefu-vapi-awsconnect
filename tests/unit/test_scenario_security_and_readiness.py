@@ -82,13 +82,13 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
             "producer": "bridgefu-agent-workspace-playwright@1",
             "mode": "scenario-observer",
             "execution_id": "bfq-test1234",
-            "scenario_id": "vapi-web-transfer",
+            "scenario_id": "bridgefu-web-sdk-handoff",
             "agent_available": True,
             "redacted": True,
         }
         self.assertEqual(
             CONTROLLER.validate_agent_readiness(
-                value, "bfq-test1234", "vapi-web-transfer"
+                value, "bfq-test1234", "bridgefu-web-sdk-handoff"
             ),
             value,
         )
@@ -99,7 +99,7 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
         ):
             with self.assertRaises(CONTROLLER.QualificationError):
                 CONTROLLER.validate_agent_readiness(
-                    changed, "bfq-test1234", "vapi-web-transfer"
+                    changed, "bfq-test1234", "bridgefu-web-sdk-handoff"
                 )
 
     def test_web_source_readiness_requires_exact_call_binding(self) -> None:
@@ -165,6 +165,31 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
             web.index("validate_web_source_readiness"),
             web.index("private_json(trigger"),
         )
+
+    def test_web_handoff_orders_authority_context_and_browser_trigger(self) -> None:
+        text = (QUALIFICATION / "controller.py").read_text(encoding="utf-8")
+        web = text.split("    def _web_smoke(", 1)[1].split(
+            "    def cleanup_sip_transients(", 1
+        )[0]
+        ordered = (
+            "self.provision_temporary_vapi_phone()",
+            "self.install_direct_assistant_overlay()",
+            "self.install_web_runtime(",
+            "self.authorize_web_media()",
+            "ensure_connect_agent_available",
+            "self.wait_for_agent_readiness(",
+            "self.create_direct_route(",
+            "self.stage_direct_context(",
+            '"bridgefu-web-playwright.mjs"',
+            "validate_web_source_readiness",
+            "self.wait_for_vapi_call(",
+            "private_json(session_path, session)",
+            "private_json(trigger",
+            "self.verify_scenario(",
+        )
+        positions = [web.index(fragment) for fragment in ordered]
+        self.assertEqual(positions, sorted(positions))
+        self.assertNotIn("handoff_token", web.split("private_json(session_path", 1)[1])
 
     def test_destination_security_proof_is_single_correlated_runtime_event(
         self,

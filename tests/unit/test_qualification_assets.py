@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -14,10 +15,25 @@ QUALIFICATION = ROOT / "qualification"
 
 
 class QualificationAssetTests(unittest.TestCase):
+    def pinned_bridgefu_checkout(self) -> Path:
+        candidates = [
+            Path(os.environ["BRIDGEFU_CHECKOUT"])
+            if "BRIDGEFU_CHECKOUT" in os.environ
+            else None,
+            ROOT / "target" / "pinned-bridgefu",
+            ROOT.parent / "bridgefu-main-clean",
+        ]
+        for candidate in candidates:
+            if candidate is not None and (candidate / "sdk/typescript/package.json").is_file():
+                return candidate
+        self.fail("the exact pinned Bridgefu checkout is required for SDK bundle tests")
+
     def test_matrix_contains_only_the_two_release_smokes(self):
         text = (QUALIFICATION / "matrix.yaml").read_text()
         scenarios = set(re.findall(r"^  - id: ([a-z0-9-]+)$", text, re.M))
-        self.assertEqual(scenarios, {"vapi-sip-transfer", "vapi-web-transfer"})
+        self.assertEqual(
+            scenarios, {"vapi-sip-transfer", "bridgefu-web-sdk-handoff"}
+        )
         for removed_scope in ("soak", "failure_drill", "sip-rtp-pcmu"):
             self.assertNotIn(removed_scope, text)
         self.assertIn("dtmf_source_to_agent", text)
@@ -43,10 +59,29 @@ class QualificationAssetTests(unittest.TestCase):
             lock["repository"], "https://github.com/eisenzopf/bridgefu.git"
         )
         self.assertRegex(lock["commit"], r"^[0-9a-f]{40}$")
-        browser = (QUALIFICATION / "browser" / "vapi-web-playwright.mjs").read_text()
+        browser = (
+            QUALIFICATION / "browser" / "bridgefu-web-playwright.mjs"
+        ).read_text()
         self.assertIn('join(ROOT, "qualification/package.json")', browser)
+        for forbidden in ("VAPI_PUBLIC_KEY", "--assistant-id", "webCall"):
+            self.assertNotIn(forbidden, browser)
+        self.assertIn('required(options, "--route-attachment")', browser)
+        self.assertIn('required(options, "--prompt-pcm")', browser)
+        self.assertIn('required(options, "--signaling-hostname")', browser)
+        self.assertIn("--host-resolver-rules=MAP", browser)
+        makefile = (ROOT / "Makefile").read_text()
+        self.assertIn(
+            "node --check qualification/browser/bridgefu-web-playwright.mjs",
+            makefile,
+        )
+        self.assertNotIn("vapi-web-playwright.mjs", makefile)
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        self.assertIn("Test the exact pinned Bridgefu browser SDK", workflow)
+        self.assertIn(
+            "npm --prefix target/pinned-bridgefu/sdk/typescript test", workflow
+        )
 
-    def test_vapi_web_demo_site_is_owned_and_built_by_this_repository(self):
+    def test_bridgefu_web_demo_site_is_owned_and_built_by_this_repository(self):
         controller = (QUALIFICATION / "controller.py").read_text()
         package = json.loads((QUALIFICATION / "package.json").read_text())
         self.assertNotIn("build-recipe-demo-site.py", controller)
@@ -60,11 +95,16 @@ class QualificationAssetTests(unittest.TestCase):
             run.index('self.phase = "web_site_validation"'),
             run.index('self.phase = "preflight"'),
         )
-        self.assertEqual(package["dependencies"]["@vapi-ai/web"], "2.5.2")
+        self.assertNotIn("@vapi-ai/web", package.get("dependencies", {}))
         self.assertEqual(package["devDependencies"]["esbuild"], "0.28.1")
+        app = (QUALIFICATION / "demo-site" / "app.js").read_text()
+        self.assertIn('from "@bridgefu/webrtc-browser"', app)
+        for forbidden in ("@vapi-ai/web", "VAPI_PUBLIC_KEY", "webCall", "new Vapi"):
+            self.assertNotIn(forbidden, app)
         for name in ("index.html", "style.css", "app.js"):
             self.assertTrue((QUALIFICATION / "demo-site" / name).is_file())
 
+        checkout = self.pinned_bridgefu_checkout()
         with tempfile.TemporaryDirectory() as directory:
             first = Path(directory) / "first"
             second = Path(directory) / "second"
@@ -75,6 +115,8 @@ class QualificationAssetTests(unittest.TestCase):
                         str(QUALIFICATION / "build_demo_site.py"),
                         "--output",
                         str(output),
+                        "--bridgefu-checkout",
+                        str(checkout),
                     ],
                     cwd=ROOT,
                     check=True,
@@ -99,10 +141,30 @@ class QualificationAssetTests(unittest.TestCase):
                     ),
                 )
             manifest = json.loads((first / "manifest.json").read_text())
+            source_lock = json.loads((ROOT / "bridgefu.lock.json").read_text())
             self.assertEqual(
                 manifest["producer"],
-                "bridgefu-vapi-awsconnect-qualification-site@1",
+                "bridgefu-vapi-awsconnect-qualification-site@2",
             )
+            self.assertEqual(manifest["schema_version"], 2)
+            self.assertEqual(manifest["bridgefu_commit"], source_lock["commit"])
+            self.assertEqual(
+                manifest["bridgefu_cargo_lock_sha256"],
+                source_lock["cargo_lock_sha256"],
+            )
+            self.assertEqual(
+                manifest["bridgefu_sdk"]["name"], "@bridgefu/webrtc-browser"
+            )
+            with zipfile.ZipFile(first_archive) as bundle:
+                javascript = bundle.read("app.js").decode()
+            for forbidden in ("@vapi-ai/web", "VAPI_PUBLIC_KEY", "webCall"):
+                self.assertNotIn(forbidden, javascript)
+            for marker in (
+                "bridgefu.handoff.v1",
+                "rvoip.webrtc.v1",
+                "bridgefu.attach.",
+            ):
+                self.assertIn(marker, javascript)
 
     def test_packer_creates_runtime_staging_directory_before_upload(self):
         packer = (ROOT / "image" / "bridgefu.pkr.hcl").read_text()
@@ -287,7 +349,7 @@ class QualificationAssetTests(unittest.TestCase):
             ".evidence_schema_version == 2",
             ".secure_preflight_passed == true",
             ".required_checks_passed == true",
-            '.scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"]',
+            '.scenario_ids == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"]',
             ".zero_resource_proof == true",
         ):
             self.assertGreaterEqual(receipt_gate.count(assertion), 2)
@@ -438,7 +500,7 @@ class QualificationAssetTests(unittest.TestCase):
         for check in required_preflight_checks:
             self.assertIn(f'"{check}"', receipt_gate)
         self.assertIn(
-            '([.scenarios[].id] | sort) == ["vapi-sip-transfer","vapi-web-transfer"]',
+            '([.scenarios[].id] | sort) == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"]',
             receipt_gate,
         )
         for attestation in (
@@ -457,7 +519,7 @@ class QualificationAssetTests(unittest.TestCase):
             )
             self.assertIn(".required_checks_passed == true", signed_receipt_gate)
             self.assertIn(
-                '.scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"]',
+                '.scenario_ids == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"]',
                 signed_receipt_gate,
             )
 
@@ -481,7 +543,9 @@ class QualificationAssetTests(unittest.TestCase):
         agent = (
             QUALIFICATION / "browser" / "agent-workspace-playwright.mjs"
         ).read_text()
-        web = (QUALIFICATION / "browser" / "vapi-web-playwright.mjs").read_text()
+        web = (
+            QUALIFICATION / "browser" / "bridgefu-web-playwright.mjs"
+        ).read_text()
         sip = (QUALIFICATION / "sip-client" / "src" / "main.rs").read_text()
         evidence_schema = (
             QUALIFICATION / "schemas" / "evidence-v1.schema.json"
@@ -502,7 +566,7 @@ class QualificationAssetTests(unittest.TestCase):
         )[0]
         self.assertLess(
             web.index("ensure_connect_agent_available"),
-            web.index("vapi-web-playwright.mjs"),
+            web.index("bridgefu-web-playwright.mjs"),
         )
         self.assertLess(
             sip.index("ensure_connect_agent_available"),

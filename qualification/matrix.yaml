@@ -10,9 +10,9 @@ required_smokes:
   - id: vapi-sip-transfer
     source: vapi_sip
     description: A controlled SIP client calls a temporary Vapi SIP endpoint.
-  - id: vapi-web-transfer
-    source: bridgefu_vapi_web_sdk
-    description: The pinned Bridgefu Vapi Web SDK starts the Vapi call.
+  - id: bridgefu-web-sdk-handoff
+    source: bridgefu_webrtc_browser_sdk
+    description: The pinned Bridgefu WebRTC SDK attaches before a server-owned Vapi-to-Connect leg replacement.
 required_checks:
   - vapi_call_connected
   - vapi_transfer_invoked

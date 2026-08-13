@@ -39,6 +39,7 @@ from qualification.controller import (
     private_json,
     purge_object_versions_exact,
     sanitize_diagnostic,
+    vapi_phone_intent,
     wait_for_vapi_phone_active,
 )
 
@@ -535,6 +536,7 @@ class SdpCapture:
         self.vapi: Vapi | None = None
         self.target: Target | None = None
         self.phone_id: str | None = None
+        self.phone_intent: Mapping[str, str] | None = None
         self.auth_object: str | None = None
         self.observer_command_id: str | None = None
         self.source_command_id: str | None = None
@@ -654,6 +656,9 @@ class SdpCapture:
             "username": f"bfq_{secrets.token_hex(8)}",
             "password": secrets.token_urlsafe(24),
         }
+        self.phone_intent = vapi_phone_intent(
+            self.args.execution, target.assistant_id, authentication
+        )
         phone = self.vapi.create_phone(
             self.args.execution, target.assistant_id, authentication
         )
@@ -864,6 +869,29 @@ wait "$source_pid"
 rm -f "$run/source.pid" "$run/source.json"
 """.replace("\n  ", "\n  ")
 
+    def prerequisite_script(self) -> str:
+        """Prove every remote executable before creating a Vapi endpoint."""
+        observer = shlex.quote(self.args.observer_path)
+        source = shlex.quote(self.args.sip_client)
+        prompt = shlex.quote(self.args.prompt)
+        return f"""set -euo pipefail
+command -v iptables >/dev/null
+[ -x {observer} ]
+[ -x {source} ]
+[ -r {prompt} ]
+systemctl is-active --quiet bridgefu.service
+curl -fsS --max-time 2 http://127.0.0.1:9090/readyz >/dev/null
+printf '{{"remote_trace_prerequisites":true,"redacted":true}}\n'"""
+
+    def verify_remote_prerequisites(self, target: Target) -> None:
+        command_id = self.send_shell(target, self.prerequisite_script())
+        invocation = self.invocation(target, command_id, 60)
+        if invocation.get("Status") != "Success":
+            raise DiagnosticError("remote trace prerequisites are unavailable")
+        value = self.parse_ssm_json(invocation, "remote trace prerequisites")
+        if value != {"remote_trace_prerequisites": True, "redacted": True}:
+            raise DiagnosticError("remote trace prerequisite evidence is invalid")
+
     def send_shell(self, target: Target, script: str) -> str:
         # AWS-RunShellScript joins the `commands` array with real newlines. A
         # single JSON string containing a multiline script is instead written
@@ -1000,11 +1028,12 @@ rm -f "$run/source.pid" "$run/source.json"
     def delete_phone(self) -> bool:
         if self.phone_id is None:
             return True
-        if self.vapi is None:
+        if self.vapi is None or self.phone_intent is None:
             return False
         try:
-            self.vapi.delete("phone-number", self.phone_id)
+            self.vapi.delete_phone(self.phone_id, self.phone_intent)
             self.phone_id = None
+            self.phone_intent = None
             return True
         except QualificationError:
             return False
@@ -1075,15 +1104,16 @@ rm -f "$run/source.pid" "$run/source.json"
 
     def execute(self) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
         self.target = self.discover_target()
-        self.vapi = self.connect_vapi(self.target)
         primary: BaseException | None = None
         summary: Mapping[str, Any] | None = None
         try:
-            authentication, _ = self.prepare_phone(self.target)
-            self.upload_auth(self.target, authentication)
             preflight = self.remote_cleanup(self.target)
             if not all(preflight.values()):
                 raise DiagnosticError("remote diagnostic preflight cleanup failed")
+            self.verify_remote_prerequisites(self.target)
+            self.vapi = self.connect_vapi(self.target)
+            authentication, _ = self.prepare_phone(self.target)
+            self.upload_auth(self.target, authentication)
             self.observer_command_id = self.send_shell(
                 self.target, self.observer_script(self.target)
             )

@@ -86,7 +86,7 @@ jobs:
         run: |
           npm --prefix qualification ci --ignore-scripts
           node --check qualification/browser/agent-workspace-playwright.mjs
-          node --check qualification/browser/vapi-web-playwright.mjs
+          node --check qualification/browser/bridgefu-web-playwright.mjs
 
   validate:
     runs-on: ubuntu-latest
@@ -102,7 +102,27 @@ jobs:
           'cfn-lint>=1.30,<2'
           'ruff>=0.12,<1'
           -r qualification/requirements-runner.txt
+      - name: Checkout the exact Bridgefu source used by the SDK bundle
+        run: |
+          set -euo pipefail
+          repository="$(jq -r .repository bridgefu.lock.json)"
+          commit="$(jq -r .commit bridgefu.lock.json)"
+          git clone --filter=blob:none --no-checkout "$repository" target/pinned-bridgefu
+          git -C target/pinned-bridgefu checkout --detach "$commit"
+          test "$(sha256sum target/pinned-bridgefu/Cargo.lock | awk '{print $1}')" = \
+            "$(jq -r .cargo_lock_sha256 bridgefu.lock.json)"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: target/pinned-bridgefu/sdk/typescript/package-lock.json
+      - name: Test the exact pinned Bridgefu browser SDK
+        run: |
+          npm --prefix target/pinned-bridgefu/sdk/typescript ci --ignore-scripts
+          npm --prefix target/pinned-bridgefu/sdk/typescript test
       - name: Unit tests and static checks
+        env:
+          BRIDGEFU_CHECKOUT: target/pinned-bridgefu
         run: |
           python -m unittest discover -s tests/unit -v
           ruff check .

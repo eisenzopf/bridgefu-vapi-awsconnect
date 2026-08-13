@@ -248,8 +248,18 @@ Prove:
 Run:
 
 ```text
-Bridgefu Web SDK → Vapi → Bridgefu → Amazon Connect
+browser → Bridgefu Web SDK → Bridgefu → Vapi SIP assistant
+                                      → Bridgefu-owned leg replacement
+                                      → Amazon Connect
 ```
+
+This smoke must build and run `@bridgefu/webrtc-browser` from the exact
+Bridgefu commit pinned by `bridgefu.lock.json`. It must not import or start a
+call with `@vapi-ai/web`; a Vapi `webCall` is a different product path and is
+not evidence for this gate. The browser attaches to Bridgefu, Bridgefu dials
+the Vapi SIP assistant, and a trusted server-side handoff replaces only the
+Vapi destination leg with Amazon Connect while preserving the browser's
+PeerConnection.
 
 Prove the same items as the SIP-source smoke plus agent-to-source DTMF.
 

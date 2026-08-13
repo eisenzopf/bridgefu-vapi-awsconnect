@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
- * Controlled Vapi Web SDK source for the Bridgefu AWS Connect release.
+ * Controlled Bridgefu WebRTC SDK source for the Bridgefu AWS Connect release.
  *
  * The exact immutable demo-site bundle is served either by the deployed
  * CloudFront distribution or, for a non-deployed qualification, on 127.0.0.1.
- * The browser-safe public key stays in process memory, the raw Vapi call ID is
- * exchanged through a mode-0600 handshake, and retained output contains only
- * hashes, counts, timestamps, and fixed labels.
+ * A one-use Bridgefu route attachment is exchanged through a mode-0600 input.
+ * The browser never receives a Vapi key, Bridgefu control bearer, or handoff
+ * authority. Retained output contains only hashes, counts, timestamps, and
+ * fixed labels.
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -27,8 +28,9 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PRODUCER = "bridgefu-vapi-web-playwright@1";
-const SDK_VERSION = "2.5.2";
+const PRODUCER = "bridgefu-webrtc-browser-playwright@1";
+const SDK_NAME = "@bridgefu/webrtc-browser";
+const SDK_VERSION = "0.1.0";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "../..");
 const require = createRequire(join(ROOT, "qualification/package.json"));
@@ -37,6 +39,7 @@ const { chromium } = require("playwright");
 
 const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_SITE_FILE_BYTES = 2 * 1024 * 1024;
+const ROUTE_INPUT_KEYS = new Set(["schema_version", "route_attachment", "route_binding"]);
 const SESSION_KEYS = new Set([
   "schema_version",
   "execution_id",
@@ -56,6 +59,7 @@ const SESSION_KEYS = new Set([
   "correlation_id",
   "correlation_fingerprint",
   "source_call_id",
+  "vapi_call_id",
   "source_org_id",
   "source_call_fingerprint",
   "sip_uri",
@@ -73,6 +77,8 @@ const PROBE_PULSES_PER_CYCLE = 5;
 const PROBE_PULSE_MS = 100;
 const DTMF_START_MS = 6_000;
 const DTMF_DURATION_MS = 350;
+const PROMPT_START_MS = 1_000;
+const PROMPT_SAMPLE_RATE = 8_000;
 
 class HarnessError extends Error {}
 
@@ -191,20 +197,68 @@ function timeoutMilliseconds(options) {
   return seconds * 1000;
 }
 
-function validatePublicKey(value) {
-  if (typeof value !== "string" || value.length < 8 || value.length > 256 || /[\s<>"']/.test(value)) {
-    fail("VAPI_PUBLIC_KEY is missing or invalid");
-  }
-  return value;
-}
-
-function validateAssistantId(value) {
-  if (!/^[0-9a-f]{8}-[0-9a-f-]{27,40}$/i.test(value)) fail("assistant ID is invalid");
-  return value;
-}
-
 function validateSha256(value, label) {
   if (!/^[0-9a-f]{64}$/.test(value)) fail(`${label} digest is invalid`);
+  return value;
+}
+
+function validateRouteInput(path) {
+  const value = privateJson(path);
+  if (!exactKeys(value, ROUTE_INPUT_KEYS) || value.schema_version !== 1) {
+    fail("private route attachment shape changed");
+  }
+  const attachment = value.route_attachment;
+  const binding = value.route_binding;
+  const attachmentKeys = new Set([
+    "type",
+    "signaling_uri",
+    "token",
+    "signaling_credential",
+    "subprotocols",
+    "ice_servers",
+    "expires_at",
+  ]);
+  const bindingKeys = new Set(["tenantId", "callId", "legId"]);
+  if (
+    !exactKeys(attachment, attachmentKeys)
+    || !exactKeys(binding, bindingKeys)
+    || attachment.type !== "webrtc"
+    || !/^[A-Za-z0-9_-]{43}$/.test(attachment.token)
+    || attachment.signaling_credential?.usage !== "bridgefu-webrtc-signaling"
+    || attachment.signaling_credential?.token !== attachment.token
+    || !Array.isArray(attachment.subprotocols)
+    || attachment.subprotocols.length !== 3
+    || attachment.subprotocols[0] !== "rvoip.webrtc.v1"
+    || attachment.subprotocols[1] !== `token.${attachment.token}`
+    || attachment.subprotocols[2] !== `bridgefu.attach.${attachment.token}`
+    || !Array.isArray(attachment.ice_servers)
+    || ![binding.tenantId, binding.callId, binding.legId].every(
+      (field) => typeof field === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(field),
+    )
+  ) {
+    fail("private route attachment violates the Bridgefu SDK contract");
+  }
+  let signaling;
+  try {
+    signaling = new URL(attachment.signaling_uri);
+  } catch {
+    fail("private route signaling URI is invalid");
+  }
+  if (
+    signaling.protocol !== "wss:"
+    || signaling.username
+    || signaling.password
+    || signaling.search
+    || signaling.hash
+    || !signaling.hostname
+  ) {
+    fail("private route signaling URI must use exact WSS");
+  }
+  const expiresAt = Date.parse(attachment.expires_at);
+  const credentialExpiry = Date.parse(attachment.signaling_credential.expires_at);
+  if (!Number.isFinite(expiresAt) || expiresAt !== credentialExpiry || expiresAt <= Date.now()) {
+    fail("private route attachment expiry is invalid");
+  }
   return value;
 }
 
@@ -230,8 +284,25 @@ function validateSiteUrl(value) {
   return `${parsed.origin}/`;
 }
 
-function writeProbeWav(path) {
+function readPromptPcm(path) {
+  privateRegularFile(path, 8 * 1024 * 1024);
+  const value = readFileSync(path);
+  if (value.length < 2 || value.length % 2 !== 0) {
+    fail("spoken handoff prompt is not signed 16-bit PCM");
+  }
+  if (value.length / 2 > PROMPT_SAMPLE_RATE * 60) {
+    fail("spoken handoff prompt exceeds its duration boundary");
+  }
+  const samples = new Int16Array(value.length / 2);
+  for (let index = 0; index < samples.length; index += 1) {
+    samples[index] = value.readInt16LE(index * 2);
+  }
+  return samples;
+}
+
+function writeProbeWav(path, promptPcmPath) {
   if (existsSync(path)) fail("fake microphone path already exists");
+  const promptSamples = readPromptPcm(promptPcmPath);
   const sampleCount = PROBE_SECONDS * SAMPLE_RATE;
   const bodyBytes = sampleCount * 2;
   const buffer = Buffer.alloc(44 + bodyBytes);
@@ -261,6 +332,12 @@ function writeProbeWav(path) {
       cycle >= DTMF_START_MS &&
       cycle < DTMF_START_MS + DTMF_DURATION_MS;
     let value = 0;
+    const promptSample = Math.floor(
+      ((elapsedMs - PROMPT_START_MS) * PROMPT_SAMPLE_RATE) / 1000,
+    );
+    if (promptSample >= 0 && promptSample < promptSamples.length) {
+      value += (promptSamples[promptSample] / 32768) * 0.8;
+    }
     if (marker) value += Math.sin((2 * Math.PI * SOURCE_MARKER_HZ * sample) / SAMPLE_RATE);
     if (dtmf) {
       value += 0.55 * Math.sin((2 * Math.PI * 770 * sample) / SAMPLE_RATE);
@@ -304,20 +381,21 @@ async function waitForPrivateFile(path, timeoutMs) {
   );
 }
 
-function validateSession(path, callId, hangupOrigin) {
+function validateSession(path, bridgefuCallId, hangupOrigin) {
   const session = privateJson(path);
   if (!exactKeys(session, SESSION_KEYS)) fail("private session shape changed");
-  const callFingerprint = sha256Bytes(callId).slice(0, 12);
+  const callFingerprint = sha256Bytes(bridgefuCallId).slice(0, 12);
   if (
     session.schema_version !== 1 ||
     session.recipe !== "vapi-amazon-connect-screen-pop@1" ||
-    session.scenario_id !== "vapi-web-transfer" ||
+    session.scenario_id !== "bridgefu-web-sdk-handoff" ||
     session.hangup_origin !== hangupOrigin ||
     !["sips_optional_srtp", "sips_srtp", "sip_rtp"].includes(session.security) ||
     session.codec !== "negotiated" ||
     !validNetworkContract(session.network_profile, session.network_contract) ||
     session.sip_uri !== null ||
-    session.source_call_id !== callId ||
+    session.source_call_id !== bridgefuCallId ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(session.vapi_call_id) ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(session.source_org_id) ||
     session.source_call_fingerprint !== callFingerprint ||
     !/^bf1_[A-Za-z0-9_-]{43}$/.test(session.correlation_id) ||
@@ -326,11 +404,11 @@ function validateSession(path, callId, hangupOrigin) {
     session.sip_header?.value !== session.correlation_id ||
     session.expected_context?.customer_name !== "Bridgefu Synthetic Caller" ||
     session.expected_context?.issue_summary !==
-      `Qualification vapi-web-transfer ${hangupOrigin} hangup.` ||
+      `Qualification Bridgefu Web SDK ${hangupOrigin} hangup.` ||
     session.expected_context?.intent !== "qualification" ||
     session.expected_context?.verification_status !== "synthetic"
   ) {
-    fail("private session violates the Vapi source contract");
+    fail("private session violates the Bridgefu browser source contract");
   }
   return session;
 }
@@ -524,7 +602,7 @@ async function waitForSiteReady(page, timeoutMs) {
     await waitUntil(
       () => page.locator("#start").isEnabled(),
       timeoutMs,
-      "immutable Vapi demo site did not become ready",
+      "immutable Bridgefu demo site did not become ready",
     );
   } catch (error) {
     const state = await page.evaluate(() => {
@@ -535,15 +613,15 @@ async function waitForSiteReady(page, timeoutMs) {
     }).catch(() => null);
     if (state?.status === "failed") {
       if (state.errorType === "configuration-invalid") {
-        fail("immutable Vapi demo site rejected its configuration");
+        fail("immutable Bridgefu demo site rejected its configuration");
       }
       if (state.errorType === "configuration-unavailable") {
-        fail("immutable Vapi demo site configuration was unavailable");
+        fail("immutable Bridgefu demo site configuration was unavailable");
       }
-      fail("immutable Vapi demo site failed during initialization");
+      fail("immutable Bridgefu demo site failed during initialization");
     }
     if (state?.status === "loading") {
-      fail("immutable Vapi demo site configuration load did not settle");
+      fail("immutable Bridgefu demo site configuration load did not settle");
     }
     throw error;
   }
@@ -601,7 +679,7 @@ async function observe(options) {
   }
   const siteDir =
     typeof siteDirectoryOption === "string" ? resolve(siteDirectoryOption) : null;
-  const assistantId = validateAssistantId(required(options, "--assistant-id"));
+  const routeInput = validateRouteInput(resolve(required(options, "--route-attachment")));
   const sessionPath = resolve(required(options, "--session"));
   const readyPath = resolve(required(options, "--ready"));
   const triggerPath = resolve(required(options, "--trigger"));
@@ -610,19 +688,30 @@ async function observe(options) {
     required(options, "--site-bundle-sha256"),
     "site bundle",
   );
+  const promptPcm = resolve(required(options, "--prompt-pcm"));
+  const signalingHostname = required(options, "--signaling-hostname").toLowerCase();
+  if (
+    !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$/.test(
+      signalingHostname,
+    )
+  ) {
+    fail("Bridgefu signaling hostname is invalid");
+  }
+  if (new URL(routeInput.route_attachment.signaling_uri).hostname !== signalingHostname) {
+    fail("Bridgefu signaling hostname does not match the attachment");
+  }
   const hangupOrigin = required(options, "--hangup-origin");
   if (!["source", "agent"].includes(hangupOrigin)) fail("hangup origin is invalid");
   const timeoutMs = timeoutMilliseconds(options);
-  const publicKey = validatePublicKey(process.env.VAPI_PUBLIC_KEY);
   for (const output of [readyPath, triggerPath, observationPath]) {
     if (existsSync(output)) fail("qualification output path already exists");
   }
   const nonce = randomBytes(32).toString("base64url");
   const qualificationConfig = {
-    schema_version: 1,
+    schema_version: 2,
     recipe: "vapi-amazon-connect-screen-pop@1",
-    vapi_public_key: publicKey,
-    vapi_assistant_id: assistantId,
+    route_attachment: routeInput.route_attachment,
+    route_binding: routeInput.route_binding,
     release_revision: siteBundleSha256,
     qualification_nonce: nonce,
     qualification_hangup_origin: hangupOrigin,
@@ -631,13 +720,14 @@ async function observe(options) {
     ? await localSite(siteDir, qualificationConfig)
     : { url: validateSiteUrl(siteUrlOption), close: async () => {} };
   const probePath = join(dirname(observationPath), `.vapi-probe-${randomBytes(12).toString("hex")}.wav`);
-  writeProbeWav(probePath);
+  writeProbeWav(probePath, promptPcm);
   const browser = await chromium.launch({
     headless: !options.has("--headed"),
     args: [
       "--use-fake-ui-for-media-stream",
       "--use-fake-device-for-media-stream",
       `--use-file-for-fake-audio-capture=${probePath}`,
+      `--host-resolver-rules=MAP ${signalingHostname} 127.0.0.1, EXCLUDE localhost`,
       "--autoplay-policy=no-user-gesture-required",
       "--no-sandbox",
     ],
@@ -661,7 +751,7 @@ async function observe(options) {
       timeout: 30_000,
     });
     if (!navigation || navigation.status() !== 200) {
-      fail("immutable Vapi demo site navigation failed");
+      fail("immutable Bridgefu demo site navigation failed");
     }
     if (!siteDir) {
       const headers = navigation.headers();
@@ -685,9 +775,12 @@ async function observe(options) {
         return value?.callStartObserved && typeof value.callId === "string" ? value : false;
       },
       Math.min(timeoutMs, 90_000),
-      "stock Vapi webCall did not start",
+      "Bridgefu WebRTC call did not start",
     );
     const callId = initial.callId;
+    if (callId !== routeInput.route_binding.callId) {
+      fail("Bridgefu WebRTC call identity changed");
+    }
     const sourceCallFingerprint = sha256Bytes(callId).slice(0, 12);
     exclusiveJson(readyPath, {
       schema_version: 1,
@@ -702,10 +795,16 @@ async function observe(options) {
     const triggerAtMs = Date.now();
     const triggered = await page.evaluate(
       (qualificationNonce) =>
-        globalThis.__BRIDGEFU_RECIPE_QUALIFICATION__?.triggerTransfer(qualificationNonce) ?? false,
+        globalThis.__BRIDGEFU_RECIPE_QUALIFICATION__?.markServerHandoffTriggered(qualificationNonce) ?? false,
       nonce,
     );
-    if (!triggered) fail("Vapi transfer trigger was not accepted exactly once");
+    if (!triggered) fail("Bridgefu server handoff marker was not accepted exactly once");
+    const dtmfSent = await page.evaluate(
+      (qualificationNonce) =>
+        globalThis.__BRIDGEFU_RECIPE_QUALIFICATION__?.sendDtmf(qualificationNonce, "9") ?? false,
+      nonce,
+    );
+    if (!dtmfSent) fail("Bridgefu browser DTMF was not accepted");
     await waitUntil(
       async () => {
         const probe = await probeSnapshot(page);
@@ -719,7 +818,7 @@ async function observe(options) {
         );
       },
       Math.min(timeoutMs, 120_000),
-      "Vapi browser media observations did not converge",
+      "Bridgefu browser media observations did not converge",
     );
     let localEndCompleted = false;
     let remoteEndObserved = false;
@@ -729,18 +828,18 @@ async function observe(options) {
           globalThis.__BRIDGEFU_RECIPE_QUALIFICATION__?.endFromSource(qualificationNonce) ?? false,
         nonce,
       );
-      if (!ended) fail("Vapi browser could not originate hangup");
+      if (!ended) fail("Bridgefu browser could not originate hangup");
       localEndCompleted = true;
     }
     await waitUntil(
       async () => (await applicationSnapshot(page, nonce))?.callEndObserved === true,
       Math.min(timeoutMs, 60_000),
-      "Vapi browser did not observe terminal cleanup",
+      "Bridgefu browser did not observe terminal cleanup",
     );
     if (hangupOrigin === "agent") remoteEndObserved = true;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 1000));
     const application = await applicationSnapshot(page, nonce);
-    if (!application?.callEndObserved) fail("Vapi browser cleanup was not stable");
+    if (!application?.callEndObserved) fail("Bridgefu browser cleanup was not stable");
     const probe = await probeSnapshot(page);
     const observedAtMs = Date.now();
     const sourceMarkers = sourceMarkerSchedule(
@@ -760,13 +859,14 @@ async function observe(options) {
       probe.agentMarkerFrames < 5 ||
       !probe.dtmfAgentToSourceObserved
     ) {
-      fail("Vapi browser final media evidence is incomplete");
+      fail("Bridgefu browser final media evidence is incomplete");
     }
     exclusiveJson(observationPath, {
       schema_version: 1,
       producer: PRODUCER,
       producer_revision_sha256: sha256File(fileURLToPath(import.meta.url)),
       site_bundle_sha256: siteBundleSha256,
+      browser_sdk_name: SDK_NAME,
       browser_sdk_version: SDK_VERSION,
       execution_id: session.execution_id,
       scenario_id: session.scenario_id,
@@ -774,9 +874,9 @@ async function observe(options) {
       correlation_fingerprint: session.correlation_fingerprint,
       source_call_fingerprint: sourceCallFingerprint,
       observed_at: new Date(observedAtMs).toISOString(),
-      vapi: {
-        web_call_started: true,
-        transfer_trigger_sent: true,
+      bridgefu: {
+        webrtc_call_started: true,
+        server_handoff_triggered: true,
         call_end_observed: true,
       },
       media: {
@@ -811,6 +911,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  process.stderr.write(`error: ${error instanceof HarnessError ? error.message : "Vapi browser observer failed"}\n`);
+  process.stderr.write(`error: ${error instanceof HarnessError ? error.message : "Bridgefu browser observer failed"}\n`);
   process.exitCode = 1;
 });

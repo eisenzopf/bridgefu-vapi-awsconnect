@@ -23,6 +23,111 @@ SPEC.loader.exec_module(CONTROLLER)
 
 
 class QualificationControllerTests(unittest.TestCase):
+    def test_lost_assistant_response_adapter_commits_once_then_fails_once(self):
+        class Delegate:
+            def __init__(self):
+                self.creates = 0
+
+            def create(self, resource, payload):
+                self.creates += 1
+                return {"id": "assistant_1234"}
+
+        delegate = Delegate()
+        client = CONTROLLER.LostAssistantCreateResponseClient(delegate)
+        with self.assertRaises(CONTROLLER.ProvisioningAmbiguousWriteError):
+            client.create("assistant", {"name": "owned"})
+        self.assertEqual(delegate.creates, 1)
+        self.assertTrue(client.injected)
+        self.assertEqual(
+            client.create("assistant", {"name": "owned"}),
+            {"id": "assistant_1234"},
+        )
+        self.assertEqual(delegate.creates, 2)
+
+    def test_live_vapi_resilience_deletes_reconciles_and_recreates(self):
+        def result(prefix):
+            assistant_id = f"assistant_{prefix}"
+            tool_id = f"tool_{prefix}"
+            credential_id = f"credential_{prefix}"
+            return SimpleNamespace(
+                assistant_id=assistant_id,
+                prepare_tool_id=tool_id,
+                webhook_credential_id=credential_id,
+                physical_id=(
+                    f"bridgefu-vapi-v2:{assistant_id}:{tool_id}:{credential_id}"
+                ),
+            )
+
+        first = result("first")
+        second = result("second")
+        client = mock.Mock()
+        client.get.return_value = None
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.args = SimpleNamespace()
+        setattr(controller.args, "vapi_secret_arn", "arn:secret")
+        controller.aws = mock.Mock()
+        controller.aws.secret.return_value = "vapi-private-key-value-1234567890"
+        controller.outputs = {
+            "VapiAssistantId": "assistant_old",
+            "VapiPrepareToolId": "tool_old",
+            "VapiWebhookCredentialId": "credential_old",
+        }
+        controller.temp_phone_id = None
+        controller.temp_phone_intent = None
+        controller.direct_assistant_overlay_installed = False
+        controller.direct_tool_id = None
+        controller.web_runtime_cleanup_required = False
+        controller.vapi_provisioning_resilience_evidence = None
+        config = mock.Mock()
+
+        create_results = iter((first, first, second, second))
+
+        def create_side_effect(api, desired):
+            self.assertIs(desired, config)
+            value = next(create_results)
+            if isinstance(api, CONTROLLER.LostAssistantCreateResponseClient):
+                api.injected = True
+            return value
+
+        with (
+            mock.patch.object(controller, "provisioning_config", return_value=config),
+            mock.patch.object(CONTROLLER, "VapiHttpClient", return_value=client),
+            mock.patch.object(
+                CONTROLLER, "provision_create", side_effect=create_side_effect
+            ) as create,
+            mock.patch.object(CONTROLLER, "provision_delete") as delete,
+        ):
+            controller.vapi_provisioning_resilience()
+
+        self.assertEqual(create.call_count, 4)
+        self.assertEqual(delete.call_count, 2)
+        self.assertEqual(
+            delete.call_args_list[0].args[2],
+            "bridgefu-vapi-v2:assistant_old:tool_old:credential_old",
+        )
+        self.assertEqual(delete.call_args_list[1].args[2], first.physical_id)
+        self.assertEqual(controller.outputs["VapiAssistantId"], second.assistant_id)
+        self.assertEqual(
+            controller.outputs["VapiPrepareToolId"], second.prepare_tool_id
+        )
+        self.assertEqual(
+            controller.outputs["VapiWebhookCredentialId"],
+            second.webhook_credential_id,
+        )
+        self.assertEqual(
+            controller.vapi_provisioning_resilience_evidence,
+            {
+                "schema_version": 1,
+                "producer": "bridgefu-vapi-provisioning-resilience@1",
+                "ambiguous_create_reconciled": True,
+                "first_cycle_deleted": True,
+                "second_cycle_recreated": True,
+                "exact_owner_resources_present": True,
+                "redacted": True,
+                "passed": True,
+            },
+        )
+
     def test_command_failure_retains_bounded_sanitized_stderr(self):
         completed = subprocess.CompletedProcess(
             ["aws", "cloudformation"],
@@ -321,6 +426,86 @@ class QualificationControllerTests(unittest.TestCase):
         ):
             client.delete("phone-number", "phone_1234")
 
+    def test_direct_vapi_tool_creation_and_deletion_bind_exact_stack_endpoint(self):
+        desired = CONTROLLER.bridgefu_web_handoff.direct_tool_payload(
+            endpoint_url="https://direct.example.test/v1/direct-handoff",
+            credential_id="credential_1234",
+            field_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"intent": {"type": "string", "maxLength": 256}},
+                "required": ["intent"],
+            },
+            execution_id="bfq-test1234",
+        )
+        remote = {"id": "tool_1234", **desired}
+
+        class FakeVapi(CONTROLLER.Vapi):
+            def __init__(self):
+                super().__init__("private-test-key")
+                self.tools = []
+                self.deleted = False
+
+            def list(self, resource, *, limit=100):
+                return list(self.tools)
+
+            def get(self, resource, resource_id):
+                return next(
+                    (item for item in self.tools if item.get("id") == resource_id),
+                    None,
+                )
+
+            def request(self, method, path, payload=None, *, allow_missing=False):
+                if method == "POST":
+                    self.tools = [remote]
+                    return remote
+                if method == "DELETE":
+                    self.deleted = True
+                    self.tools = []
+                    return None
+                raise AssertionError("unexpected direct-tool request")
+
+        client = FakeVapi()
+        created = client.create_direct_tool(
+            execution_id="bfq-test1234",
+            endpoint_url="https://direct.example.test/v1/direct-handoff",
+            credential_id="credential_1234",
+            desired=desired,
+        )
+        self.assertEqual(created["id"], "tool_1234")
+        client.delete_direct_tool(
+            "tool_1234",
+            execution_id="bfq-test1234",
+            endpoint_url="https://direct.example.test/v1/direct-handoff",
+            credential_id="credential_1234",
+        )
+        self.assertTrue(client.deleted)
+
+    def test_vapi_assistant_model_patch_requires_exact_reread(self):
+        model = {"provider": "openai", "model": "gpt-4.1", "toolIds": ["tool_1"]}
+
+        class FakeVapi(CONTROLLER.Vapi):
+            def __init__(self, accepted):
+                super().__init__("private-test-key")
+                self.accepted = accepted
+                self.payload = None
+
+            def request(self, method, path, payload=None, *, allow_missing=False):
+                self.payload = payload
+                return {"id": "assistant_1234"}
+
+            def get(self, resource, resource_id):
+                return {
+                    "id": resource_id,
+                    "model": model if self.accepted else {"provider": "openai"},
+                }
+
+        accepted = FakeVapi(True)
+        accepted.patch_assistant_model("assistant_1234", model)
+        self.assertEqual(accepted.payload, {"model": model})
+        with self.assertRaisesRegex(CONTROLLER.QualificationError, "not verified"):
+            FakeVapi(False).patch_assistant_model("assistant_1234", model)
+
     def test_vapi_phone_delete_refuses_foreign_exact_id(self):
         authentication = {
             "realm": "sip.vapi.ai",
@@ -519,6 +704,10 @@ class QualificationControllerTests(unittest.TestCase):
             "phone_1234", "assistant_1234"
         )
         controller.vapi.create_phone.reset_mock()
+        controller.temp_phone_id = None
+        controller.temp_phone_intent = None
+        controller.temp_phone_intent_journal_object = None
+        controller.temp_phone_journal_object = None
         controller.write_phone_intent_journal.side_effect = (
             CONTROLLER.QualificationError("intent upload failed")
         )
@@ -708,6 +897,76 @@ class QualificationControllerTests(unittest.TestCase):
                 controller.cleanup()
             self.assertEqual(controller.temp_phone_id, "phone_1234")
             self.assertIsNotNone(controller.temp_phone_journal_object)
+            flattened = [value for call in controller.aws.text_calls for value in call]
+            self.assertNotIn("delete-stack", flattened)
+            self.assertNotIn("delete-objects", flattened)
+        finally:
+            shutil.rmtree(output)
+
+    def test_failed_direct_tool_delete_blocks_stack_and_prefix_deletion(self):
+        output = Path(tempfile.mkdtemp(prefix="qualification-direct-tool-test-"))
+
+        class Vapi:
+            def delete_direct_tool(self, *_args, **_kwargs):
+                raise CONTROLLER.QualificationError("delete failed")
+
+            def get(self, resource, resource_id):
+                return {"id": resource_id}
+
+        class Aws:
+            region = "us-west-2"
+
+            def __init__(self):
+                self.text_calls = []
+
+            def text(self, arguments, timeout=900):
+                self.text_calls.append(arguments)
+                return ""
+
+            def exists(self, arguments):
+                return "describe-stacks" in arguments
+
+            def json(self, arguments, timeout=900):
+                if "list-object-versions" in arguments:
+                    return {"IsTruncated": False}
+                raise AssertionError(arguments)
+
+        try:
+            controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+            controller.args = SimpleNamespace(
+                execution_id="bfq-test1234", region="us-west-2", output=output
+            )
+            controller.stack_name = "bridgefu-bfq-test1234"
+            controller.outputs = {
+                "ArtifactBucket": "bridgefu-artifacts-test",
+                "VapiAssistantId": "assistant_1234",
+                "VapiWebhookCredentialId": "credential_1234",
+                "DirectHandoffUrl": (
+                    "https://example.execute-api.us-west-2.amazonaws.com/"
+                    "v1/direct-handoff"
+                ),
+            }
+            controller.vapi = Vapi()
+            controller.direct_assistant_overlay_installed = False
+            controller.direct_tool_id = "tool_1234"
+            controller.direct_tool_desired = {}
+            controller.direct_tool_prompt_sha256 = None
+            controller.temp_phone_id = None
+            controller.temp_phone_intent = None
+            controller.temp_phone_creation_ambiguous = False
+            controller.temp_phone_journal_object = None
+            controller.temp_phone_intent_journal_object = None
+            controller.temp_sip_auth_object = None
+            controller.acm_validation_journal = None
+            controller.acm_validation_journal_object = None
+            controller.acm_validation_discovery_complete = True
+            controller.processes = []
+            controller.ssm_commands = []
+            controller.created_stack = True
+            controller.aws = Aws()
+            with self.assertRaises(CONTROLLER.QualificationError):
+                controller.cleanup()
+            self.assertEqual(controller.direct_tool_id, "tool_1234")
             flattened = [value for call in controller.aws.text_calls for value in call]
             self.assertNotIn("delete-stack", flattened)
             self.assertNotIn("delete-objects", flattened)
@@ -991,9 +1250,9 @@ class QualificationControllerTests(unittest.TestCase):
         )
 
     def test_scenario_checks_are_derived_from_dtmf_and_media_observations(self):
-        fields = list(CONTROLLER.synthetic_context("vapi-web-transfer"))
+        fields = list(CONTROLLER.synthetic_context("bridgefu-web-sdk-handoff"))
         source = {
-            "vapi": {"web_call_started": True},
+            "bridgefu": {"webrtc_call_started": True},
             "media": {
                 "source_to_agent_marker_frames_sent": 25,
                 "agent_marker_observed_at_ms": [1, 2, 3, 4, 5],
@@ -1018,13 +1277,12 @@ class QualificationControllerTests(unittest.TestCase):
             "transfers": ["completed"],
             "artifact": {
                 "messages": [
-                    {"toolName": "prepare_handoff"},
-                    {"toolName": "transferCall"},
+                    {"toolName": "bridgefu_direct_handoff"},
                 ]
             },
         }
         checks = CONTROLLER.derive_scenario_checks(
-            "vapi-web-transfer",
+            "bridgefu-web-sdk-handoff",
             source,
             agent,
             call,
@@ -1043,7 +1301,7 @@ class QualificationControllerTests(unittest.TestCase):
         self.assertTrue(checks["dtmf_agent_to_source"])
         agent["media"]["dtmf_source_to_agent_observed"] = False
         checks = CONTROLLER.derive_scenario_checks(
-            "vapi-web-transfer",
+            "bridgefu-web-sdk-handoff",
             source,
             agent,
             call,
@@ -1066,7 +1324,7 @@ class QualificationControllerTests(unittest.TestCase):
             "producer": "bridgefu-agent-workspace-playwright@1",
             "producer_revision_sha256": "a" * 64,
             "execution_id": "bfq-test1234",
-            "scenario_id": "vapi-web-transfer",
+            "scenario_id": "bridgefu-web-sdk-handoff",
             "hangup_origin": "source",
             "correlation_fingerprint": "a" * 12,
             "source_call_fingerprint": "b" * 12,
@@ -1113,19 +1371,20 @@ class QualificationControllerTests(unittest.TestCase):
 
         web = {
             "schema_version": 1,
-            "producer": "bridgefu-vapi-web-playwright@1",
+            "producer": "bridgefu-webrtc-browser-playwright@1",
             "producer_revision_sha256": "a" * 64,
             "site_bundle_sha256": "b" * 64,
-            "browser_sdk_version": "2.5.2",
+            "browser_sdk_name": "@bridgefu/webrtc-browser",
+            "browser_sdk_version": "0.1.0",
             "execution_id": "bfq-test1234",
-            "scenario_id": "vapi-web-transfer",
+            "scenario_id": "bridgefu-web-sdk-handoff",
             "hangup_origin": "source",
             "correlation_fingerprint": "a" * 12,
             "source_call_fingerprint": "b" * 12,
             "observed_at": "2026-08-11T04:20:00Z",
-            "vapi": {
-                "web_call_started": True,
-                "transfer_trigger_sent": True,
+            "bridgefu": {
+                "webrtc_call_started": True,
+                "server_handoff_triggered": True,
                 "call_end_observed": True,
             },
             "media": {
@@ -1146,7 +1405,9 @@ class QualificationControllerTests(unittest.TestCase):
             },
             "redacted": True,
         }
-        CONTROLLER.validate_schema(web, "vapi-source-observation-v1.schema.json")
+        CONTROLLER.validate_schema(
+            web, "bridgefu-browser-source-observation-v1.schema.json"
+        )
         for field in (
             "dtmf_source_to_agent_sent_at_ms",
             "dtmf_agent_to_source_observed",
@@ -1155,7 +1416,7 @@ class QualificationControllerTests(unittest.TestCase):
             del changed["media"][field]
             with self.assertRaises(CONTROLLER.QualificationError):
                 CONTROLLER.validate_schema(
-                    changed, "vapi-source-observation-v1.schema.json"
+                    changed, "bridgefu-browser-source-observation-v1.schema.json"
                 )
 
         sip = {
@@ -1224,7 +1485,7 @@ class QualificationControllerTests(unittest.TestCase):
                     "passed": True,
                 },
                 {
-                    "id": "vapi-web-transfer",
+                    "id": "bridgefu-web-sdk-handoff",
                     "source_observation_sha256": "c" * 64,
                     "agent_observation_sha256": "d" * 64,
                     "checks": {**base_checks, "dtmf_agent_to_source": True},
@@ -1319,6 +1580,7 @@ class QualificationControllerTests(unittest.TestCase):
                 "credential_initialization",
                 "vapi_web_transfer",
                 "vapi_sip_transfer",
+                "vapi_provisioning_resilience",
             ):
                 with self.subTest(phase=phase):
                     controller.phase = phase
@@ -1404,7 +1666,7 @@ class QualificationControllerTests(unittest.TestCase):
     def test_session_contains_only_the_private_harness_contract(self):
         session = CONTROLLER.make_session(
             execution_id="bfq-test1234",
-            scenario="vapi-web-transfer",
+            scenario="bridgefu-web-sdk-handoff",
             call={
                 "id": "call_1234",
                 "orgId": "org_1234",
@@ -1415,10 +1677,127 @@ class QualificationControllerTests(unittest.TestCase):
             release="1.2.3",
             sip_uri=None,
         )
-        self.assertEqual(len(session), 24)
+        self.assertEqual(len(session), 25)
+        self.assertEqual(session["source_call_id"], "call_1234")
+        self.assertEqual(session["vapi_call_id"], "call_1234")
         self.assertEqual(session["expected_context"]["intent"], "qualification")
         self.assertEqual(session["hangup_origin"], "source")
         self.assertRegex(session["session_hmac"], r"^[0-9a-f]{64}$")
+
+    def test_web_session_binds_bridgefu_source_and_vapi_call_separately(self):
+        correlation = "bf1_" + "a" * 43
+        session = CONTROLLER.make_session(
+            execution_id="bfq-test1234",
+            scenario="bridgefu-web-sdk-handoff",
+            call={
+                "id": "vapi_call_1234",
+                "orgId": "org_1234",
+                "createdAt": "2026-08-08T12:00:00Z",
+            },
+            correlation_key="k" * 32,
+            bridgefu_commit="a" * 40,
+            release="1.2.3",
+            sip_uri=None,
+            source_call_id="bridgefu_call_1234",
+            correlation_id=correlation,
+        )
+        self.assertEqual(session["source_call_id"], "bridgefu_call_1234")
+        self.assertEqual(session["vapi_call_id"], "vapi_call_1234")
+        self.assertEqual(session["correlation_id"], correlation)
+        self.assertEqual(
+            session["source_call_fingerprint"],
+            CONTROLLER.sha256_bytes(b"bridgefu_call_1234")[:12],
+        )
+
+    def test_direct_context_is_mapped_before_the_vapi_tool_can_replace(self):
+        binding = CONTROLLER.bridgefu_web_handoff.DirectRouteBinding(
+            tenant_id="support",
+            call_id="bridgefu_call_1234",
+            source_leg_id="browser_leg_1234",
+            destination_leg_id="vapi_leg_1234",
+            route_attachment={},
+        )
+        item = CONTROLLER.direct_context_item(
+            correlation_id="bf1_" + "a" * 43,
+            token_id="token_1234",  # noqa: S106 -- opaque non-secret test identity.
+            binding=binding,
+            schema_hash="b" * 64,
+            now=1_786_000_000,
+        )
+        self.assertEqual(item["handoff_status"], {"S": "MAPPED"})
+        self.assertEqual(item["bridgefu_call_id"], {"S": "bridgefu_call_1234"})
+        self.assertEqual(item["direct_leg_id"], {"S": "vapi_leg_1234"})
+        self.assertEqual(item["direct_route_id"], {"S": "amazon-connect"})
+        self.assertEqual(item["expires_at"], {"N": "1786003600"})
+        serialized = json.dumps(item)
+        for forbidden in ("password", "Bearer ", "sips:", "handoff_token"):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_direct_context_write_uses_one_stdin_document_and_no_private_argv(self):
+        class Runner:
+            def run(self, arguments, *, input_text=None, timeout=60, **_kwargs):
+                self.arguments = arguments
+                self.input_text = input_text
+                self.timeout = timeout
+
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.args = SimpleNamespace(region="us-west-2")
+        controller.outputs = {
+            "HandoffTableName": "bridgefu-bfq-test1234-handoffs",
+            "ScreenPopSchemaHash": "b" * 64,
+        }
+        controller.runner = Runner()
+        binding = CONTROLLER.bridgefu_web_handoff.DirectRouteBinding(
+            tenant_id="support",
+            call_id="bridgefu_call_1234",
+            source_leg_id="browser_leg_1234",
+            destination_leg_id="vapi_leg_1234",
+            route_attachment={},
+        )
+        correlation = "bf1_" + "a" * 43
+        token = "token_1234"  # noqa: S105 -- opaque one-use test identity.
+        controller.stage_direct_context(
+            correlation_id=correlation,
+            token_id=token,
+            binding=binding,
+            now=1_786_000_000,
+        )
+        arguments = controller.runner.arguments
+        self.assertEqual(arguments.count("--cli-input-json"), 1)
+        self.assertEqual(
+            arguments[arguments.index("--cli-input-json") + 1], "file:///dev/stdin"
+        )
+        self.assertNotIn(correlation, arguments)
+        self.assertNotIn(token, arguments)
+        request = json.loads(controller.runner.input_text)
+        self.assertEqual(request["Item"]["correlation_id"], {"S": correlation})
+        self.assertEqual(request["Item"]["direct_token_id"], {"S": token})
+
+    def test_secret_write_uses_stdin_and_never_places_secret_on_argv(self):
+        class Runner:
+            def run(self, arguments, *, input_text=None, timeout=60, **_kwargs):
+                self.arguments = arguments
+                self.input_text = input_text
+
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.args = SimpleNamespace(region="us-west-2")
+        controller.runner = Runner()
+        secret = "this-is-a-private-qualification-password"  # noqa: S105
+        controller.put_secret_json(
+            "arn:aws:secretsmanager:us-west-2:123456789012:secret:qualification/test",
+            {"password": secret},
+        )
+        self.assertNotIn(secret, controller.runner.arguments)
+        self.assertEqual(controller.runner.arguments.count("--cli-input-json"), 1)
+        self.assertEqual(
+            json.loads(controller.runner.input_text)["SecretString"],
+            json.dumps({"password": secret}, separators=(",", ":"), sort_keys=True),
+        )
+
+    def test_qualification_tool_schema_uses_the_screen_pop_order(self):
+        schema = CONTROLLER.qualification_field_schema()
+        self.assertEqual(schema["required"], list(CONTROLLER.SCREEN_POP_KEYS))
+        self.assertEqual(list(schema["properties"]), list(CONTROLLER.SCREEN_POP_KEYS))
 
     def test_dynamo_v2_values_must_match_exact_synthetic_context(self):
         session = {
@@ -1501,6 +1880,66 @@ class QualificationControllerTests(unittest.TestCase):
                 runtime, lookup, fingerprint, "sips_optional_srtp"
             )
 
+    def test_web_log_proof_requires_outbound_bridgefu_to_vapi_security_event(self):
+        fingerprint = "a1b2c3d4e5f6"
+        runtime = {
+            "events": [
+                {
+                    "message": json.dumps(
+                        {
+                            "event": "bridgefu_vapi_source_security_evidence",
+                            "correlation_fingerprint": fingerprint,
+                            "leg": "bridgefu-to-vapi",
+                            "uri_scheme": "sips",
+                            "signaling_transport": "tls",
+                            "media_profile": "RTP/AVP",
+                            "media_keying": "none",
+                            "media_suite": "none",
+                            "inbound_srtp_context_installed": False,
+                            "outbound_srtp_context_installed": False,
+                            "answered": True,
+                            "redacted": True,
+                            "message": "established Bridgefu Vapi source leg",
+                        }
+                    )
+                }
+            ]
+        }
+        lookup = {
+            "events": [
+                {
+                    "message": json.dumps(
+                        {
+                            "event": "bridgefu_correlation_evidence",
+                            "operation": "connect_lookup",
+                            "correlation_fingerprint": fingerprint,
+                            "result": "available",
+                        }
+                    )
+                }
+            ]
+        }
+        proof = CONTROLLER.verify_log_evidence(
+            runtime,
+            lookup,
+            fingerprint,
+            "sips_optional_srtp",
+            "bridgefu-web-sdk-handoff",
+        )
+        self.assertTrue(proof["bridgefu_received_correlation_header"])
+        self.assertEqual(proof["vapi_destination_media_profile"], "RTP/AVP")
+        runtime["events"][0]["message"] = runtime["events"][0]["message"].replace(
+            '"signaling_transport": "tls"', '"signaling_transport": "udp"'
+        )
+        with self.assertRaises(CONTROLLER.QualificationError):
+            CONTROLLER.verify_log_evidence(
+                runtime,
+                lookup,
+                fingerprint,
+                "sips_optional_srtp",
+                "bridgefu-web-sdk-handoff",
+            )
+
     def test_vapi_call_requires_prepare_tool_and_transfer_activity(self):
         self.assertTrue(
             CONTROLLER.call_contains_transfer(
@@ -1518,6 +1957,15 @@ class QualificationControllerTests(unittest.TestCase):
         )
         self.assertFalse(
             CONTROLLER.call_contains_transfer({"artifact": {"messages": []}})
+        )
+        self.assertTrue(
+            CONTROLLER.call_contains_transfer(
+                {
+                    "status": "ended",
+                    "artifact": {"messages": [{"toolName": "bridgefu_direct_handoff"}]},
+                },
+                "bridgefu-web-sdk-handoff",
+            )
         )
 
     def test_aws_absence_check_fails_closed_on_access_denied(self):

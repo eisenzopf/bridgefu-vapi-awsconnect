@@ -37,7 +37,8 @@
         "direct_secure_preflight",
         "credential_initialization",
         "vapi_web_transfer",
-        "vapi_sip_transfer"
+        "vapi_sip_transfer",
+        "vapi_provisioning_resilience"
       ]
     },
     "summary": {"type": "string", "minLength": 1, "maxLength": 2048},

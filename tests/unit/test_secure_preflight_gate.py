@@ -462,8 +462,9 @@ class SecurePreflightGateTests(unittest.TestCase):
 
     def test_every_controller_ssm_program_uses_one_exact_validated_encoder(self):
         source = (ROOT / "qualification" / "controller.py").read_text(encoding="utf-8")
-        self.assertEqual(source.count('"ssm",\n                "send-command"'), 3)
-        self.assertEqual(source.count("encode_ssm_shell_parameters("), 4)
+        self.assertEqual(source.count('"ssm",\n                "send-command"'), 4)
+        # Four dispatches plus the encoder definition itself.
+        self.assertEqual(source.count("encode_ssm_shell_parameters("), 5)
 
         programs = (
             [
@@ -603,6 +604,16 @@ class SecurePreflightGateTests(unittest.TestCase):
                 "checks": secure_checks,
                 "passed": True,
             },
+            "vapi_provisioning_resilience": {
+                "schema_version": 1,
+                "producer": "bridgefu-vapi-provisioning-resilience@1",
+                "ambiguous_create_reconciled": True,
+                "first_cycle_deleted": True,
+                "second_cycle_recreated": True,
+                "exact_owner_resources_present": True,
+                "redacted": True,
+                "passed": True,
+            },
             "scenarios": [
                 {
                     "id": "vapi-sip-transfer",
@@ -617,7 +628,7 @@ class SecurePreflightGateTests(unittest.TestCase):
                     "passed": True,
                 },
                 {
-                    "id": "vapi-web-transfer",
+                    "id": "bridgefu-web-sdk-handoff",
                     "source_observation_sha256": "1" * 64,
                     "agent_observation_sha256": "2" * 64,
                     "runtime_security_evidence_sha256": "3" * 64,

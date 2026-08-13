@@ -4,7 +4,7 @@
   "title": "Bridgefu secure preflight and Vapi to Amazon Connect release evidence",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "release", "execution_id", "region", "started_at", "ended_at", "bridgefu_commit", "secure_preflight", "scenarios", "teardown", "redacted"],
+  "required": ["schema_version", "release", "execution_id", "region", "started_at", "ended_at", "bridgefu_commit", "secure_preflight", "vapi_provisioning_resilience", "scenarios", "teardown", "redacted"],
   "properties": {
     "schema_version": {"const": 2},
     "release": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$"},
@@ -81,6 +81,21 @@
         "passed": {"const": true}
       }
     },
+    "vapi_provisioning_resilience": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "producer", "ambiguous_create_reconciled", "first_cycle_deleted", "second_cycle_recreated", "exact_owner_resources_present", "redacted", "passed"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "producer": {"const": "bridgefu-vapi-provisioning-resilience@1"},
+        "ambiguous_create_reconciled": {"const": true},
+        "first_cycle_deleted": {"const": true},
+        "second_cycle_recreated": {"const": true},
+        "exact_owner_resources_present": {"const": true},
+        "redacted": {"const": true},
+        "passed": {"const": true}
+      }
+    },
     "scenarios": {
       "type": "array",
       "minItems": 2,
@@ -90,7 +105,7 @@
         "additionalProperties": false,
         "required": ["id", "source_observation_sha256", "agent_observation_sha256", "runtime_security_evidence_sha256", "runtime_security_media_profile", "runtime_security_media_keying", "runtime_security_media_suite", "runtime_security_srtp_negotiated", "checks", "passed"],
         "properties": {
-          "id": {"enum": ["vapi-sip-transfer", "vapi-web-transfer"]},
+          "id": {"enum": ["vapi-sip-transfer", "bridgefu-web-sdk-handoff"]},
           "source_observation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "agent_observation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "runtime_security_evidence_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -129,7 +144,7 @@
             "then": {"properties": {"checks": {"not": {"required": ["dtmf_agent_to_source"]}}}}
           },
           {
-            "if": {"properties": {"id": {"const": "vapi-web-transfer"}}, "required": ["id"]},
+            "if": {"properties": {"id": {"const": "bridgefu-web-sdk-handoff"}}, "required": ["id"]},
             "then": {"properties": {"checks": {"required": ["dtmf_agent_to_source"]}}}
           },
           {
@@ -144,7 +159,7 @@
       },
       "allOf": [
         {"contains": {"properties": {"id": {"const": "vapi-sip-transfer"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1},
-        {"contains": {"properties": {"id": {"const": "vapi-web-transfer"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1}
+        {"contains": {"properties": {"id": {"const": "bridgefu-web-sdk-handoff"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1}
       ]
     },
     "teardown": {

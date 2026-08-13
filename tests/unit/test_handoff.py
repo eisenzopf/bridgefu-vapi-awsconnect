@@ -18,15 +18,19 @@ from bridgefu_handoff import (  # noqa: E402
     connect_lookup,
     decode_http_json,
     derive_correlation_id,
+    direct_browser_handoff,
     direct_transfer_response,
     prepare_handoff,
     prepare_vapi_response,
     transfer_destination,
     vapi_control_url,
     verify_bearer,
+    verify_direct_handoff_token,
     verify_vapi_binding,
 )
 from screen_pop import parse_fields, schema_hash, vapi_parameters  # noqa: E402
+
+from qualification.bridgefu_web_handoff import issue_handoff_token  # noqa: E402
 
 KEY = b"correlation-key-is-distinct-and-at-least-32-bytes"
 DEPLOYMENT = "recipe-test"
@@ -766,6 +770,158 @@ class FakeStoreFromEvent(FakeStore):
     def __init__(self):
         super().__init__()
         prepare_handoff(prepare_event(), self, KEY, DEPLOYMENT, 86_400, now=NOW)
+
+
+class FakeDirectStore:
+    def __init__(self):
+        self.steps = []
+        self.values = None
+
+    def prepare_direct(self, session_id, token_id, identity, values, updated_at):
+        self.steps.append("stored")
+        self.values = dict(values)
+        self.asserted = (session_id, token_id, identity, updated_at)
+        return {
+            "call_id": "call_bridgefu_001",
+            "leg_id": "leg_vapi_001",
+            "route_id": "amazon-connect",
+            "idempotency_key": "direct_replace_001",
+        }
+
+    def mark_direct_started(self, session_id, updated_at):
+        self.steps.append("marked")
+        self.marked = (session_id, updated_at)
+
+
+class DirectBrowserHandoffContractTests(unittest.TestCase):
+    def fields(self):
+        return parse_fields(
+            [
+                {
+                    "key": "customer_name",
+                    "label": "Customer",
+                    "description": "Synthetic caller.",
+                    "type": "text",
+                    "required": True,
+                    "max_length": 256,
+                }
+            ]
+        )
+
+    def event(self, token):
+        return {
+            "message": {
+                "type": "tool-calls",
+                "call": {
+                    "id": "call_vapi_001",
+                    "orgId": "org_vapi_001",
+                    "assistantId": "assistant_test_001",
+                },
+                "toolCallList": [
+                    {
+                        "id": "tool_call_001",
+                        "name": "bridgefu_direct_handoff",
+                        "arguments": {
+                            "customer_name": "Bridgefu Synthetic Caller",
+                            "handoff_token": token,
+                        },
+                    }
+                ],
+            }
+        }
+
+    def test_qualification_issuer_and_lambda_verifier_share_exact_vector(self):
+        token = issue_handoff_token(
+            KEY.decode(),
+            "session_001",
+            "token_001",
+            issued_at=NOW,
+            lifetime_seconds=3600,
+        )
+        self.assertEqual(
+            verify_direct_handoff_token(token, KEY, now=NOW + 1),
+            ("session_001", "token_001"),
+        )
+
+    def test_context_is_stored_before_exact_leg_replacement(self):
+        token = issue_handoff_token(
+            KEY.decode(),
+            "session_001",
+            "token_001",
+            issued_at=NOW,
+            lifetime_seconds=3600,
+        )
+        store = FakeDirectStore()
+        replaced = []
+
+        def replace(call_id, leg_id, route_id, idempotency_key):
+            self.assertEqual(store.steps, ["stored"])
+            replaced.append((call_id, leg_id, route_id, idempotency_key))
+
+        response = direct_browser_handoff(
+            self.event(token),
+            binding={
+                "status": "bound",
+                "organization_id": "org_vapi_001",
+                "assistant_id": "assistant_test_001",
+            },
+            signing_key=KEY,
+            store=store,
+            configured_fields=self.fields(),
+            replace=replace,
+            now=NOW + 1,
+        )
+        self.assertEqual(
+            replaced,
+            [
+                (
+                    "call_bridgefu_001",
+                    "leg_vapi_001",
+                    "amazon-connect",
+                    "direct_replace_001",
+                )
+            ],
+        )
+        self.assertEqual(store.steps, ["stored", "marked"])
+        self.assertEqual(store.values, {"customer_name": "Bridgefu Synthetic Caller"})
+        self.assertEqual(response["results"][0]["toolCallId"], "tool_call_001")
+        self.assertNotIn("call_bridgefu_001", json.dumps(response))
+        self.assertNotIn("leg_vapi_001", json.dumps(response))
+
+    def test_tampered_token_or_identity_never_stores_or_replaces(self):
+        token = issue_handoff_token(
+            KEY.decode(),
+            "session_001",
+            "token_001",
+            issued_at=NOW,
+            lifetime_seconds=3600,
+        )
+        for event, binding in (
+            (
+                self.event(token[:-1] + ("A" if token[-1] != "A" else "B")),
+                {"status": "unbound"},
+            ),
+            (
+                self.event(token),
+                {
+                    "status": "bound",
+                    "organization_id": "org_other",
+                    "assistant_id": "assistant_test_001",
+                },
+            ),
+        ):
+            store = FakeDirectStore()
+            with self.assertRaises(HandoffError):
+                direct_browser_handoff(
+                    event,
+                    binding=binding,
+                    signing_key=KEY,
+                    store=store,
+                    configured_fields=self.fields(),
+                    replace=lambda *_: self.fail("replacement must not run"),
+                    now=NOW + 1,
+                )
+            self.assertEqual(store.steps, [])
 
 
 if __name__ == "__main__":

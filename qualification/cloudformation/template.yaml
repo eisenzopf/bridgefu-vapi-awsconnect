@@ -8,6 +8,15 @@ Metadata:
     Release: __RELEASE_VERSION__
     ExistingConnectInputsAllowed: false
 
+Mappings:
+  QualificationRelease:
+    us-east-1:
+      ArtifactBucket: __ARTIFACT_BUCKET_US_EAST_1__
+      TransferArtifactVersion: __HANDOFF_TRANSFER_ARTIFACT_VERSION_US_EAST_1__
+    us-west-2:
+      ArtifactBucket: __ARTIFACT_BUCKET_US_WEST_2__
+      TransferArtifactVersion: __HANDOFF_TRANSFER_ARTIFACT_VERSION_US_WEST_2__
+
 Parameters:
   DeploymentId:
     Type: String
@@ -35,6 +44,10 @@ Parameters:
       The release path keeps signaling on SIPS/TLS, prefers SRTP, and accepts
       RTP/AVP only when Vapi does not offer SRTP. Plain SIP/RTP is available
       only because this qualification stack uses DataRetentionMode=TestDelete.
+  ScreenPopFieldsJson:
+    Type: String
+    MaxLength: 4096
+    Default: '[{"key":"customer_name","label":"Customer","description":"Synthetic caller name.","type":"text","required":true,"max_length":256},{"key":"issue_summary","label":"Issue","description":"Synthetic qualification issue.","type":"text","required":true,"max_length":1024},{"key":"intent","label":"Intent","description":"Synthetic qualification intent.","type":"text","required":true,"max_length":128},{"key":"verification_status","label":"Verification","description":"Synthetic qualification status.","type":"choice","required":true,"choices":["synthetic","verified"]}]'
 
 Resources:
   DisposableConnect:
@@ -68,8 +81,7 @@ Resources:
         SipHostname: !Ref SipHostname
         VapiApiKeySecretArn: !Ref VapiApiKeySecretArn
         SipSecurity: !Ref SipSecurity
-        ScreenPopFieldsJson: >-
-          [{"key":"customer_name","label":"Customer","description":"Synthetic caller name.","type":"text","required":true,"max_length":256},{"key":"issue_summary","label":"Issue","description":"Synthetic qualification issue.","type":"text","required":true,"max_length":1024},{"key":"intent","label":"Intent","description":"Synthetic qualification intent.","type":"text","required":true,"max_length":128},{"key":"verification_status","label":"Verification","description":"Synthetic qualification status.","type":"choice","required":true,"choices":["synthetic","verified"]}]
+        ScreenPopFieldsJson: !Ref ScreenPopFieldsJson
         DataRetentionMode: TestDelete
         LogRetentionDays: 1
         AlarmEmail: ''
@@ -105,6 +117,177 @@ Resources:
       TTL: '30'
       ResourceRecords: [!GetAtt Candidate.Outputs.BridgefuInstancePrivateIp]
 
+  DirectHandoffSigningKey:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Name: !Sub 'bridgefu/${DeploymentId}/qualification/direct-handoff-signing-key'
+      Description: !Sub 'Disposable direct-browser handoff signing key for ${DeploymentId}'
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+      Tags:
+        - {Key: Project, Value: bridgefu-vapi-awsconnect}
+        - {Key: ManagedBy, Value: bridgefu-qualification}
+        - {Key: BridgefuExecutionId, Value: !Ref DeploymentId}
+
+  DirectVapiSipAuthSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Name: !Sub 'bridgefu/${DeploymentId}/qualification/vapi-sip-auth'
+      Description: !Sub 'Disposable outbound Vapi SIP authentication for ${DeploymentId}'
+      SecretString: '{}'
+      Tags:
+        - {Key: Project, Value: bridgefu-vapi-awsconnect}
+        - {Key: ManagedBy, Value: bridgefu-qualification}
+        - {Key: BridgefuExecutionId, Value: !Ref DeploymentId}
+
+  DirectVapiSipAuthReadPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub 'bridgefu-${DeploymentId}-direct-vapi-sip-auth'
+      Roles: [!GetAtt Candidate.Outputs.BridgefuGatewayRoleName]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ReadOnlyExactQualificationVapiSipAuth
+            Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource: !Ref DirectVapiSipAuthSecret
+
+  DirectHandoffLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/bridgefu-${DeploymentId}-direct-handoff'
+      RetentionInDays: 1
+      Tags:
+        - {Key: Project, Value: bridgefu-vapi-awsconnect}
+        - {Key: ManagedBy, Value: bridgefu-qualification}
+        - {Key: BridgefuExecutionId, Value: !Ref DeploymentId}
+
+  DirectHandoffRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'bridgefu-${DeploymentId}-direct-handoff'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: ExactDirectHandoff
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: WriteOnlyDirectHandoffRow
+                Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:UpdateItem]
+                Resource: !GetAtt Candidate.Outputs.HandoffTableArn
+              - Sid: ReadOnlyDirectHandoffSecrets
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref DirectHandoffSigningKey
+                  - !GetAtt Candidate.Outputs.VapiWebhookSecretArn
+                  - !GetAtt Candidate.Outputs.VapiIdentityBindingArn
+                  - !GetAtt Candidate.Outputs.BridgefuApiBearerSecretArn
+      Tags:
+        - {Key: Project, Value: bridgefu-vapi-awsconnect}
+        - {Key: ManagedBy, Value: bridgefu-qualification}
+        - {Key: BridgefuExecutionId, Value: !Ref DeploymentId}
+
+  DirectHandoffFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: DirectHandoffLogGroup
+    Properties:
+      FunctionName: !Sub 'bridgefu-${DeploymentId}-direct-handoff'
+      Runtime: python3.13
+      Architectures: [arm64]
+      Handler: handler.lambda_handler
+      MemorySize: 256
+      Timeout: 10
+      Role: !GetAtt DirectHandoffRole.Arn
+      Code:
+        S3Bucket: !FindInMap [QualificationRelease, !Ref 'AWS::Region', ArtifactBucket]
+        S3Key: __RELEASE_PREFIX__/__RELEASE_VERSION__/artifacts/lambda/transfer_destination.zip
+        S3ObjectVersion: !FindInMap [QualificationRelease, !Ref 'AWS::Region', TransferArtifactVersion]
+      Environment:
+        Variables:
+          HANDOFF_TABLE_NAME: !GetAtt Candidate.Outputs.HandoffTableName
+          VAPI_WEBHOOK_SECRET_ARN: !GetAtt Candidate.Outputs.VapiWebhookSecretArn
+          VAPI_IDENTITY_BINDING_ARN: !GetAtt Candidate.Outputs.VapiIdentityBindingArn
+          BRIDGEFU_API_BEARER_SECRET_ARN: !GetAtt Candidate.Outputs.BridgefuApiBearerSecretArn
+          BRIDGEFU_CONTROL_BASE_URL: !Sub 'https://control.${SipHostname}'
+          DIRECT_HANDOFF_SIGNING_KEY_SECRET_ARN: !Ref DirectHandoffSigningKey
+          DIRECT_HANDOFF_ROUTE_ID: amazon-connect
+          SCREEN_POP_FIELDS_JSON: !Ref ScreenPopFieldsJson
+          DEPLOYMENT_ID: !Ref DeploymentId
+          SIP_SECURITY: !Ref SipSecurity
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt Candidate.Outputs.BridgefuTransferSecurityGroupId
+        SubnetIds: !Split [',', !GetAtt Candidate.Outputs.BridgefuPrivateSubnetIds]
+      Tags:
+        - {Key: Project, Value: bridgefu-vapi-awsconnect}
+        - {Key: ManagedBy, Value: bridgefu-qualification}
+        - {Key: BridgefuExecutionId, Value: !Ref DeploymentId}
+
+  DirectHandoffApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub 'bridgefu-${DeploymentId}-direct-handoff'
+      ProtocolType: HTTP
+      Tags:
+        Project: bridgefu-vapi-awsconnect
+        ManagedBy: bridgefu-qualification
+        BridgefuExecutionId: !Ref DeploymentId
+
+  DirectHandoffIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref DirectHandoffApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt DirectHandoffFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  DirectHandoffRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DirectHandoffApi
+      RouteKey: POST /v1/direct-handoff
+      AuthorizationType: NONE
+      Target: !Join ['/', [integrations, !Ref DirectHandoffIntegration]]
+
+  DirectHandoffStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref DirectHandoffApi
+      StageName: '$default'
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 10
+        ThrottlingRateLimit: 5
+      Tags:
+        Project: bridgefu-vapi-awsconnect
+        ManagedBy: bridgefu-qualification
+        BridgefuExecutionId: !Ref DeploymentId
+
+  DirectHandoffPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DirectHandoffFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${DirectHandoffApi}/*/POST/v1/direct-handoff'
+
 Outputs:
   ConnectInstanceArn:
     Value: !GetAtt DisposableConnect.Outputs.ConnectInstanceArn
@@ -126,14 +309,42 @@ Outputs:
     Value: !GetAtt Candidate.Outputs.BridgefuSipUri
   VapiAssistantId:
     Value: !GetAtt Candidate.Outputs.VapiAssistantId
+  VapiProvisioningStackId:
+    Value: !GetAtt Candidate.Outputs.VapiProvisioningStackId
+  VapiPrepareUrl:
+    Value: !GetAtt Candidate.Outputs.VapiPrepareUrl
+  VapiTransferUrl:
+    Value: !GetAtt Candidate.Outputs.VapiTransferUrl
+  VapiModel:
+    Value: !GetAtt Candidate.Outputs.VapiModel
+  VapiVoiceId:
+    Value: !GetAtt Candidate.Outputs.VapiVoiceId
+  ScreenPopFieldsJson:
+    Value: !GetAtt Candidate.Outputs.ScreenPopFieldsJson
   VapiPrepareToolId:
     Value: !GetAtt Candidate.Outputs.VapiPrepareToolId
   VapiWebhookCredentialId:
     Value: !GetAtt Candidate.Outputs.VapiWebhookCredentialId
+  VapiWebhookSecretArn:
+    Value: !GetAtt Candidate.Outputs.VapiWebhookSecretArn
   ConnectWrapperFlowArn:
     Value: !GetAtt Candidate.Outputs.ConnectWrapperFlowArn
   HandoffTableName:
     Value: !GetAtt Candidate.Outputs.HandoffTableName
+  ScreenPopSchemaHash:
+    Value: !GetAtt Candidate.Outputs.ScreenPopSchemaHash
+  DirectHandoffUrl:
+    Value: !Sub 'https://${DirectHandoffApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/v1/direct-handoff'
+  DirectHandoffSigningKeyArn:
+    Value: !Ref DirectHandoffSigningKey
+  DirectVapiSipAuthSecretArn:
+    Value: !Ref DirectVapiSipAuthSecret
+  BridgefuApiBearerSecretArn:
+    Value: !GetAtt Candidate.Outputs.BridgefuApiBearerSecretArn
+  BridgefuPublicIp:
+    Value: !GetAtt Candidate.Outputs.BridgefuPublicIp
+  BridgefuGatewaySecurityGroupId:
+    Value: !GetAtt Candidate.Outputs.BridgefuGatewaySecurityGroupId
   CorrelationKeySecretArn:
     Value: !GetAtt Candidate.Outputs.CorrelationKeySecretArn
   RuntimeLogGroupName:

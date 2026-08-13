@@ -12,7 +12,7 @@ qualification-test:
 	printf '%s\n' "$$metadata" | jq -e '([.packages[] | select(.name == "bridgefu-direct-secure-probe") | .dependencies[] | select(.name == "rvoip-sip" and .req == "=0.3.7" and .source == "registry+https://github.com/rust-lang/crates.io-index" and .uses_default_features == false)] | length) == 1 and ([.packages[] | select(.name == "rvoip-sip" and .version == "0.3.7" and .source == "registry+https://github.com/rust-lang/crates.io-index")] | length) == 1'
 	npm --prefix qualification ci --ignore-scripts
 	node --check qualification/browser/agent-workspace-playwright.mjs
-	node --check qualification/browser/vapi-web-playwright.mjs
+	node --check qualification/browser/bridgefu-web-playwright.mjs
 
 lint:
 	python3 -m compileall -q lambda release tests

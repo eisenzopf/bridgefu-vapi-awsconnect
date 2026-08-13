@@ -183,6 +183,19 @@ Resources:
       RetainVapiResourcesOnDelete: !Ref RetainVapiResourcesOnDelete
 
 Outputs:
+  ProvisioningStackId:
+    Description: Nested stack identity used only by ownership-safe qualification reconciliation.
+    Value: !Ref 'AWS::StackId'
+  PrepareUrl:
+    Value: !Ref PrepareUrl
+  TransferUrl:
+    Value: !Ref TransferUrl
+  VapiModel:
+    Value: !Ref VapiModel
+  VapiVoiceId:
+    Value: !Ref VapiVoiceId
+  ScreenPopFieldsJson:
+    Value: !Ref ScreenPopFieldsJson
   AssistantId:
     Value: !GetAtt VapiResources.AssistantId
   PrepareToolId:

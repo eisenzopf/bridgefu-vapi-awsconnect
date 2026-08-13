@@ -90,7 +90,7 @@ jobs:
                .evidence_schema_version == 2 and
                .secure_preflight_passed == true and
                .required_checks_passed == true and
-               .scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"] and
+               .scenario_ids == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"] and
                .zero_resource_proof == true] | all)' \
             target/publication/receipt.json >/dev/null
           if [[ "$(jq -r .release_ready bridgefu.lock.json)" != true ]]; then
@@ -99,7 +99,7 @@ jobs:
                 .evidence_schema_version == 2 and
                 .secure_preflight_passed == true and
                 .required_checks_passed == true and
-                .scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"] and
+                .scenario_ids == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"] and
                 .zero_resource_proof == true] | all)' \
               target/publication/receipt.json >/dev/null
             echo 'bridgefu.lock.json is gated by the signed dual-region qualification receipt.'

@@ -25,7 +25,7 @@
     "producer_revision_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "execution_id": {"type": "string", "pattern": "^bfq-[a-z0-9-]{4,28}$"},
     "scenario_id": {
-      "enum": ["vapi-sip-transfer", "vapi-web-transfer"]
+      "enum": ["vapi-sip-transfer", "bridgefu-web-sdk-handoff"]
     },
     "hangup_origin": {"enum": ["source", "agent"]},
     "correlation_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{12}$"},
@@ -132,7 +132,7 @@
       }
     },
     {
-      "if": {"properties": {"scenario_id": {"const": "vapi-web-transfer"}}},
+      "if": {"properties": {"scenario_id": {"const": "bridgefu-web-sdk-handoff"}}},
       "then": {
         "properties": {
           "media": {

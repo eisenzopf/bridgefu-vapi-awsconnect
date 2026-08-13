@@ -66,6 +66,7 @@ const SESSION_KEYS = new Set([
   "correlation_id",
   "correlation_fingerprint",
   "source_call_id",
+  "vapi_call_id",
   "source_org_id",
   "source_call_fingerprint",
   "sip_uri",
@@ -75,7 +76,7 @@ const SESSION_KEYS = new Set([
 ]);
 const QUALIFIED_SCENARIOS = new Set([
   "vapi-sip-transfer",
-  "vapi-web-transfer",
+  "bridgefu-web-sdk-handoff",
 ]);
 const MAX_JSON_BYTES = 1024 * 1024;
 const PROBE_SECONDS = 120;
@@ -913,13 +914,18 @@ async function authenticate(options) {
   if (existsSync(storageState)) fail("storage-state output already exists");
   mkdirSync(dirname(storageState), { recursive: true, mode: 0o700 });
   chmodSync(dirname(storageState), 0o700);
-  const browser = await chromium.launch({
-    headless: credential !== null && !options.has("--headed"),
-    args: credential === null ? [] : ["--no-sandbox"],
-  });
+  let phase = "browser-launch";
+  let browser;
   try {
+    browser = await chromium.launch({
+      headless: credential !== null && !options.has("--headed"),
+      args: credential === null ? [] : ["--no-sandbox"],
+    });
+    phase = "browser-context";
     const context = await browser.newContext();
+    phase = "browser-page";
     const page = await context.newPage();
+    phase = "login-navigation";
     await page.goto(connectUrl.href, { waitUntil: "domcontentloaded", timeout: 30_000 });
     if (credential !== null) {
       const username = page
@@ -930,17 +936,24 @@ async function authenticate(options) {
       const password = page
         .locator('input[autocomplete="current-password"], input[name*="password" i], input[type="password"]')
         .first();
+      phase = "username-visible";
       await username.waitFor({ state: "visible", timeout: Math.min(timeoutMs, 60_000) });
+      phase = "username-fill";
       await username.fill(credential.username);
       if (!(await password.isVisible().catch(() => false))) {
+        phase = "username-continuation";
         const continued = await clickButton(page, [/^Next$/i, /^Continue$/i]);
         if (!continued) fail("Connect login username continuation was unavailable");
       }
+      phase = "password-visible";
       await password.waitFor({ state: "visible", timeout: Math.min(timeoutMs, 60_000) });
+      phase = "password-fill";
       await password.fill(credential.password);
+      phase = "login-submit";
       const submitted = await clickButton(page, [/Sign in/i, /Log in/i, /Login/i]);
       if (!submitted) fail("Connect login submit control was unavailable");
     }
+    phase = "workspace-ready";
     await waitUntil(
       () => workspaceReady(page),
       timeoutMs,
@@ -948,13 +961,18 @@ async function authenticate(options) {
       1000,
     );
     const temporary = `${storageState}.tmp`;
+    phase = "storage-state-write";
     await context.storageState({ path: temporary });
+    phase = "storage-state-seal";
     chmodSync(temporary, 0o600);
     renameSync(temporary, storageState);
     chmodSync(storageState, 0o600);
     process.stdout.write(`${storageState}\n`);
+  } catch (error) {
+    if (error instanceof HarnessError) throw error;
+    fail(`Agent Workspace authentication failed during ${phase}`);
   } finally {
-    await browser.close();
+    await browser?.close();
   }
 }
 
@@ -1247,7 +1265,7 @@ async function observe(options) {
       mediaProbe.sourceMarkerFrames < 5 ||
       !mediaProbe.dtmfSourceToAgentObserved ||
       agentMarkerSentAtMs.length < 5 ||
-      (session.scenario_id === "vapi-web-transfer" && agentDtmfSentAtMs.length < 1) ||
+      (session.scenario_id === "bridgefu-web-sdk-handoff" && agentDtmfSentAtMs.length < 1) ||
       mediaProbe.audioPacketsSent < 5
     ) {
       fail("Agent Workspace final media evidence is incomplete");
@@ -1375,7 +1393,15 @@ async function main() {
 }
 
 main().catch((error) => {
-  const message = error instanceof HarnessError ? error.message : "Agent Workspace harness failed";
+  const safeCategory = new Map([
+    ["Error", "runtime"],
+    ["TimeoutError", "browser-timeout"],
+    ["TypeError", "type-contract"],
+  ]).get(error?.name) ?? "unexpected";
+  const message =
+    error instanceof HarnessError
+      ? error.message
+      : `Agent Workspace harness failed (${safeCategory})`;
   process.stderr.write(`error: ${message}\n`);
   process.exitCode = 1;
 });

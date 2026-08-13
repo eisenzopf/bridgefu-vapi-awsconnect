@@ -98,6 +98,8 @@ class Harness(CAPTURE.SdpCapture):
         self.remote_calls = 0
         self.sent_scripts: list[str] = []
         self.cleanup_attempts: list[str] = []
+        self.prerequisites_verified = False
+        self.phone_prepared = False
 
     def discover_target(self):
         return CAPTURE.Target(
@@ -111,6 +113,7 @@ class Harness(CAPTURE.SdpCapture):
         return object()
 
     def prepare_phone(self, target):
+        self.phone_prepared = True
         self.phone_id = "phone_1234"
         return (
             {
@@ -123,6 +126,9 @@ class Harness(CAPTURE.SdpCapture):
 
     def upload_auth(self, target, authentication):
         self.auth_object = self.object_uri(target)
+
+    def verify_remote_prerequisites(self, target):
+        self.prerequisites_verified = True
 
     def remote_cleanup(self, target):
         self.remote_calls += 1
@@ -210,6 +216,54 @@ class SdpCaptureDiagnosticTests(unittest.TestCase):
             self.assertEqual(capture.cleanup_attempts.count("cancel"), 2)
             self.assertIn("phone", capture.cleanup_attempts)
             self.assertIn("auth", capture.cleanup_attempts)
+            self.assertTrue(capture.prerequisites_verified)
+            self.assertTrue(capture.phone_prepared)
+
+    def test_remote_prerequisites_fail_before_vapi_endpoint_creation(self):
+        class MissingPrerequisite(Harness):
+            def verify_remote_prerequisites(self, target):
+                self.prerequisites_verified = True
+                raise CAPTURE.DiagnosticError(
+                    "remote trace prerequisites are unavailable"
+                )
+
+        with tempfile.TemporaryDirectory() as parent:
+            output = Path(parent) / "evidence"
+            capture = MissingPrerequisite(arguments(output))
+            with self.assertRaises(CAPTURE.DiagnosticError):
+                capture.run()
+            self.assertTrue(capture.prerequisites_verified)
+            self.assertFalse(capture.phone_prepared)
+            receipt = json.loads(
+                (output / "cleanup-receipt.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(receipt["temporary_vapi_endpoint_absent"])
+
+    def test_phone_cleanup_requires_and_passes_exact_ownership_intent(self):
+        capture = CAPTURE.SdpCapture(arguments(Path("unused")), Runner())
+        capture.phone_id = "phone_1234"
+        capture.phone_intent = {
+            "name": "BFQ bfq-test1234 SIP smoke",
+            "assistant_id": "assistant_1234",
+            "sip_uri": "sip:bfq_0123456789abcdef@sip.vapi.ai",
+            "authentication_realm": "sip.vapi.ai",
+            "authentication_username": "bfq_0123456789abcdef",
+        }
+        vapi = mock.Mock()
+        capture.vapi = vapi
+        self.assertTrue(capture.delete_phone())
+        vapi.delete_phone.assert_called_once_with(
+            "phone_1234",
+            {
+                "name": "BFQ bfq-test1234 SIP smoke",
+                "assistant_id": "assistant_1234",
+                "sip_uri": "sip:bfq_0123456789abcdef@sip.vapi.ai",
+                "authentication_realm": "sip.vapi.ai",
+                "authentication_username": "bfq_0123456789abcdef",
+            },
+        )
+        self.assertIsNone(capture.phone_id)
+        self.assertIsNone(capture.phone_intent)
 
     def test_every_cleanup_failure_is_retained_and_fails_closed(self):
         fields = (

@@ -141,7 +141,7 @@ jobs:
                .evidence_schema_version == 2 and
                .secure_preflight_passed == true and
                .required_checks_passed == true and
-               .scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"] and
+               .scenario_ids == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"] and
                .zero_resource_proof == true] | all)' \
             target/candidate-receipt.json >/dev/null
           openssl dgst -sha256 -binary target/candidate-receipt.json \
@@ -213,7 +213,6 @@ jobs:
         env:
           VERSION: ${{ inputs.release_version }}
           REGION: ${{ inputs.region }}
-          VAPI_PUBLIC_KEY: ${{ secrets.VAPI_PUBLIC_KEY }}
           VAPI_SECRET_WEST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_WEST_2 || vars.VAPI_API_KEY_SECRET_ARN }}
           VAPI_SECRET_EAST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_EAST_1 }}
         run: |

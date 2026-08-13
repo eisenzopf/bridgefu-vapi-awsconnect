@@ -1,6 +1,7 @@
-import VapiModule from "@vapi-ai/web";
-
-const Vapi = VapiModule.default ?? VapiModule;
+import {
+  BridgefuWebRtcClient,
+  normalizeBridgefuRouteAttachment,
+} from "@bridgefu/webrtc-browser";
 
 const elements = {
   status: document.querySelector("#status"),
@@ -8,19 +9,23 @@ const elements = {
   start: document.querySelector("#start"),
   mute: document.querySelector("#mute"),
   end: document.querySelector("#end"),
+  remote: document.querySelector("#remote-audio"),
 };
 
 const safeState = {
   recipe: "vapi-amazon-connect-screen-pop@1",
+  sdk: "@bridgefu/webrtc-browser",
   status: "loading",
   callStartObserved: false,
   callEndObserved: false,
-  remoteAudioSamples: 0,
+  remoteAudioTracks: 0,
+  handoffStates: [],
   errorType: null,
 };
 window.__BRIDGEFU_RECIPE_TEST__ = safeState;
 
 let client;
+let attachment;
 let muted = false;
 let qualification;
 
@@ -34,13 +39,6 @@ function safeErrorType(value) {
   return /^[a-z0-9._-]{1,64}$/.test(normalized) ? normalized : "unknown";
 }
 
-function validPublicValue(value) {
-  return typeof value === "string"
-    && value.length >= 8
-    && value.length <= 256
-    && !/[\s<>"']/.test(value);
-}
-
 function validQualificationNonce(value) {
   return typeof value === "string" && /^[A-Za-z0-9_-]{32,128}$/.test(value);
 }
@@ -51,8 +49,7 @@ function installQualificationControl(config) {
     || !["source", "agent"].includes(config.qualification_hangup_origin)
   ) return;
   const state = {
-    callId: null,
-    triggerSent: false,
+    serverHandoffTriggered: false,
     sourceEndRequested: false,
   };
   qualification = state;
@@ -61,77 +58,62 @@ function installQualificationControl(config) {
     snapshot(nonce) {
       if (!authorize(nonce)) return null;
       return {
-        callId: state.callId,
-        triggerSent: state.triggerSent,
+        callId: attachment?.callId ?? null,
+        serverHandoffTriggered: state.serverHandoffTriggered,
         sourceEndRequested: state.sourceEndRequested,
         callStartObserved: safeState.callStartObserved,
         callEndObserved: safeState.callEndObserved,
+        handoffStates: [...safeState.handoffStates],
         status: safeState.status,
       };
     },
-    triggerTransfer(nonce) {
-      if (!authorize(nonce) || !client || !state.callId || state.triggerSent) return false;
-      state.triggerSent = true;
-      const context = {
-        customer_name: "Bridgefu Synthetic Caller",
-        issue_summary: `Qualification vapi-web-transfer ${config.qualification_hangup_origin} hangup.`,
-        intent: "qualification",
-        verification_status: "synthetic",
-      };
-      client.send({
-        type: "add-message",
-        message: {
-          role: "user",
-          content: `This is an authorized synthetic nonproduction qualification. Call prepare_handoff exactly once with this exact JSON object: ${JSON.stringify(context)}. After that tool succeeds, invoke the transfer tool now.`,
-        },
-        triggerResponseEnabled: true,
-      });
+    markServerHandoffTriggered(nonce) {
+      if (!authorize(nonce) || state.serverHandoffTriggered) return false;
+      state.serverHandoffTriggered = true;
       return true;
     },
-    endFromSource(nonce) {
+    sendDtmf(nonce, digits) {
+      if (!authorize(nonce) || client?.state !== "connected" || digits !== "9") return false;
+      client.sendDtmf(digits);
+      return true;
+    },
+    async endFromSource(nonce) {
       if (!authorize(nonce) || !client || state.sourceEndRequested) return false;
       state.sourceEndRequested = true;
-      client.stop();
+      await client.disconnect();
       return true;
     },
   });
 }
 
-function connectEvents(vapi) {
-  vapi.on("call-start", () => {
-    safeState.callStartObserved = true;
-    setStatus("active", "Call connected");
-    elements.start.disabled = true;
-    elements.mute.disabled = false;
-    elements.end.disabled = false;
-  });
-  vapi.on("call-end", () => {
-    safeState.callEndObserved = true;
-    setStatus("ended", "Call ended");
-    elements.start.disabled = false;
-    elements.mute.disabled = true;
-    elements.end.disabled = true;
-    elements.transcript.textContent = "";
-    muted = false;
-    elements.mute.textContent = "Mute";
-  });
-  vapi.on("volume-level", (volume) => {
-    if (Number.isFinite(volume) && volume > 0.02) safeState.remoteAudioSamples += 1;
-  });
-  vapi.on("message", (message) => {
-    if (
-      message?.type === "transcript"
-      && message.transcriptType === "final"
-      && typeof message.transcript === "string"
-    ) {
-      const speaker = message.role === "assistant" ? "Assistant" : "You";
-      elements.transcript.textContent = `${speaker}: ${message.transcript.slice(0, 500)}`;
+function connectEvents(value) {
+  value.on("state", ({ state }) => {
+    if (state === "connected") {
+      safeState.callStartObserved = true;
+      setStatus("active", "Bridgefu call connected");
+      elements.start.disabled = true;
+      elements.mute.disabled = false;
+      elements.end.disabled = false;
+    } else if (state === "closed") {
+      safeState.callEndObserved = true;
+      setStatus("ended", "Bridgefu call ended");
+      elements.start.disabled = true;
+      elements.mute.disabled = true;
+      elements.end.disabled = true;
     }
   });
-  vapi.on("error", (error) => {
-    safeState.errorType = safeErrorType(error?.type ?? error?.stage);
-    setStatus("failed", "The test call could not continue. Check the qualification evidence.");
-    elements.start.disabled = false;
+  value.on("handoff", ({ status }) => {
+    if (safeState.handoffStates.at(-1) !== status && safeState.handoffStates.length < 32) {
+      safeState.handoffStates.push(status);
+    }
+  });
+  value.on("remoteTrack", ({ event }) => {
+    if (event.track?.kind === "audio") safeState.remoteAudioTracks += 1;
+  });
+  value.on("error", ({ error }) => {
+    safeState.errorType = safeErrorType(error?.code ?? error?.name);
+    setStatus("failed", "The Bridgefu test call could not continue.");
+    elements.start.disabled = true;
     elements.mute.disabled = true;
     elements.end.disabled = true;
   });
@@ -147,56 +129,56 @@ async function load() {
     if (!response.ok) throw new Error("configuration-unavailable");
     const config = await response.json();
     if (
-      config?.schema_version !== 1
+      config?.schema_version !== 2
       || config?.recipe !== safeState.recipe
-      || !validPublicValue(config?.vapi_public_key)
-      || !validPublicValue(config?.vapi_assistant_id)
+      || typeof config?.route_attachment !== "object"
+      || typeof config?.route_binding !== "object"
     ) {
       throw new Error("configuration-invalid");
     }
-    client = new Vapi(config.vapi_public_key);
+    attachment = normalizeBridgefuRouteAttachment(
+      config.route_attachment,
+      config.route_binding,
+    );
+    client = new BridgefuWebRtcClient({
+      remoteAudioElement: elements.remote,
+      connectTimeoutMs: 30_000,
+      disconnectGraceMs: 2_000,
+    });
     connectEvents(client);
     installQualificationControl(config);
-    setStatus("ready", "Ready for a synthetic test call");
+    setStatus("ready", "Ready for a synthetic Bridgefu call");
     elements.start.disabled = false;
 
     elements.start.addEventListener("click", async () => {
       elements.start.disabled = true;
       safeState.errorType = null;
-      safeState.callStartObserved = false;
-      safeState.callEndObserved = false;
-      safeState.remoteAudioSamples = 0;
-      setStatus("starting", "Requesting microphone and starting call…");
+      setStatus("starting", "Attaching to Bridgefu…");
       try {
-        const call = await client.start(config.vapi_assistant_id, {
-          variableValues: {
-            bridgefu_recipe_test: "synthetic-nonproduction",
-            bridgefu_recipe_revision: String(config.release_revision ?? "unknown").slice(0, 80),
-          },
-        });
-        if (qualification && typeof call?.id === "string") qualification.callId = call.id;
+        await client.connect(attachment);
       } catch (error) {
-        safeState.errorType = safeErrorType(error?.name ?? "start-failed");
-        setStatus("failed", "Call start failed. Allow microphone access and try again.");
-        elements.start.disabled = false;
+        safeState.errorType = safeErrorType(error?.code ?? error?.name ?? "connect-failed");
+        setStatus("failed", "Bridgefu call start failed.");
       }
     });
 
     elements.mute.addEventListener("click", () => {
       muted = !muted;
-      client.setMuted(muted);
+      for (const sender of client.peerConnection?.getSenders() ?? []) {
+        if (sender.track?.kind === "audio") sender.track.enabled = !muted;
+      }
       elements.mute.textContent = muted ? "Unmute" : "Mute";
     });
-    elements.end.addEventListener("click", () => client.stop());
+    elements.end.addEventListener("click", async () => client.disconnect());
   } catch (error) {
     safeState.errorType = safeErrorType(error?.message ?? "load-failed");
-    setStatus("failed", "Test configuration is unavailable. Check the deployment status.");
+    setStatus("failed", "Test configuration is unavailable.");
   }
 }
 
 window.addEventListener("pagehide", () => {
   delete window.__BRIDGEFU_RECIPE_QUALIFICATION__;
-  try { client?.stop(); } catch { /* Best-effort cleanup. */ }
+  void client?.disconnect().catch(() => {});
 });
 
 void load();
