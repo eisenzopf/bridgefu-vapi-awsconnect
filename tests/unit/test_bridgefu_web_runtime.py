@@ -148,6 +148,11 @@ class BridgefuWebRuntimeTests(unittest.TestCase):
         compile(embedded_python, "bridgefu-qualification-web-runtime", "exec")
         self.assertIn('rstrip("\\n")', embedded_python)
         self.assertIn('+ "\\n")', embedded_python)
+        self.assertIn(
+            '"$wrapper" validate "$run/bridgefu.yaml.candidate" >/dev/null',
+            install,
+        )
+        self.assertEqual(install.count("printf '%s\\n' '{\"schema_version\":1"), 1)
 
     def test_closed_runtime_results_are_exact(self):
         install = {

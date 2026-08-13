@@ -406,7 +406,7 @@ exec /usr/local/bin/bridgefu --config "$config" "$mode"
 BRIDGEFU_QUALIFICATION_WRAPPER
 chown root:bridgefu "$wrapper"
 chmod 0750 "$wrapper"
-BRIDGEFU_QUALIFICATION_REGION="$region" BRIDGEFU_QUALIFICATION_VAPI_SIP_AUTH_SECRET_ARN="$auth_secret_arn" "$wrapper" validate "$run/bridgefu.yaml.candidate"
+BRIDGEFU_QUALIFICATION_REGION="$region" BRIDGEFU_QUALIFICATION_VAPI_SIP_AUTH_SECRET_ARN="$auth_secret_arn" "$wrapper" validate "$run/bridgefu.yaml.candidate" >/dev/null
 systemctl stop bridgefu.service
 install -o root -g bridgefu -m 0640 "$run/bridgefu.yaml.candidate" "$config"
 install -d -o root -g root -m 0755 "$(dirname "$dropin")"
@@ -427,7 +427,7 @@ done
 curl -fsS http://127.0.0.1:9090/readyz >/dev/null
 ss -ltnH | awk '{{print $4}}' | grep -Eq '^127\\.0\\.0\\.1:8080$'
 trap - EXIT
-printf '%s\n' '{{"schema_version":1,"producer":"bridgefu-web-runtime@1","configuration_installed":true,"bridgefu_ready":true,"wss_listener_ready":true,"redacted":true}}'
+printf '%s\\n' '{{"schema_version":1,"producer":"bridgefu-web-runtime@1","configuration_installed":true,"bridgefu_ready":true,"wss_listener_ready":true,"redacted":true}}'
 """
 
 
@@ -462,7 +462,7 @@ rmdir "$run"
 [ ! -e "$run" ] && [ ! -L "$run" ]
 [ ! -e "$dropin" ] && [ ! -L "$dropin" ]
 [ ! -e "$wrapper" ] && [ ! -L "$wrapper" ]
-printf '%s\n' '{{"schema_version":1,"producer":"bridgefu-web-runtime@1","configuration_restored":true,"overlay_absent":true,"wrapper_absent":true,"dropin_absent":true,"bridgefu_ready":true,"redacted":true}}'
+printf '%s\\n' '{{"schema_version":1,"producer":"bridgefu-web-runtime@1","configuration_restored":true,"overlay_absent":true,"wrapper_absent":true,"dropin_absent":true,"bridgefu_ready":true,"redacted":true}}'
 """
 
 
