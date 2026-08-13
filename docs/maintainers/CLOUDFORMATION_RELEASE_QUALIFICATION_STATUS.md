@@ -64,7 +64,7 @@ and fresh regional qualifications pass.
 | Repository | `eisenzopf/bridgefu-vapi-awsconnect` |
 | Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
 | Branch | `codex/staged-vapi-qualification` |
-| Implementation commit | `13be5aea6eb51d931e7c3a0e0862d9003ba02dce` |
+| Implementation commit | `7b3d399bd28d1b910849263f4b65022962d2f942` |
 | Local delta | Status-ledger updates only; implementation source is committed and pushed |
 | Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
 | PR state at last update | Draft, open, not merged |
@@ -1222,3 +1222,19 @@ and full 226-test Python suite passed.
   zero Web-runtime S3 versions; no browser media rule; no EC2 Web runtime,
   systemd drop-in, or temporary secret file; active/ready Bridgefu with the
   unchanged `f6754354…` digest.
+- The following Web-only attempt successfully validated and installed the EC2
+  runtime, but stopped before a call because the install command's stdout
+  contained Bridgefu's `configuration is valid` line followed by the closed
+  JSON receipt. The strict parser rejected that two-line output as designed.
+  Exact SSM evidence proved the install and subsequent cleanup commands both
+  completed successfully; no product call-path result was inferred.
+- The generated installer now redirects only the successful validation line to
+  `/dev/null`; validation failures remain on stderr, while SSM stdout is reserved
+  for the single closed receipt. The generator also preserves each receipt's
+  `printf` newline escape on one physical command line. The regression asserts
+  exactly one install-receipt producer. All **260** unit tests and local release
+  validation passed. The fix was committed and pushed as
+  `7b3d399bd28d1b910849263f4b65022962d2f942`.
+- Cleanup was re-proven after this failure: zero owned Vapi phone/tool/prompt,
+  empty disposable auth secret, zero Web-runtime object versions, no media
+  rule, and a successful EC2 cleanup receipt with Bridgefu ready.
