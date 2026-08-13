@@ -24,16 +24,17 @@ class QualificationAssetTests(unittest.TestCase):
             ROOT.parent / "bridgefu-main-clean",
         ]
         for candidate in candidates:
-            if candidate is not None and (candidate / "sdk/typescript/package.json").is_file():
+            if (
+                candidate is not None
+                and (candidate / "sdk/typescript/package.json").is_file()
+            ):
                 return candidate
         self.fail("the exact pinned Bridgefu checkout is required for SDK bundle tests")
 
     def test_matrix_contains_only_the_two_release_smokes(self):
         text = (QUALIFICATION / "matrix.yaml").read_text()
         scenarios = set(re.findall(r"^  - id: ([a-z0-9-]+)$", text, re.M))
-        self.assertEqual(
-            scenarios, {"vapi-sip-transfer", "bridgefu-web-sdk-handoff"}
-        )
+        self.assertEqual(scenarios, {"vapi-sip-transfer", "bridgefu-web-sdk-handoff"})
         for removed_scope in ("soak", "failure_drill", "sip-rtp-pcmu"):
             self.assertNotIn(removed_scope, text)
         self.assertIn("dtmf_source_to_agent", text)
@@ -312,6 +313,22 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("modify-image-attribute", publication)
         self.assertNotIn("packer build", publication)
 
+    def test_live_workflows_install_the_exact_session_manager_plugin(self):
+        version = "1.2.835.0"
+        digest = "7c6dcad12518571cc7959a713e6a8ae1bdf6ed66fd9bee37dc189e39ca58ae03"
+        for workflow_name in ("candidate.yml", "remote-qualification.yml"):
+            workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text()
+            self.assertIn(f"session_manager_version={version}", workflow)
+            self.assertIn(f"session_manager_sha256={digest}", workflow)
+            self.assertIn(
+                "session-manager-downloads/plugin/$session_manager_version/"
+                "ubuntu_64bit/session-manager-plugin.deb",
+                workflow,
+            )
+            self.assertIn("sha256sum --check --strict", workflow)
+            self.assertIn("sudo dpkg --install", workflow)
+            self.assertIn("session-manager-plugin --version", workflow)
+
     def test_release_aws_sessions_cover_bounded_build_and_live_runs(self):
         qualification_role = (
             ROOT / "publisher" / "qualification-role.yaml"
@@ -543,9 +560,7 @@ class QualificationAssetTests(unittest.TestCase):
         agent = (
             QUALIFICATION / "browser" / "agent-workspace-playwright.mjs"
         ).read_text()
-        web = (
-            QUALIFICATION / "browser" / "bridgefu-web-playwright.mjs"
-        ).read_text()
+        web = (QUALIFICATION / "browser" / "bridgefu-web-playwright.mjs").read_text()
         sip = (QUALIFICATION / "sip-client" / "src" / "main.rs").read_text()
         evidence_schema = (
             QUALIFICATION / "schemas" / "evidence-v1.schema.json"

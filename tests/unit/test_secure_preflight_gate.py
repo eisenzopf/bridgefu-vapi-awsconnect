@@ -178,7 +178,12 @@ class SecurePreflightGateTests(unittest.TestCase):
             "cargo_lock_sha256": "b" * 64,
         }
         controller.secure_preflight_binary_sha256 = None
-        controller.validate_inputs()
+        with mock.patch.object(
+            CONTROLLER.shutil,
+            "which",
+            return_value="/usr/local/bin/session-manager-plugin",
+        ):
+            controller.validate_inputs()
         self.assertEqual(
             controller.secure_preflight_binary_sha256,
             CONTROLLER.sha256_file(probe),
@@ -187,7 +192,23 @@ class SecurePreflightGateTests(unittest.TestCase):
         link = self.temporary / "probe-link"
         link.symlink_to(probe)
         controller.args.direct_secure_probe = link
-        with self.assertRaises(CONTROLLER.QualificationError):
+        with (
+            mock.patch.object(
+                CONTROLLER.shutil,
+                "which",
+                return_value="/usr/local/bin/session-manager-plugin",
+            ),
+            self.assertRaises(CONTROLLER.QualificationError),
+        ):
+            controller.validate_inputs()
+
+        controller.args.direct_secure_probe = probe
+        with (
+            mock.patch.object(CONTROLLER.shutil, "which", return_value=None),
+            self.assertRaisesRegex(
+                CONTROLLER.QualificationError, "Session Manager plugin is unavailable"
+            ),
+        ):
             controller.validate_inputs()
 
     def test_browser_readiness_surfaces_bounded_redacted_early_exit(self):

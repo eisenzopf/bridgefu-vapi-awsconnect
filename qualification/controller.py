@@ -2910,6 +2910,8 @@ class Controller:
             raise QualificationError("Bridgefu Cargo lock digest is invalid")
         if not self.args.bridgefu_checkout.is_dir():
             raise QualificationError("pinned Bridgefu checkout is unavailable")
+        if shutil.which("session-manager-plugin") is None:
+            raise QualificationError("AWS Session Manager plugin is unavailable")
 
     def preflight(self) -> None:
         if self.aws.exists(

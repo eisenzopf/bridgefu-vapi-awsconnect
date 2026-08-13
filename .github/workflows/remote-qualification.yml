@@ -198,6 +198,15 @@ jobs:
           echo "QUALIFICATION_TEMPLATE_VERSION=$encoded_version" >> "$GITHUB_ENV"
       - name: Install pinned qualification dependencies
         run: |
+          session_manager_version=1.2.835.0
+          session_manager_sha256=7c6dcad12518571cc7959a713e6a8ae1bdf6ed66fd9bee37dc189e39ca58ae03
+          curl --fail --location --silent --show-error \
+            "https://s3.amazonaws.com/session-manager-downloads/plugin/$session_manager_version/ubuntu_64bit/session-manager-plugin.deb" \
+            --output /tmp/session-manager-plugin.deb
+          echo "$session_manager_sha256  /tmp/session-manager-plugin.deb" | sha256sum --check --strict
+          sudo dpkg --install /tmp/session-manager-plugin.deb
+          command -v session-manager-plugin >/dev/null
+          session-manager-plugin --version | grep -F "$session_manager_version"
           python -m pip install -r qualification/requirements-runner.txt
           npm --prefix qualification ci --ignore-scripts
           PLAYWRIGHT_BROWSERS_PATH=0 npm --prefix qualification exec playwright install --with-deps chromium
