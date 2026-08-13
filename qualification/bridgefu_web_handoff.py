@@ -456,6 +456,9 @@ def direct_assistant_owned(
         "orgId",
         "createdAt",
         "updatedAt",
+        "latestVersion",
+        "isServerUrlSecretSet",
+        "analysisPlan",
         "name",
         "firstMessageMode",
         "model",
@@ -481,10 +484,32 @@ def direct_assistant_owned(
         "knowledgeBaseId",
     }
     allowed_voice = {"provider", "voiceId", "fallbackPlan"}
-    allowed_transcriber = {"provider", "model", "language", "smartFormat"}
+    allowed_transcriber = {
+        "provider",
+        "model",
+        "language",
+        "smartFormat",
+        "fallbackPlan",
+    }
     allowed_artifact_plan = {"recordingEnabled", "loggingEnabled"}
     return (
         set(value) <= allowed_top_level
+        and (
+            value.get("latestVersion") in (None, "")
+            or (
+                isinstance(value.get("latestVersion"), str)
+                and IDENTIFIER.fullmatch(value["latestVersion"]) is not None
+            )
+        )
+        and value.get("isServerUrlSecretSet") in (None, False)
+        and value.get("analysisPlan")
+        in (
+            None,
+            {
+                "summaryPlan": {"enabled": False},
+                "successEvaluationPlan": {"enabled": False},
+            },
+        )
         and value.get("name") == f"BFQ direct {execution_id}"
         and value.get("firstMessageMode") == "assistant-waits-for-user"
         and isinstance(metadata, Mapping)
@@ -519,6 +544,8 @@ def direct_assistant_owned(
         and transcriber.get("model") == "nova-3"
         and transcriber.get("language") == "en"
         and transcriber.get("smartFormat") in (None, True)
+        and transcriber.get("fallbackPlan")
+        in (None, {"autoFallback": {"enabled": True}})
         and isinstance(artifact_plan, Mapping)
         and set(artifact_plan) <= allowed_artifact_plan
         and artifact_plan.get("recordingEnabled") is False

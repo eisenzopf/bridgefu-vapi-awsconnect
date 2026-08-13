@@ -735,6 +735,12 @@ validate_remote_vapi_direct_assistant_exact {remote_path} \
                 "orgId": None,
                 "createdAt": "2026-08-13T12:00:00Z",
                 "updatedAt": None,
+                "latestVersion": "2",
+                "isServerUrlSecretSet": False,
+                "analysisPlan": {
+                    "summaryPlan": {"enabled": False},
+                    "successEvaluationPlan": {"enabled": False},
+                },
                 "server": None,
                 "serverMessages": [],
                 "credentialIds": [],
@@ -742,6 +748,9 @@ validate_remote_vapi_direct_assistant_exact {remote_path} \
             }
             valid_defaults["voice"]["fallbackPlan"] = {}
             valid_defaults["transcriber"]["smartFormat"] = True
+            valid_defaults["transcriber"]["fallbackPlan"] = {
+                "autoFallback": {"enabled": True}
+            }
             valid_defaults["artifactPlan"]["loggingEnabled"] = False
             adversarial = [(valid_defaults, True)]
             normalized_defaults = copy.deepcopy(valid_defaults)
@@ -779,6 +788,12 @@ validate_remote_vapi_direct_assistant_exact {remote_path} \
             unsafe_transcriber_default = copy.deepcopy(valid_defaults)
             unsafe_transcriber_default["transcriber"]["smartFormat"] = False
             adversarial.append((unsafe_transcriber_default, False))
+            unsafe_analysis = copy.deepcopy(valid_defaults)
+            unsafe_analysis["analysisPlan"]["summaryPlan"]["enabled"] = True
+            adversarial.append((unsafe_analysis, False))
+            unsafe_server_secret = copy.deepcopy(valid_defaults)
+            unsafe_server_secret["isServerUrlSecretSet"] = True
+            adversarial.append((unsafe_server_secret, False))
             unsafe_artifact_default = copy.deepcopy(valid_defaults)
             unsafe_artifact_default["artifactPlan"]["loggingEnabled"] = True
             adversarial.append((unsafe_artifact_default, False))

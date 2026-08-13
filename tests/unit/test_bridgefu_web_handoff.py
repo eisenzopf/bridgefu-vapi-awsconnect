@@ -193,8 +193,15 @@ class BridgefuWebHandoffTests(unittest.TestCase):
         normalized["server"] = None
         normalized["serverMessages"] = []
         normalized["credentialIds"] = None
+        normalized["latestVersion"] = "2"
+        normalized["isServerUrlSecretSet"] = False
+        normalized["analysisPlan"] = {
+            "summaryPlan": {"enabled": False},
+            "successEvaluationPlan": {"enabled": False},
+        }
         normalized["voice"]["fallbackPlan"] = {}
         normalized["transcriber"]["smartFormat"] = True
+        normalized["transcriber"]["fallbackPlan"] = {"autoFallback": {"enabled": True}}
         normalized["artifactPlan"]["loggingEnabled"] = False
         self.assertTrue(
             HANDOFF.direct_assistant_owned(

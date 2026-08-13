@@ -338,13 +338,23 @@ validate_remote_vapi_direct_assistant_exact() {
       (.[$name] | type == "string" and
        test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T"));
     type == "object" and .id == $assistant_id and
-    ((keys - ["id","orgId","createdAt","updatedAt","name",
+    ((keys - ["id","orgId","createdAt","updatedAt","latestVersion",
+      "isServerUrlSecretSet","analysisPlan","name",
       "firstMessageMode","model","voice","transcriber","artifactPlan",
       "maxDurationSeconds","metadata","server","serverMessages",
       "serverUrl","hooks","credentialIds"]) | length == 0) and
     ((has("orgId") | not) or .orgId == null or .orgId == "" or
      (.orgId | type == "string" and . == $org)) and
     absent_or_timestamp("createdAt") and absent_or_timestamp("updatedAt") and
+    ((has("latestVersion") | not) or .latestVersion == null or
+      .latestVersion == "" or
+      (.latestVersion | type == "string" and
+       test("^[A-Za-z0-9_-]{1,128}$"))) and
+    ((has("isServerUrlSecretSet") | not) or
+      .isServerUrlSecretSet == null or .isServerUrlSecretSet == false) and
+    ((has("analysisPlan") | not) or .analysisPlan == null or
+      .analysisPlan == {"summaryPlan":{"enabled":false},
+        "successEvaluationPlan":{"enabled":false}}) and
     ((has("server") | not) or .server == null) and
     ((has("serverUrl") | not) or .serverUrl == null) and
     ((has("serverMessages") | not) or .serverMessages == null or
@@ -362,13 +372,17 @@ validate_remote_vapi_direct_assistant_exact() {
       .voice.fallbackPlan == null or .voice.fallbackPlan == {} or
       .voice.fallbackPlan == []) and
     (.transcriber | type == "object") and
-    (((.transcriber | keys) - ["provider","model","language","smartFormat"]) |
+    (((.transcriber | keys) - ["provider","model","language","smartFormat",
+      "fallbackPlan"]) |
       length == 0) and
     .transcriber.provider == $desired.transcriber.provider and
     .transcriber.model == $desired.transcriber.model and
     .transcriber.language == $desired.transcriber.language and
     ((.transcriber | has("smartFormat") | not) or
       .transcriber.smartFormat == true) and
+    ((.transcriber | has("fallbackPlan") | not) or
+      .transcriber.fallbackPlan == null or
+      .transcriber.fallbackPlan == {"autoFallback":{"enabled":true}}) and
     (.artifactPlan | type == "object") and
     (((.artifactPlan | keys) - ["recordingEnabled","loggingEnabled"]) |
       length == 0) and
