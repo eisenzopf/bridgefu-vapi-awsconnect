@@ -64,7 +64,7 @@ and fresh regional qualifications pass.
 | Repository | `eisenzopf/bridgefu-vapi-awsconnect` |
 | Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
 | Branch | `codex/staged-vapi-qualification` |
-| Implementation commit | `ab9c7ea125a67ca99d1404bfb9d55003d4f8b91c` |
+| Implementation commit | `b41417b44efad39c92dc28ae7f6d15d29a064ec3` |
 | Local delta | Status-ledger update only; implementation source is committed and pushed |
 | Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
 | PR state at last update | Draft, open, not merged |
@@ -219,7 +219,7 @@ before updating these states.
 | Qualification plan | `docs/maintainers/CLOUDFORMATION_RELEASE_QUALIFICATION_PLAN.md` | Committed and pushed |
 | Status ledger | `docs/maintainers/CLOUDFORMATION_RELEASE_QUALIFICATION_STATUS.md` | Committed and pushed; this update is local pending the next implementation commit |
 | Bridgefu implementation commit | `2fb2eaede9420c7d6980c5e0cfeb74eb786a2add` | Pushed, unmerged |
-| Distribution implementation commit | `ab9c7ea125a67ca99d1404bfb9d55003d4f8b91c` | Pushed, unmerged |
+| Distribution implementation commit | `b41417b44efad39c92dc28ae7f6d15d29a064ec3` | Pushed, unmerged |
 | Local test results | Current task execution logs | Passed as listed above |
 | Remote template-body validation | AWS account `225478700523`, both supported regions | Passed against current branch render |
 | Oregon A/B SIP/SDP traces | Retained diagnostic execution `bfq-d19854f1-1` | Passed; `sip:...;transport=tls` produced actual TLS plus RTP/AVP in optional mode |
@@ -1342,3 +1342,31 @@ and full 226-test Python suite passed.
   **265/265**, targeted Ruff and Node syntax checks passed, and local release
   validation passed. Exactly one instrumented retained Web attempt is now
   permitted; no SIP-source smoke or release workflow may run before it passes.
+- Two invocations of that instrumented bundle stopped at their first read-only
+  CloudFormation lookup because the retained wrapper inherited the expired
+  default AWS profile even after `vapi-admin` SSO was refreshed. Neither
+  invocation reached an AWS or Vapi mutation. The diagnostic invocation now
+  explicitly exports `AWS_PROFILE=vapi-admin`; the authenticated identity was
+  reverified before proceeding.
+- The correctly profiled attempt reproduced the media failure with a precise
+  browser result: SDK `signaling-failed`, peer connection `new`, ICE `new`, ICE
+  gathering `complete`, signaling `stable`. In the same bounded interval,
+  Bridgefu received the offer, returned to stable signaling, entered ICE
+  `checking`, received browser candidates, produced no connected candidate pair,
+  and never entered DTLS. The only WSS TLS warning was the controller's
+  pre-call raw-port readiness probe; it was not the browser session. The only
+  call-service error was a cleanup-time cancelled durable-work task.
+- This directionality proves the browser completed its candidate gathering and
+  Bridgefu consumed that signaling, while the browser received no usable
+  Bridgefu candidate. rvoip 0.3.7's WSS answerer is configured for trickle ICE;
+  the full-gather alternative is the minimum discriminating fix because it
+  embeds the public Bridgefu candidate directly in the SDP answer.
+- The Web qualification runtime now uses full ICE gathering. This is a
+  qualification-only source setting and changes neither the customer SIP
+  CloudFormation behavior nor the Bridgefu browser SDK. The controller's
+  context absence verifier also accepts the AWS CLI's observed empty stdout for
+  an absent DynamoDB item; live count independently proved the successful
+  delete and zero retained records. The changes were committed and pushed as
+  `b41417b44efad39c92dc28ae7f6d15d29a064ec3`; all **265** unit tests and local
+  release validation passed. The next permitted action remains exactly one
+  retained Web-only rerun.
