@@ -1769,3 +1769,111 @@ and full 226-test Python suite passed.
   backup digests match their expected values, systemd is active, and `/readyz`
   is healthy. No call has yet been run against this binary; the next and only
   authorized live action is one retained Oregon Bridgefu Web SDK smoke.
+- The one authorized retained Web SDK smoke against distribution `1efa4b2`
+  and Bridgefu `7c80890` did not pass, so no SIP-source smoke or release action
+  is authorized. The former WebRTC boundary remained fixed: browser and
+  Bridgefu ICE reached `connected`, with a selected candidate pair. Bridgefu
+  then originated the Vapi SIP leg, received the expected initial `401`
+  challenge, but Vapi rejected the authenticated retry with SIP `403`; rvoip
+  reported call failure and closed the WebRTC peer. No Vapi call record,
+  transfer, handoff, or Connect call was established. The browser's final
+  `signaling-failed` category is therefore a consequence of that exact SIP
+  rejection, not a new ICE failure. Retries are frozen while the authenticated
+  INVITE and the effect of the new rvoip `Config::local_ip` projection on SIP
+  signaling are examined from this same execution.
+- Cleanup and the absence of downstream side effects are independently proven
+  after that failure: Vapi reports zero calls for the owned assistant in the
+  execution window and zero owner-equivalent temporary phones; DynamoDB has
+  zero handoff records; the temporary browser media ingress rule is absent;
+  the temporary authentication secret is exactly `{}`; and the Web-runtime S3
+  prefix contains zero versions and zero delete markers. Read-only SSM command
+  `5f8dd888-47b0-468e-a7df-bf18c6c86085` proves the runtime overlay, systemd
+  drop-in, and temporary auth file are absent while Bridgefu is active, ready,
+  and still running exact digest `29db3618…e6f4`. The retained stacks remain
+  available for diagnosis; no retry has been started.
+- A separate no-call diagnostic then created one exact owned Vapi SIP endpoint,
+  waited for API status `active`, and used exact crates.io rvoip `0.3.7` to send
+  SIP `OPTIONS` over TLS. Vapi returned `200` on the first attempt, after which
+  the endpoint and its current ownership journals were exact-deleted. No
+  assistant call, transfer, media, or Connect contact was created. This was
+  initially classified as authentication-readiness evidence, but the
+  dual-gateway follow-up below proved that classification wrong because Vapi
+  does not challenge `OPTIONS` on this path.
+- Historical retained logs contain ten authenticated INVITE attempts on this
+  date. Eight followed `401` with `200`; two followed `401` with `403`, at
+  14:12:33Z and 16:40:14Z. Both failures occurred about 46–47 seconds after
+  their endpoint intent was sealed, but successful attempts used comparable
+  timing. Both Vapi US signaling addresses have accepted successful attempts,
+  while both observed `403` attempts happened to use `44.229.228.186`. That
+  address also accepted several successes, so the evidence does not support a
+  permanently bad gateway. Passwords were compared only as closed character
+  classes and lengths; successful and failed attempts overlap, ruling out the
+  URL-safe dash/underscore characters as a deterministic cause. The current
+  hypothesis is intermittent Vapi endpoint/auth routing state or another
+  INVITE-specific Vapi policy, not the Bridgefu media-bind projection.
+- The subsequent dual-gateway diagnostic corrected an important assumption in
+  the preceding `OPTIONS` result. With one newly owned temporary Vapi endpoint,
+  certificate-verified TLS connections to both published US SIP addresses
+  (`44.229.228.186` and `44.238.177.138`) each received an unauthenticated SIP
+  `200` for `OPTIONS`; neither gateway issued a digest challenge. The endpoint
+  was then exact-deleted. This proves TLS reachability and certificate identity
+  on both gateways, but it means `OPTIONS` is not an authentication-readiness
+  check and the earlier first-attempt `OPTIONS` success must not be used as
+  evidence that endpoint credentials had propagated. The `401` then `403`
+  failure remains specific to authenticated `INVITE`. The next diagnostic must
+  therefore be a deliberately bounded call test that records the initial and
+  authenticated `INVITE` status separately; no blind Web or release retry is
+  authorized from the `OPTIONS` result.
+- The replacement readiness diagnostic used authenticated `INVITE`, not
+  `OPTIONS`, and followed the complete INVITE transaction sequence. Its first
+  implementation exposed and then fixed a diagnostic-only protocol error: an
+  INVITE client must ACK the non-2xx `401` final response before issuing the
+  authenticated retry; omitting that ACK caused `491 Request Pending` on both
+  gateways and created zero calls. With that correction, one newly owned Vapi
+  SIP endpoint passed on both published US gateways sequentially. Each gateway
+  produced one provisional response, `401`, a challenge ACK, then one
+  provisional response and authenticated `200`; the client sent ACK and
+  received `200` for BYE. Both exact assistant/phone-bound call records were
+  found and ended; one API record lagged the successful BYE and required the
+  ownership-checked Vapi stop operation before absence/terminal state was
+  proven. The endpoint was exact-deleted. This proves both gateways can accept
+  the generated credentials and rules out a consistently bad gateway or a
+  general rvoip digest defect. It does not erase the earlier intermittent
+  authenticated `403`. The next retained Web SDK run must use the same endpoint
+  that first passes this two-gateway authenticated-INVITE gate, so it is an
+  evidence-bound retry rather than another newly created, unproven endpoint.
+- That evidence-bound retained Web SDK run used one exact endpoint only after
+  it passed authenticated `INVITE` against both Vapi US gateways. The WebRTC
+  side again reached connected state and Vapi accepted the real Bridgefu call:
+  the transaction completed `401`, authenticated `200`, and ACK. The call then
+  ended before DTMF, handoff, or Connect; Vapi's terminal record is
+  `customer-ended-call`. All temporary Web runtime, endpoint, direct overlay,
+  route/context, and active-process cleanup completed successfully.
+- The exact call's private Vapi PCAP proves the SDP and remote media target were
+  valid. Bridgefu offered public IPv4 port `24576` with `RTP/SAVP`; Vapi
+  answered with a nonzero public IPv4 port and `RTP/SAVP`; the SIP exchange
+  contains `401`, challenge ACK, authenticated INVITE, `200`, ACK, BYE, and BYE
+  `200`. No RTP packet reached Vapi. The matching Bridgefu runtime event shows
+  its first outbound RTP write failed with Linux `EINVAL`, after which
+  `SipMediaStream` stopped and Bridgefu ended the call. Therefore this failure
+  is after successful Vapi authentication and SDES-SRTP negotiation, inside the
+  Bridgefu/rvoip local media send path.
+- Source inspection found the exact Bridgefu projection defect. The base SIP
+  stack correctly changed RTP `Config::local_ip` from its loopback signaling
+  bind to IPv4 wildcard for public media. But every isolated named SIP egress
+  child cloned that base and then overwrote `local_ip` with the child's
+  loopback-only signaling bind. The child consequently advertised the public
+  media address while allocating its actual RTP socket on loopback; Linux
+  rejects its public-destination send with `EINVAL`. Bridgefu commit
+  `22424d27650979e7e2071a5d0c1d17b6b2ebcb72` preserves the base RTP bind while
+  continuing to isolate the child's SIP signaling bind, TLS client state, port
+  range, credentials, and Contact. Regressions require a loopback child
+  `bind_addr`, IPv4-wildcard child `local_ip`, the unchanged public media
+  address, and the same media bind across conflicting isolated profiles.
+  Validation passed all 151 Bridgefu binary tests, the complete direct
+  browser/Vapi/Connect handoff integration, the real named-route SRTP
+  transcoding/bidirectional DTMF/BYE integration, Clippy with warnings denied,
+  format, and diff checks. The distribution lock now pins that remote commit;
+  Cargo.lock remains unchanged and still resolves exact crates.io rvoip 0.3.7.
+  Per the explicit stop point, no rebuilt binary, AWS deployment, or live call
+  retry has been started from this fix.
