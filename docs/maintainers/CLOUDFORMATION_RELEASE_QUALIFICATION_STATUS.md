@@ -35,7 +35,7 @@ happened.
 | Vapi SIP/SDP A/B | **PASSED** — optional mode uses `sip:...;transport=tls` over observed TLS with RTP/AVP |
 | Direct mandatory-SRTP control | **PASSED** — SIPS/TLS plus RTP/SAVP/SDES-SRTP |
 | Prior Web smoke | **INVALID / SUPERSEDED** — used stock `@vapi-ai/web`, not Bridgefu's SDK |
-| Next permitted AWS action | Retained Oregon only: corrected Bridgefu Web SDK smoke; SIP-source smoke remains blocked until Web passes |
+| Next permitted AWS action | Retained Oregon only: one instrumented Bridgefu Web SDK smoke; SIP-source smoke remains blocked until Web passes |
 
 ## Source under evaluation
 
@@ -64,8 +64,8 @@ and fresh regional qualifications pass.
 | Repository | `eisenzopf/bridgefu-vapi-awsconnect` |
 | Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
 | Branch | `codex/staged-vapi-qualification` |
-| Implementation commit | `66a871530f68fe5248e2e4905c4f1e62f33ccc00` |
-| Local delta | Status-ledger updates only; implementation source is committed and pushed |
+| Implementation commit | `ab9c7ea125a67ca99d1404bfb9d55003d4f8b91c` |
+| Local delta | Status-ledger update only; implementation source is committed and pushed |
 | Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
 | PR state at last update | Draft, open, not merged |
 
@@ -80,7 +80,7 @@ evaluation until Stage 3 proves the live contract.
 
 Completed against the source commits above:
 
-- [x] Distribution Python unit suite: **260 passed**.
+- [x] Distribution Python unit suite: **265 passed**.
 - [x] Bridgefu scheme-aware security-evidence suite: **16 passed**.
 - [x] Bridgefu full local Rust suite completed without failures.
 - [x] Direct secure probe suite: **16 passed**.
@@ -113,7 +113,7 @@ Still required before Stage 1 is `PASSED`:
   harness and live Vapi resilience implementation were finalized locally.
 - [x] Repeated the affected gate after the Bridgefu evidence commit was pushed,
   the distribution lock was repinned, and the retained-harness boundary fixes
-  were added: **260 passed** plus local release validation.
+  were added: **265 passed** plus local release validation.
 
 ### Stage 2 — Remote CloudFormation validation: PASSED
 
@@ -219,7 +219,7 @@ before updating these states.
 | Qualification plan | `docs/maintainers/CLOUDFORMATION_RELEASE_QUALIFICATION_PLAN.md` | Committed and pushed |
 | Status ledger | `docs/maintainers/CLOUDFORMATION_RELEASE_QUALIFICATION_STATUS.md` | Committed and pushed; this update is local pending the next implementation commit |
 | Bridgefu implementation commit | `2fb2eaede9420c7d6980c5e0cfeb74eb786a2add` | Pushed, unmerged |
-| Distribution implementation commit | `99c172bdef9c6ebac8fcbe95fa6756d75c8c82c3` | Pushed, unmerged |
+| Distribution implementation commit | `ab9c7ea125a67ca99d1404bfb9d55003d4f8b91c` | Pushed, unmerged |
 | Local test results | Current task execution logs | Passed as listed above |
 | Remote template-body validation | AWS account `225478700523`, both supported regions | Passed against current branch render |
 | Oregon A/B SIP/SDP traces | Retained diagnostic execution `bfq-d19854f1-1` | Passed; `sip:...;transport=tls` produced actual TLS plus RTP/AVP in optional mode |
@@ -1312,3 +1312,33 @@ and full 226-test Python suite passed.
   `66a871530f68fe5248e2e4905c4f1e62f33ccc00`.
 - Cleanup passed again: zero owned Vapi phone, no media rule, empty auth secret,
   and the retained handoff table still contains zero records.
+- The next Web-only attempt crossed every previously repaired boundary: the
+  temporary Vapi endpoint and direct tool were provisioned, the EC2 Web runtime
+  was installed, both SSM tunnels started, Bridgefu returned a valid one-use
+  browser attachment, and the synthetic DynamoDB context was stored before any
+  transfer. The actual Bridgefu SDK browser never reached its connected state,
+  so the controller correctly withheld the Vapi call trigger.
+- Closed analysis of 154 runtime events proves that WSS signaling reached
+  Bridgefu and completed offer/answer signaling (`have-remote-offer` then
+  `stable`). The media boundary did not complete: zero ICE connected/completed
+  transitions, two no-candidate-pair warnings, 48 IPv6-destination writes on an
+  IPv4 socket rejected by the kernel, and zero DTLS-connected transitions. This
+  is now isolated to browser-to-Bridgefu ICE candidate pairing; it is not a Vapi,
+  SIP-transfer, Amazon Connect, credential, or WSS-admission result.
+- Cleanup after that failed attempt removed the exact synthetic correlation
+  record and proved the retained table count returned to zero. It also proved
+  zero browser-media security-group rules. The existing wrapper cleanup had
+  already removed the temporary Vapi objects, assistant overlay, runtime
+  object, disposable secret value, EC2 runtime overlay, and SSM processes.
+- The harness now retains only closed-enum SDK error and WebRTC state categories
+  (`peer`, `ICE`, ICE gathering, and signaling) and fails immediately when the
+  SDK reports a terminal startup error. It also tracks the exact controller-
+  owned correlation key, deletes that DynamoDB item through private stdin, and
+  performs a consistent-read absence check on every Web-smoke exit. No URI,
+  SDP, address, credential, token, correlation ID, or customer value enters
+  arguments or failure evidence.
+- These diagnostics and cleanup guarantees were committed and pushed as
+  `ab9c7ea125a67ca99d1404bfb9d55003d4f8b91c`. The full unit suite passed
+  **265/265**, targeted Ruff and Node syntax checks passed, and local release
+  validation passed. Exactly one instrumented retained Web attempt is now
+  permitted; no SIP-source smoke or release workflow may run before it passes.
