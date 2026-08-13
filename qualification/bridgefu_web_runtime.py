@@ -514,11 +514,39 @@ EOF
 chmod 0644 "$dropin"
 systemctl daemon-reload
 systemctl start bridgefu.service
-for _ in $(seq 1 90); do
-  curl -fsS http://127.0.0.1:9090/readyz >/dev/null 2>&1 && break
-  sleep 1
-done
-curl -fsS http://127.0.0.1:9090/readyz >/dev/null
+bridgefu_ready() {{
+  curl --silent --show-error --max-time 2 http://127.0.0.1:9090/readyz 2>/dev/null |
+    python3 -c 'import json,sys; value=json.load(sys.stdin); raise SystemExit(0 if value.get("ok") is True and value.get("dependencies", {{}}).get("call_runtime") == "healthy" else 1)' >/dev/null 2>&1
+}}
+bridgefu_lease_lost() {{
+  curl --silent --show-error --max-time 2 http://127.0.0.1:9090/readyz 2>/dev/null |
+    python3 -c 'import json,sys; value=json.load(sys.stdin); raise SystemExit(0 if value.get("ok") is False and value.get("dependencies", {{}}).get("call_runtime") == "lease_lost" else 1)' >/dev/null 2>&1
+}}
+wait_bridgefu_ready() {{
+  attempts="$1"
+  for _ in $(seq 1 "$attempts"); do
+    if systemctl is-active --quiet bridgefu.service && bridgefu_ready; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}}
+prove_bridgefu_renewal_stable() {{
+  for _ in $(seq 1 3); do
+    sleep 5
+    systemctl is-active --quiet bridgefu.service && bridgefu_ready || return 1
+  done
+}}
+if ! wait_bridgefu_ready 90 || ! prove_bridgefu_renewal_stable; then
+  # A worker lease loss is deliberately terminal for one process. Recover
+  # only that exact state, once, and prove a renewal before proceeding.
+  systemctl is-active --quiet bridgefu.service
+  bridgefu_lease_lost
+  systemctl restart bridgefu.service
+  wait_bridgefu_ready 90
+  prove_bridgefu_renewal_stable
+fi
 ss -ltnH | awk '{{print $4}}' | grep -Eq '^127\\.0\\.0\\.1:8080$'
 trap - EXIT
 printf '%s\\n' '{{"schema_version":1,"producer":"bridgefu-web-runtime@1","configuration_installed":true,"bridgefu_ready":true,"wss_listener_ready":true,"redacted":true}}'

@@ -179,6 +179,16 @@ class BridgefuWebRuntimeTests(unittest.TestCase):
             install,
         )
         self.assertEqual(install.count("printf '%s\\n' '{\"schema_version\":1"), 1)
+        self.assertEqual(install.count("systemctl restart bridgefu.service"), 1)
+        self.assertIn(
+            "if ! wait_bridgefu_ready 90 || ! prove_bridgefu_renewal_stable; then",
+            install,
+        )
+        self.assertLess(
+            install.index("bridgefu_lease_lost\n  systemctl restart"),
+            install.index("ss -ltnH"),
+        )
+        self.assertIn("for _ in $(seq 1 3); do\n    sleep 5", install)
         self.assertEqual(cleanup.count("systemctl restart bridgefu.service"), 1)
         self.assertIn(
             'value.get("dependencies", {}).get("call_runtime") == "lease_lost"',
