@@ -3029,6 +3029,33 @@ class Controller:
             "passed": True,
         }
 
+    def cleanup_vapi_provisioning_resilience(self) -> list[str]:
+        """Delete the recreated exact-owner resources before stack teardown."""
+        if not getattr(self, "vapi_provisioning_cleanup_required", False):
+            return []
+        try:
+            config = self.provisioning_config()
+            api_key = extract_vapi_key(self.aws.secret(self.args.vapi_secret_arn))
+            client = VapiHttpClient(api_key)
+            current = provision_create(client, config)
+            self.outputs["VapiAssistantId"] = current.assistant_id
+            self.outputs["VapiPrepareToolId"] = current.prepare_tool_id
+            self.outputs["VapiWebhookCredentialId"] = current.webhook_credential_id
+            provision_delete(client, config, current.physical_id)
+            if any(
+                client.get(resource, resource_id) is not None
+                for resource, resource_id in (
+                    ("assistant", current.assistant_id),
+                    ("tool", current.prepare_tool_id),
+                    ("credential", current.webhook_credential_id),
+                )
+            ):
+                raise VapiProvisioningError("vapi_resilience_cleanup_failed")
+            self.vapi_provisioning_cleanup_required = False
+        except (QualificationError, VapiProvisioningError):
+            return ["Vapi provisioning resilience cleanup failed"]
+        return []
+
     def initialize_cleanup_vapi_verifier(self) -> None:
         """Bind a read-only exact-ID verifier even after an early run failure."""
         ids = (
@@ -4903,6 +4930,7 @@ class Controller:
             self.initialize_cleanup_vapi_verifier()
         except QualificationError:
             errors.append("Vapi cleanup verifier initialization failed")
+        errors.extend(self.cleanup_vapi_provisioning_resilience())
         errors.extend(self.cleanup_direct_assistant_overlay())
         errors.extend(self.cleanup_sip_transients())
         try:
@@ -4927,6 +4955,7 @@ class Controller:
             phone_recovery_required
             or direct_vapi_recovery_required
             or acm_recovery_required
+            or getattr(self, "vapi_provisioning_cleanup_required", False)
         )
         if phone_recovery_required and not any(
             "Vapi" in error or "journal" in error for error in errors
@@ -4938,6 +4967,10 @@ class Controller:
             "direct Vapi" in error for error in errors
         ):
             errors.append("direct Vapi overlay ownership cleanup is incomplete")
+        if getattr(self, "vapi_provisioning_cleanup_required", False) and not any(
+            "provisioning resilience" in error for error in errors
+        ):
+            errors.append("Vapi provisioning resilience cleanup is incomplete")
         if (
             self.created_stack
             and not ownership_recovery_required

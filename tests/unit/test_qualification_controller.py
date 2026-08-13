@@ -127,6 +127,71 @@ class QualificationControllerTests(unittest.TestCase):
                 "passed": True,
             },
         )
+        self.assertTrue(controller.vapi_provisioning_cleanup_required)
+
+    def test_vapi_resilience_cleanup_reconciles_and_deletes_exact_owner(self):
+        current = SimpleNamespace(
+            assistant_id="assistant_current",
+            prepare_tool_id="tool_current",
+            webhook_credential_id="credential_current",
+            physical_id=(
+                "bridgefu-vapi-v2:assistant_current:tool_current:credential_current"
+            ),
+        )
+        client = mock.Mock()
+        client.get.return_value = None
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.args = SimpleNamespace()
+        setattr(controller.args, "vapi_secret_arn", "arn:secret")
+        controller.aws = mock.Mock()
+        controller.aws.secret.return_value = "vapi-private-key-value-1234567890"
+        controller.outputs = {}
+        controller.vapi_provisioning_cleanup_required = True
+        config = mock.Mock()
+
+        with (
+            mock.patch.object(controller, "provisioning_config", return_value=config),
+            mock.patch.object(CONTROLLER, "VapiHttpClient", return_value=client),
+            mock.patch.object(CONTROLLER, "provision_create", return_value=current),
+            mock.patch.object(CONTROLLER, "provision_delete") as delete,
+        ):
+            errors = controller.cleanup_vapi_provisioning_resilience()
+
+        self.assertEqual(errors, [])
+        delete.assert_called_once_with(client, config, current.physical_id)
+        self.assertFalse(controller.vapi_provisioning_cleanup_required)
+        self.assertEqual(controller.outputs["VapiAssistantId"], current.assistant_id)
+        self.assertEqual(
+            controller.outputs["VapiPrepareToolId"], current.prepare_tool_id
+        )
+        self.assertEqual(
+            controller.outputs["VapiWebhookCredentialId"],
+            current.webhook_credential_id,
+        )
+
+    def test_vapi_resilience_cleanup_failure_remains_recovery_required(self):
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.args = SimpleNamespace()
+        setattr(controller.args, "vapi_secret_arn", "arn:secret")
+        controller.aws = mock.Mock()
+        controller.aws.secret.return_value = "vapi-private-key-value-1234567890"
+        controller.outputs = {}
+        controller.vapi_provisioning_cleanup_required = True
+
+        with (
+            mock.patch.object(
+                controller, "provisioning_config", return_value=mock.Mock()
+            ),
+            mock.patch.object(
+                CONTROLLER,
+                "VapiHttpClient",
+                side_effect=CONTROLLER.VapiProvisioningError("failed"),
+            ),
+        ):
+            errors = controller.cleanup_vapi_provisioning_resilience()
+
+        self.assertEqual(errors, ["Vapi provisioning resilience cleanup failed"])
+        self.assertTrue(controller.vapi_provisioning_cleanup_required)
 
     def test_command_failure_retains_bounded_sanitized_stderr(self):
         completed = subprocess.CompletedProcess(

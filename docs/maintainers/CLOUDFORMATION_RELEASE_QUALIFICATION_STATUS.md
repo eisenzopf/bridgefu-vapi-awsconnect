@@ -24,7 +24,7 @@ happened.
 
 | Item | Current state |
 |---|---|
-| Active stage | **Stage 4 — freeze locally proven source and repeat remote template validation** |
+| Active stage | **Stage 3 — update and finish retained Oregon diagnostic** |
 | Overall qualification | **IN PROGRESS** |
 | New Oregon diagnostic environment | **RETAINED / CREATE_COMPLETE** — `bridgefu-bfq-d19854f1-1` |
 | New Virginia qualification | **NOT STARTED** |
@@ -35,7 +35,7 @@ happened.
 | Vapi SIP/SDP A/B | **PASSED** — optional mode uses `sip:...;transport=tls` over observed TLS with RTP/AVP |
 | Direct mandatory-SRTP control | **PASSED** — SIPS/TLS plus RTP/SAVP/SDES-SRTP |
 | Prior Web smoke | **INVALID / SUPERSEDED** — used stock `@vapi-ai/web`, not Bridgefu's SDK |
-| Next permitted AWS action | No new deployment; reuse retained Oregon only after the corrected local SDK gate passes |
+| Next permitted AWS action | Retained Oregon only: compatibility-root review, exact runtime update, then sequential Web/SIP smokes |
 
 ## Source under evaluation
 
@@ -64,8 +64,8 @@ and fresh regional qualifications pass.
 | Repository | `eisenzopf/bridgefu-vapi-awsconnect` |
 | Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
 | Branch | `codex/staged-vapi-qualification` |
-| Implementation commit | `19854f1` |
-| Local delta | Correct Bridgefu Web SDK orchestration, direct handoff/runtime resources, qualification evidence, and live Vapi resilience gate; complete local gate passed, commit/push is next |
+| Implementation commit | `11a1ae62add89fc3e7955eaa80cd245cc88d8d49` |
+| Local delta | Status-ledger updates only; implementation source is committed and pushed |
 | Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
 | PR state at last update | Draft, open, not merged |
 
@@ -229,20 +229,17 @@ before updating these states.
 
 ## Blockers and decisions required
 
-1. The corrected Bridgefu Web SDK harness and its outbound Bridgefu-to-Vapi
-   security evidence must pass the complete local gate before the retained
-   Oregon environment is touched again.
-2. Neither implementation PR should be treated as qualified until both live
+1. Neither implementation PR should be treated as qualified until both live
    Stage 3 sources pass and retained-environment cleanup proves zero state.
-3. The outbound evidence and corrected qualification changes are still local,
-   uncommitted source and therefore cannot identify a release candidate yet.
+2. The retained diagnostic must not be updated with an aggregate nested-stack
+   change set that proposes replacement of persistent or call-path resources.
 
 ## Next actions
 
 The next actions, in order, are:
 
-1. Commit/push the proven Bridgefu evidence source, repin the distribution
-   source lock, and repeat the exact final-source local/remote template gates.
+1. Expose the already-deployed child outputs through a diagnostic-only
+   compatibility root whose reviewed change set contains no replacement.
 2. Update the retained Oregon runtime with those exact diagnostic bits and run
    the Bridgefu Web SDK source once, without rebuilding the environment between
    diagnosis attempts.
@@ -1048,3 +1045,71 @@ and full 226-test Python suite passed.
   submitted all ten final rendered template bodies to AWS
   `ValidateTemplate`; all ten passed in `us-west-2` and all ten passed in
   `us-east-1`. This validation created no stack or other AWS infrastructure.
+- Private exact-URL validation execution `bfq-s11a1ae6-1` uploaded and
+  journaled 25 AES-256 S3 object versions under its unique `diagnostics/`
+  prefix. All ten exact VersionId template URLs passed `ValidateTemplate` in
+  both regions. Receipt:
+  `target/diagnostic/bfq-s11a1ae6-1/validation-receipt.json`.
+- The exact product root VersionId is
+  `eYlOKr1wMYLgMB9mGcl9WfYLeyi4SzsW`; its tag set is empty, so it is private.
+  Read-only stack checks prove `bridgefu-bfq-s11a1ae6-1` does not exist in
+  either region. No release version, AMI publication, or `latest` pointer was
+  created.
+- Distribution commit `11a1ae62add89fc3e7955eaa80cd245cc88d8d49`
+  was pushed to `origin/codex/staged-vapi-qualification`.
+
+### 2026-08-13 — Retained Oregon update reviewed and constrained
+
+- A nested aggregate change set against the final qualification template was
+  created for review only. CloudFormation proposed broad replacements across
+  runtime, data, secrets, networking, and other nested resources because the
+  retained stack predates the final nested-template dependency/output model.
+  The change set was not executed and was deleted.
+- Four exact child-stack updates were then reviewed and applied independently:
+  Configuration updated its Lambda code and immutable validation outputs;
+  HandoffService updated only the prepare, transfer, and lookup Lambda code;
+  VapiResources updated only the provisioner Lambda and added non-secret
+  outputs; Runtime added only the gateway-role output. Each child reached
+  `UPDATE_COMPLETE` without replacement.
+- A second aggregate review still proposed broad nested replacements even
+  after child convergence. It was not executed and was deleted. This proves an
+  aggregate retained-stack migration is unsafe; it does not indicate a product
+  failure in a fresh deployment.
+- The root remains `CREATE_COMPLETE`. The Bridgefu instance remains
+  `i-0aa9e3747232e17dd` and the Vapi assistant remains
+  `aab176b8-22da-458e-aa84-22c7318addf3`. No EC2, VPC, DynamoDB, Connect,
+  certificate, secret, or customer call-path resource was replaced.
+- The permitted retained path is now a diagnostic-only compatibility product
+  root derived from the deployed product template. It may expose the new child
+  outputs but must retain the deployed nested resource definitions and pass a
+  recursive change-set review proving no replacement. This compatibility root
+  can never become a customer release artifact; fresh Stage 5 qualification
+  must deploy the exact final customer template.
+- Recursive review proved even the output-only product compatibility root
+  caused CloudFormation to reinterpret directly updated nested stacks and
+  propose replacements. It was not executed and its change set was deleted.
+- Replaced that unsafe approach with standalone diagnostic add-on stack
+  `bridgefu-bfq-d19854f1-1-direct`. Its exact template passed `cfn-lint` and
+  AWS `ValidateTemplate` in both regions. The reviewed create change set
+  contained exactly 11 `Add` actions for qualification-only API Gateway,
+  Lambda, IAM, log-group, and disposable-secret resources and no modification
+  or replacement.
+- The add-on reached `CREATE_COMPLETE`. The retained root stayed
+  `CREATE_COMPLETE`; instance `i-0aa9e3747232e17dd`, assistant
+  `aab176b8-22da-458e-aa84-22c7318addf3`, Connect instance
+  `fb81d6a6-eb92-4301-8812-6c3f3c034ffb`, Network child, and HandoffService
+  child identities are unchanged. The add-on is cleanup-owned and is never a
+  customer release artifact.
+- The retained harness now merges the unchanged root, exact child-stack, and
+  add-on outputs through a strict diagnostic-only adapter; the controller's
+  complete required-output contract passes live. The corrected demo-site ZIP
+  was rebuilt from Bridgefu `2fb2eaed` and the actual
+  `@bridgefu/webrtc-browser` package; archive SHA-256 is
+  `cfa04f3a2fc745f899b90e2cc0b4a21334ac3f3dfbd3dc3375f09068a063ab08`.
+- A pre-live cleanup audit found that the provisioning resilience cycle could
+  leave its recreated Vapi IDs outside CloudFormation's original physical ID.
+  The controller now reconciles the exact deterministic owner, deletes those
+  resources before stack teardown, proves assistant/tool/credential absence,
+  and blocks stack deletion if cleanup cannot be proven. Full unit suite:
+  **259 passed**; Ruff and diff checks passed. No live Vapi resilience mutation
+  was attempted before this fix.
