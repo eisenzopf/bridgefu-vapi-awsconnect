@@ -59,7 +59,7 @@ selects the correct URI contract.
 | Repository | `eisenzopf/bridgefu-vapi-awsconnect` |
 | Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
 | Branch | `codex/staged-vapi-qualification` |
-| Implementation commit | `40c175b` (status-only follow-up `97a0e9a`) |
+| Implementation commit | `d8823bc` |
 | Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
 | PR state at last update | Draft, open, not merged |
 
@@ -99,7 +99,8 @@ Still required before Stage 1 is `PASSED`:
 - [x] Complete all GitHub checks for Bridgefu PR #4: infrastructure, full test,
   ARM64 image, AMD64 image, and Trivy passed.
 - [ ] Complete all GitHub checks for distribution PR #26.
-- [ ] Run pinned Packer validation in an environment where Packer is installed.
+- [x] Packer 1.12.0 validation passed locally and in the prior CI validation
+  job; the authoritative current-commit CI rerun remains required.
 - [ ] Rerun the complete Stage 1 gate after Stage 3 selects the URI contract and
   the implementation is finalized.
 
@@ -163,7 +164,7 @@ Blocked on a signed, sealed candidate.
 
 ## Current CI state
 
-Last observed on 2026-08-12 against status follow-up commit `97a0e9a`:
+Last observed on 2026-08-12 against implementation commit `d8823bc`:
 
 ### Bridgefu PR #4
 
@@ -175,11 +176,11 @@ Last observed on 2026-08-12 against status follow-up commit `97a0e9a`:
 
 ### Distribution PR #26
 
-- `validate`: passed.
-- `sdp-diagnostics`: passed.
+- `validate`: running.
+- `sdp-diagnostics`: running.
 - `qualification-client`: running.
 
-Authoritative CI run: `31661852590`. All three checks must pass before Stage 1
+Authoritative CI run: `31662335450`. All three checks must pass before Stage 1
 can pass.
 
 CI monitors are not running locally. CI completion must be read explicitly
@@ -192,7 +193,7 @@ before updating these states.
 | Qualification plan | `docs/maintainers/CLOUDFORMATION_RELEASE_QUALIFICATION_PLAN.md` | Committed and pushed |
 | Status ledger | `docs/maintainers/CLOUDFORMATION_RELEASE_QUALIFICATION_STATUS.md` | Committed and pushed; this update is local pending the next implementation commit |
 | Bridgefu implementation commit | `2f6cf2f6dec72856479cd74b5f23af702ae1dffa` | Pushed, unmerged |
-| Distribution implementation commit | `1b2c22025949ea7f76a28ef55f296da7a2edab80` | Pushed, unmerged |
+| Distribution implementation commit | `d8823bc5aac1aac8555d05d1b7c60b812817e92f` | Pushed, unmerged |
 | Local test results | Current task execution logs | Passed as listed above |
 | Remote template-body validation | AWS account `225478700523`, both supported regions | Passed against current branch render |
 | Oregon A/B SIP/SDP traces | — | Not created |
@@ -206,14 +207,14 @@ before updating these states.
 1. Stage 3 must determine whether Vapi requires `sips:` or
    `sip:...;transport=tls`; current implementation branches are hypotheses.
 2. Neither implementation PR should be treated as qualified until Stage 3.
-3. Distribution CI run `31661852590` must finish successfully before Stage 2.
+3. Distribution CI run `31662335450` must finish successfully before Stage 2.
 4. A fresh AWS/Vapi zero-state audit is required immediately before Stage 3.
 
 ## Next actions
 
 The next actions, in order, are:
 
-1. Require distribution CI run `31661852590` to pass.
+1. Require distribution CI run `31662335450` to pass.
 2. Build/upload private diagnostic artifacts without reserving a release
    version or publishing `latest`.
 3. Run AWS `ValidateTemplate` against the exact versioned diagnostic URLs.
@@ -297,3 +298,26 @@ and full 226-test Python suite passed.
   require `ruff check`, not repository-wide Ruff reformatting. No file was
   reformatted, and this unrelated baseline formatting debt is not being mixed
   into the diagnostic fix.
+- Committed and pushed the source-lock and diagnostic-prefix fix as `d8823bc`.
+- Cancelled obsolete PR CI runs `31660862098`, `31661830627`, and
+  `31661852590`; they target superseded commits and cannot qualify the current
+  source. Authoritative run `31662335450` started for `d8823bc`.
+- Downloaded Packer 1.12.0 for macOS arm64 into ignored `target/tools/` and
+  verified its archive against HashiCorp SHA-256
+  `448bebeb5741eebd5fdc92609e75213665366970cd607ec57e7a5516d7067b3d`.
+- Local pinned `packer init` and `packer validate` passed for Bridgefu commit
+  `2f6cf2f6`, Cargo.lock digest `bc49cee0...`, and distribution commit
+  `d8823bc`.
+
+### 2026-08-12 — Exact native diagnostic clients retained by CI
+
+- The Stage 3 controller requires the exact ARM64 static SIP client and direct
+  secure probe, but CI previously discarded both after proving them.
+- CI now uploads only those two non-secret verified executables in a seven-day
+  artifact named with the exact distribution commit.
+- Added workflow contract coverage for the artifact name, both exact binary
+  paths, and bounded retention.
+- Focused qualification-asset suite: 24 passed. Full Python suite: 226 passed.
+  Local release validation, Ruff, and diff checks passed.
+- This workflow change supersedes CI run `31662335450`; a new authoritative
+  Stage 1 run is required after commit and push.

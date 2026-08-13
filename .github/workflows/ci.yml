@@ -72,6 +72,14 @@ jobs:
             file "$binary" | grep -F 'statically linked'
             "$binary" --help >/dev/null
           done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qualification-native-clients-${{ github.sha }}
+          path: |
+            qualification/sip-client/target/aarch64-unknown-linux-musl/release/bridgefu-vapi-sip-smoke
+            qualification/direct-secure-probe/target/aarch64-unknown-linux-musl/release/bridgefu-direct-secure-probe
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/setup-node@v4
         with: {node-version: '22', cache: npm, cache-dependency-path: qualification/package-lock.json}
       - name: Check browser smoke harnesses

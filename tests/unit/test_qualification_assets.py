@@ -360,6 +360,21 @@ class QualificationAssetTests(unittest.TestCase):
             ci,
         )
         self.assertIn("cargo clippy --locked --all-targets", ci)
+        self.assertIn(
+            "name: qualification-native-clients-${{ github.sha }}",
+            ci,
+        )
+        self.assertIn(
+            "qualification/sip-client/target/aarch64-unknown-linux-musl/"
+            "release/bridgefu-vapi-sip-smoke",
+            ci,
+        )
+        self.assertIn(
+            "qualification/direct-secure-probe/target/"
+            "aarch64-unknown-linux-musl/release/bridgefu-direct-secure-probe",
+            ci,
+        )
+        self.assertIn("retention-days: 7", ci)
 
         workflows = {
             name: (ROOT / ".github" / "workflows" / name).read_text()
