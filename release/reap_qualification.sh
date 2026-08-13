@@ -317,10 +317,11 @@ validate_remote_vapi_direct_tool_exact() {
       (.[$name] | type == "string" and
        test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T"));
     type == "object" and .id == $tool_id and
-    ((keys - ["id","orgId","createdAt","updatedAt","type","function",
+    ((keys - ["id","orgId","createdAt","updatedAt","latestVersion","type","function",
       "server","parameters"]) | length == 0) and
     absent_or_identifier("orgId") and absent_or_timestamp("createdAt") and
-    absent_or_timestamp("updatedAt") and .type == $desired.type and
+    absent_or_timestamp("updatedAt") and absent_or_identifier("latestVersion") and
+    .type == $desired.type and
     .function == $desired.function and .server == $desired.server and
     .parameters == $desired.parameters' \
     "$response_file" >/dev/null

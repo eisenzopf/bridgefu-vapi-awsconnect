@@ -420,9 +420,7 @@ class RecoveryPolicyContractTests(unittest.TestCase):
             re.MULTILINE | re.DOTALL,
         )
         self.assertIsNotNone(cleanup_match)
-        cleanup_function = (
-            f"cleanup_sensitive_files() {{\n{cleanup_match.group(1)}\n}}"
-        )
+        cleanup_function = f"cleanup_sensitive_files() {{\n{cleanup_match.group(1)}\n}}"
         secret = "_".join(("vapi", "private", "key", "TEST", "123"))
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "curl.config"
@@ -452,7 +450,7 @@ if grep -F '{secret}' '{argv}' >/dev/null; then exit 10; fi
             )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertFalse(config.exists())
-        self.assertNotIn('Authorization: Bearer $', source)
+        self.assertNotIn("Authorization: Bearer $", source)
         self.assertIn("trap cleanup_sensitive_files EXIT", source)
 
     def test_direct_vapi_journal_validators_reject_hash_and_owner_tampering(self):
@@ -841,6 +839,7 @@ validate_remote_vapi_direct_assistant_exact {remote_path} \
             "id": "tool-owned-123",
             "orgId": "organization-owned-123",
             "createdAt": "2026-08-13T12:00:00Z",
+            "latestVersion": "version-owned-123",
             **desired,
         }
         changed_endpoint = copy.deepcopy(valid)
@@ -849,6 +848,8 @@ validate_remote_vapi_direct_assistant_exact {remote_path} \
         changed_function["function"]["name"] = "foreign"
         unknown = copy.deepcopy(valid)
         unknown["foreign"] = True
+        malformed_latest_version = copy.deepcopy(valid)
+        malformed_latest_version["latestVersion"] = {"foreign": True}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             intent_path = root / "intent.json"
@@ -865,6 +866,7 @@ validate_remote_vapi_direct_tool_exact {remote_path} tool-owned-123 {intent_path
                     (changed_endpoint, False),
                     (changed_function, False),
                     (unknown, False),
+                    (malformed_latest_version, False),
                 )
             ):
                 remote_path.write_text(json.dumps(remote))
@@ -876,6 +878,7 @@ validate_remote_vapi_direct_tool_exact {remote_path} tool-owned-123 {intent_path
                 )
                 with self.subTest(case=index):
                     self.assertEqual(result.returncode == 0, expected)
+
     def test_direct_vapi_reaper_accepts_controller_emitted_journals(self):
         module_path = ROOT / "qualification" / "controller.py"
         spec = importlib.util.spec_from_file_location(

@@ -532,7 +532,11 @@ class QualificationControllerTests(unittest.TestCase):
             },
             execution_id="bfq-test1234",
         )
-        remote = {"id": "tool_1234", **desired}
+        remote = {
+            "id": "tool_1234",
+            "latestVersion": "version_1234",
+            **desired,
+        }
 
         class FakeVapi(CONTROLLER.Vapi):
             def __init__(self):

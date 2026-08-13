@@ -223,12 +223,14 @@ def direct_tool_surface_matches(
         "orgId",
         "createdAt",
         "updatedAt",
+        "latestVersion",
         "type",
         "function",
         "server",
         "parameters",
     }
     org_id = actual.get("orgId")
+    latest_version = actual.get("latestVersion")
     timestamps = (actual.get("createdAt"), actual.get("updatedAt"))
     return (
         set(desired) == {"type", "function", "server", "parameters"}
@@ -236,6 +238,13 @@ def direct_tool_surface_matches(
         and (
             org_id in (None, "")
             or (isinstance(org_id, str) and RESOURCE_ID.fullmatch(org_id) is not None)
+        )
+        and (
+            latest_version in (None, "")
+            or (
+                isinstance(latest_version, str)
+                and RESOURCE_ID.fullmatch(latest_version) is not None
+            )
         )
         and all(value is None or isinstance(value, str) for value in timestamps)
         and all(actual.get(key) == value for key, value in desired.items())
