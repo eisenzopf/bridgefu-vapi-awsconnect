@@ -64,7 +64,7 @@ and fresh regional qualifications pass.
 | Repository | `eisenzopf/bridgefu-vapi-awsconnect` |
 | Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
 | Branch | `codex/staged-vapi-qualification` |
-| Implementation commit | `e88a21524b9eb0329b7e1cb5da2d3d3b7e5cb772` |
+| Implementation commit | `ba033da642c16b62720e7d0ac78bad2029299265` |
 | Local delta | Status-ledger updates only; implementation source is committed and pushed |
 | Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
 | PR state at last update | Draft, open, not merged |
@@ -1278,3 +1278,22 @@ and full 226-test Python suite passed.
   unit suite passed **263/263** and local release validation passed. The fix was
   committed and pushed as
   `e88a21524b9eb0329b7e1cb5da2d3d3b7e5cb772`.
+- The next Web attempt terminated cleanly and exposed the first actual API
+  contract failure: Bridgefu created the direct route with HTTP 201, but the
+  harness rejected the private response before browser attachment. Pinned
+  Bridgefu source proved two incorrect harness assumptions. `LegKind` is
+  serialized as `webrtc`, not `web_rtc`; and Bridgefu deliberately returns a
+  43-character one-use attachment token plus a distinct `bfs1.<JWT>` signaling
+  credential. The harness had required those two credentials to be identical.
+  No Vapi call was created.
+- Both the Python route parser and the Playwright source validator now require
+  the actual pinned Bridgefu contract: inbound `webrtc`, bounded `bfs1.`
+  signaling credential, `token.<signaling credential>`, and the separate
+  `bridgefu.attach.<attachment token>`. Regressions reject conflating the two
+  credentials and bind the browser validator to the same shape. All **263**
+  unit tests, Node syntax validation, and local release validation passed. The
+  fix was committed and pushed as
+  `ba033da642c16b62720e7d0ac78bad2029299265`.
+- Cleanup passed before another retry: zero owned Vapi phone/tool/prompt, empty
+  auth secret, zero Web-runtime versions, no media rule, and no retained Web
+  runtime on EC2.
