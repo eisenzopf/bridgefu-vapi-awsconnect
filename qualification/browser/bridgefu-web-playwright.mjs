@@ -480,29 +480,71 @@ function installProbe() {
     setupActive: 0,
     setupPassive: 0,
     setupActpass: 0,
+    bundleGroups: 0,
+    bundleMids: 0,
+    uniqueIceUfrag: 0,
+    uniqueIcePwd: 0,
+    uniqueFingerprint: 0,
+    sendrecv: 0,
+    recvonly: 0,
+    sendonly: 0,
+    inactive: 0,
   });
   const classifyDescription = (description) => {
     const summary = newDescriptionSummary();
     const sdp = String(description?.sdp ?? "");
     if (!sdp || sdp.length > 1024 * 1024) return summary;
     summary.present = 1;
+    const ufrags = new Set();
+    const passwords = new Set();
+    const fingerprints = new Set();
     for (const line of sdp.split(/\r?\n/).slice(0, 4096)) {
       if (line.startsWith("m=audio ")) summary.audioMedia += 1;
       if (line.startsWith("m=application ")) summary.applicationMedia += 1;
       if (/^m=[^ ]+ 0(?: |$)/.test(line)) summary.rejectedMedia += 1;
       if (line.startsWith("a=mid:")) summary.mids += 1;
-      if (line.startsWith("a=ice-ufrag:")) summary.iceUfrag += 1;
-      if (line.startsWith("a=ice-pwd:")) summary.icePwd += 1;
-      if (line.startsWith("a=fingerprint:")) summary.fingerprint += 1;
+      if (line.startsWith("a=ice-ufrag:")) {
+        summary.iceUfrag += 1;
+        ufrags.add(line.slice("a=ice-ufrag:".length));
+      }
+      if (line.startsWith("a=ice-pwd:")) {
+        summary.icePwd += 1;
+        passwords.add(line.slice("a=ice-pwd:".length));
+      }
+      if (line.startsWith("a=fingerprint:")) {
+        summary.fingerprint += 1;
+        fingerprints.add(line.slice("a=fingerprint:".length));
+      }
       if (line.startsWith("a=candidate:")) summary.inlineCandidates += 1;
       if (line === "a=end-of-candidates") summary.endOfCandidates += 1;
       if (line === "a=ice-lite") summary.iceLite += 1;
       if (line === "a=setup:active") summary.setupActive += 1;
       if (line === "a=setup:passive") summary.setupPassive += 1;
       if (line === "a=setup:actpass") summary.setupActpass += 1;
+      if (line.startsWith("a=group:BUNDLE")) {
+        summary.bundleGroups += 1;
+        summary.bundleMids += Math.max(0, line.trim().split(/\s+/).length - 1);
+      }
+      if (line === "a=sendrecv") summary.sendrecv += 1;
+      if (line === "a=recvonly") summary.recvonly += 1;
+      if (line === "a=sendonly") summary.sendonly += 1;
+      if (line === "a=inactive") summary.inactive += 1;
     }
+    summary.uniqueIceUfrag = ufrags.size;
+    summary.uniqueIcePwd = passwords.size;
+    summary.uniqueFingerprint = fingerprints.size;
     return summary;
   };
+  const newTransceiverSummary = () => ({
+    count: 0,
+    midPresent: 0,
+    currentNull: 0,
+    sendrecv: 0,
+    recvonly: 0,
+    sendonly: 0,
+    inactive: 0,
+    other: 0,
+  });
   const newCandidateAssociationSummary = () => ({
     sdpMidEmpty: 0,
     sdpMidAbsent: 0,
@@ -557,6 +599,7 @@ function installProbe() {
     localDescriptionSummary: newDescriptionSummary(),
     remoteDescriptionSummary: newDescriptionSummary(),
     remoteCandidateAssociationSummary: newCandidateAssociationSummary(),
+    transceiverSummary: newTransceiverSummary(),
     statsSamples: 0,
   };
   globalThis.__bridgefuVapiProbe = state;
@@ -703,6 +746,21 @@ function installProbe() {
               state.remoteDescriptionSummary,
               classifyDescription(peer.remoteDescription),
             );
+            const transceivers = newTransceiverSummary();
+            for (const transceiver of peer.getTransceivers()) {
+              transceivers.count += 1;
+              if (typeof transceiver.mid === "string" && transceiver.mid) {
+                transceivers.midPresent += 1;
+              }
+              const direction = transceiver.currentDirection;
+              if (direction === null) transceivers.currentNull += 1;
+              else if (direction === "sendrecv") transceivers.sendrecv += 1;
+              else if (direction === "recvonly") transceivers.recvonly += 1;
+              else if (direction === "sendonly") transceivers.sendonly += 1;
+              else if (direction === "inactive") transceivers.inactive += 1;
+              else transceivers.other += 1;
+            }
+            mergeMaximums(state.transceiverSummary, transceivers);
             state.statsSamples = Math.min(4096, state.statsSamples + 1);
           } catch {
             // Closed peer diagnostics are intentionally excluded.
@@ -837,6 +895,9 @@ async function applicationSnapshot(page, nonce) {
         remoteCandidateAssociationSummary: {
           ...(globalThis.__bridgefuVapiProbe?.remoteCandidateAssociationSummary ?? {}),
         },
+        transceiverSummary: {
+          ...(globalThis.__bridgefuVapiProbe?.transceiverSummary ?? {}),
+        },
         statsSamples: globalThis.__bridgefuVapiProbe?.statsSamples ?? 0,
       };
     },
@@ -886,7 +947,9 @@ async function applicationSnapshot(page, nonce) {
       new Set([
         "present", "audioMedia", "applicationMedia", "rejectedMedia", "mids",
         "iceUfrag", "icePwd", "fingerprint", "inlineCandidates", "endOfCandidates",
-        "iceLite", "setupActive", "setupPassive", "setupActpass",
+        "iceLite", "setupActive", "setupPassive", "setupActpass", "bundleGroups",
+        "bundleMids", "uniqueIceUfrag", "uniqueIcePwd", "uniqueFingerprint",
+        "sendrecv", "recvonly", "sendonly", "inactive",
       ]),
     )
     || !Object.values(value.localDescriptionSummary).every(
@@ -897,7 +960,9 @@ async function applicationSnapshot(page, nonce) {
       new Set([
         "present", "audioMedia", "applicationMedia", "rejectedMedia", "mids",
         "iceUfrag", "icePwd", "fingerprint", "inlineCandidates", "endOfCandidates",
-        "iceLite", "setupActive", "setupPassive", "setupActpass",
+        "iceLite", "setupActive", "setupPassive", "setupActpass", "bundleGroups",
+        "bundleMids", "uniqueIceUfrag", "uniqueIcePwd", "uniqueFingerprint",
+        "sendrecv", "recvonly", "sendonly", "inactive",
       ]),
     )
     || !Object.values(value.remoteDescriptionSummary).every(
@@ -911,6 +976,16 @@ async function applicationSnapshot(page, nonce) {
       ]),
     )
     || !Object.values(value.remoteCandidateAssociationSummary).every(
+      (count) => Number.isSafeInteger(count) && count >= 0 && count <= 256,
+    )
+    || !exactKeys(
+      value.transceiverSummary,
+      new Set([
+        "count", "midPresent", "currentNull", "sendrecv", "recvonly", "sendonly",
+        "inactive", "other",
+      ]),
+    )
+    || !Object.values(value.transceiverSummary).every(
       (count) => Number.isSafeInteger(count) && count >= 0 && count <= 256,
     )
     || !Number.isSafeInteger(value.statsSamples)
@@ -942,16 +1017,26 @@ function failStartup(value) {
     + `ld=${value.localDescriptionSummary.audioMedia}/`
     + `${value.localDescriptionSummary.applicationMedia}/`
     + `${value.localDescriptionSummary.rejectedMedia}/`
+    + `${value.localDescriptionSummary.bundleMids}/`
+    + `${value.localDescriptionSummary.uniqueIceUfrag}/`
+    + `${value.localDescriptionSummary.uniqueIcePwd}/`
+    + `${value.localDescriptionSummary.uniqueFingerprint}/`
     + `${value.localDescriptionSummary.inlineCandidates} `
     + `rd=${value.remoteDescriptionSummary.audioMedia}/`
     + `${value.remoteDescriptionSummary.applicationMedia}/`
     + `${value.remoteDescriptionSummary.rejectedMedia}/`
-    + `${value.remoteDescriptionSummary.mids}/`
-    + `${value.remoteDescriptionSummary.iceUfrag}/`
-    + `${value.remoteDescriptionSummary.icePwd}/`
-    + `${value.remoteDescriptionSummary.fingerprint}/`
+    + `${value.remoteDescriptionSummary.bundleMids}/`
+    + `${value.remoteDescriptionSummary.uniqueIceUfrag}/`
+    + `${value.remoteDescriptionSummary.uniqueIcePwd}/`
+    + `${value.remoteDescriptionSummary.uniqueFingerprint}/`
     + `${value.remoteDescriptionSummary.inlineCandidates}/`
-    + `${value.remoteDescriptionSummary.iceLite}`,
+    + `${value.remoteDescriptionSummary.setupActive}/`
+    + `${value.remoteDescriptionSummary.setupPassive}/`
+    + `${value.remoteDescriptionSummary.setupActpass} `
+    + `tx=${value.transceiverSummary.count}/${value.transceiverSummary.midPresent}/`
+    + `${value.transceiverSummary.currentNull}/${value.transceiverSummary.sendrecv}/`
+    + `${value.transceiverSummary.recvonly}/${value.transceiverSummary.sendonly}/`
+    + `${value.transceiverSummary.inactive}`,
   );
 }
 

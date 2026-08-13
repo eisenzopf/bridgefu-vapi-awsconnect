@@ -1649,3 +1649,19 @@ and full 226-test Python suite passed.
   encoded compactly below that bound, with a source regression. One final
   classification-only attempt is permitted after cleanup; it must not be
   interpreted as a product/Vapi retry.
+- The compact classification confirms the SDK workaround itself executed:
+  empty MID count zero, absent MID count one, m-line-index-zero count one, and
+  two successful `addIceCandidate` calls (the candidate plus completion) with
+  zero failures. The local browser description had one audio and one application
+  section, neither rejected, and 22 gathered candidates. The applied server
+  description had one audio and one application section, neither rejected, two
+  MIDs, two ICE-ufrag lines, two ICE-password lines, two fingerprints, one
+  applied candidate, and no ICE-lite attribute. Despite this, the peer and ICE
+  states remained `new` with zero candidate pairs. This further disproves the
+  empty-MID defect as the live root cause.
+- The remaining standards-relevant discriminator is whether bundled media uses
+  one consistent set of transport parameters and whether the browser committed
+  a non-null transceiver direction. The closed classifier now counts BUNDLE
+  members, unique (not actual) ICE credential/fingerprint values, DTLS setup
+  roles, and transceiver current-direction categories. The focused browser and
+  source-contract tests pass; no raw value is retained.
