@@ -456,6 +456,20 @@ function installProbe() {
     tcp: 0,
     other: 0,
   });
+  const newCandidatePairSummary = () => ({
+    waiting: 0,
+    inProgress: 0,
+    succeeded: 0,
+    failed: 0,
+    frozen: 0,
+    other: 0,
+    selected: 0,
+  });
+  const mergeMaximums = (destination, source) => {
+    for (const [key, value] of Object.entries(source)) {
+      destination[key] = Math.max(destination[key], value);
+    }
+  };
   const classifyCandidate = (candidate, summary) => {
     const raw = String(candidate?.candidate ?? "");
     const tokens = raw.trim().split(/\s+/);
@@ -489,6 +503,9 @@ function installProbe() {
     iceCandidateSummary: newCandidateSummary(),
     remoteIceCandidateSummary: newCandidateSummary(),
     remoteIceComplete: 0,
+    statsRemoteCandidateSummary: newCandidateSummary(),
+    candidatePairSummary: newCandidatePairSummary(),
+    statsSamples: 0,
   };
   globalThis.__bridgefuVapiProbe = state;
   globalThis.__bridgefuVapiPeers = [];
@@ -570,6 +587,49 @@ function installProbe() {
           else classifyCandidate(candidate, state.remoteIceCandidateSummary);
           return nativeAddIceCandidate(candidate);
         };
+        const sampleStats = async () => {
+          try {
+            const report = await peer.getStats();
+            const selectedPairIds = new Set();
+            const remoteCandidates = newCandidateSummary();
+            const candidatePairs = newCandidatePairSummary();
+            for (const row of report.values()) {
+              if (row.type === "transport" && typeof row.selectedCandidatePairId === "string") {
+                selectedPairIds.add(row.selectedCandidatePairId);
+              }
+            }
+            for (const row of report.values()) {
+              if (row.type === "candidate-pair") {
+                const pairState = String(row.state ?? "").toLowerCase();
+                if (pairState === "waiting") candidatePairs.waiting += 1;
+                else if (pairState === "in-progress") candidatePairs.inProgress += 1;
+                else if (pairState === "succeeded") candidatePairs.succeeded += 1;
+                else if (pairState === "failed") candidatePairs.failed += 1;
+                else if (pairState === "frozen") candidatePairs.frozen += 1;
+                else candidatePairs.other += 1;
+                if (selectedPairIds.has(row.id)) candidatePairs.selected += 1;
+              }
+              if (row.type === "remote-candidate") {
+                classifyCandidate({
+                  candidate: "",
+                  protocol: row.protocol,
+                  type: row.candidateType,
+                  address: row.address,
+                }, remoteCandidates);
+              }
+            }
+            mergeMaximums(state.statsRemoteCandidateSummary, remoteCandidates);
+            mergeMaximums(state.candidatePairSummary, candidatePairs);
+            state.statsSamples = Math.min(4096, state.statsSamples + 1);
+          } catch {
+            // Closed peer diagnostics are intentionally excluded.
+          }
+        };
+        const statsTimer = setInterval(() => void sampleStats(), 100);
+        peer.addEventListener("connectionstatechange", () => {
+          void sampleStats();
+          if (peer.connectionState === "closed") clearInterval(statsTimer);
+        });
         peer.addEventListener("track", (event) => {
           if (event.track?.kind === "audio") observeTrack(event.track);
         });
@@ -670,65 +730,7 @@ async function applicationSnapshot(page, nonce) {
       const snapshot =
         globalThis.__BRIDGEFU_RECIPE_QUALIFICATION__?.snapshot(qualificationNonce) ?? null;
       if (snapshot === null) return null;
-      const candidatePairSummary = {
-        waiting: 0,
-        inProgress: 0,
-        succeeded: 0,
-        failed: 0,
-        frozen: 0,
-        other: 0,
-        selected: 0,
-      };
-      const statsRemoteCandidateSummary = {
-        udpIpv4Srflx: 0,
-        udpIpv4Host: 0,
-        udpIpv6: 0,
-        tcp: 0,
-        other: 0,
-      };
-      const peers = globalThis.__bridgefuVapiPeers ?? [];
-      return Promise.all(peers.map(async (peer) => {
-        try {
-          const report = await peer.getStats();
-          const selectedPairIds = new Set();
-          for (const row of report.values()) {
-            if (row.type === "transport" && typeof row.selectedCandidatePairId === "string") {
-              selectedPairIds.add(row.selectedCandidatePairId);
-            }
-          }
-          for (const row of report.values()) {
-            if (row.type === "candidate-pair") {
-              const state = String(row.state ?? "").toLowerCase();
-              if (state === "waiting") candidatePairSummary.waiting += 1;
-              else if (state === "in-progress") candidatePairSummary.inProgress += 1;
-              else if (state === "succeeded") candidatePairSummary.succeeded += 1;
-              else if (state === "failed") candidatePairSummary.failed += 1;
-              else if (state === "frozen") candidatePairSummary.frozen += 1;
-              else candidatePairSummary.other += 1;
-              if (selectedPairIds.has(row.id)) candidatePairSummary.selected += 1;
-            }
-            if (row.type === "remote-candidate") {
-              const protocol = String(row.protocol ?? "").toLowerCase();
-              const type = String(row.candidateType ?? "").toLowerCase();
-              const address = String(row.address ?? "");
-              if (protocol === "tcp") statsRemoteCandidateSummary.tcp += 1;
-              else if (
-                protocol === "udp" && type === "srflx"
-                && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(address)
-              ) statsRemoteCandidateSummary.udpIpv4Srflx += 1;
-              else if (
-                protocol === "udp" && type === "host"
-                && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(address)
-              ) statsRemoteCandidateSummary.udpIpv4Host += 1;
-              else if (protocol === "udp" && address.includes(":")) {
-                statsRemoteCandidateSummary.udpIpv6 += 1;
-              } else statsRemoteCandidateSummary.other += 1;
-            }
-          }
-        } catch {
-          // Closed peer diagnostics are intentionally excluded.
-        }
-      })).then(() => ({
+      return {
         ...snapshot,
         iceCandidateSummary: {
           ...(globalThis.__bridgefuVapiProbe?.iceCandidateSummary ?? {}),
@@ -737,9 +739,14 @@ async function applicationSnapshot(page, nonce) {
           ...(globalThis.__bridgefuVapiProbe?.remoteIceCandidateSummary ?? {}),
         },
         remoteIceComplete: globalThis.__bridgefuVapiProbe?.remoteIceComplete ?? 0,
-        statsRemoteCandidateSummary,
-        candidatePairSummary,
-      }));
+        statsRemoteCandidateSummary: {
+          ...(globalThis.__bridgefuVapiProbe?.statsRemoteCandidateSummary ?? {}),
+        },
+        candidatePairSummary: {
+          ...(globalThis.__bridgefuVapiProbe?.candidatePairSummary ?? {}),
+        },
+        statsSamples: globalThis.__bridgefuVapiProbe?.statsSamples ?? 0,
+      };
     },
     nonce,
   );
@@ -782,6 +789,9 @@ async function applicationSnapshot(page, nonce) {
     || !Object.values(value.candidatePairSummary).every(
       (count) => Number.isSafeInteger(count) && count >= 0 && count <= 1024,
     )
+    || !Number.isSafeInteger(value.statsSamples)
+    || value.statsSamples < 0
+    || value.statsSamples > 4096
   ) {
     fail("Bridgefu WebRTC application returned invalid diagnostic state");
   }
@@ -813,7 +823,8 @@ function failStartup(value) {
     + `pairs_failed=${value.candidatePairSummary.failed} `
     + `pairs_frozen=${value.candidatePairSummary.frozen} `
     + `pairs_other=${value.candidatePairSummary.other} `
-    + `pairs_selected=${value.candidatePairSummary.selected}`,
+    + `pairs_selected=${value.candidatePairSummary.selected} `
+    + `stats_samples=${value.statsSamples}`,
   );
 }
 

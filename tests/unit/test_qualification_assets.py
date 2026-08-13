@@ -608,6 +608,8 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("remoteIceCandidateSummary", web)
         self.assertIn("statsRemoteCandidateSummary", web)
         self.assertIn("candidatePairSummary", web)
+        self.assertIn("statsSamples", web)
+        self.assertIn("setInterval(() => void sampleStats(), 100)", web)
         self.assertIn("remote_added_udp4host=", web)
         self.assertIn("pairs_selected=", web)
         self.assertNotIn("remoteDescription.sdp", web)

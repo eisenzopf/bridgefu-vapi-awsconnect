@@ -1569,3 +1569,22 @@ and full 226-test Python suite passed.
   only retained diagnostic attempt is now permitted to determine which side of
   that contract failed; it is not a product smoke retry and cannot advance the
   Vapi or release gates by itself.
+- The first instrumented retained attempt produced the exact signaling result:
+  the Bridgefu server sent one IPv4/UDP host candidate and one ICE-complete
+  signal; the SDK called the browser's `addIceCandidate` for that candidate and
+  then applied completion. The browser still timed out before readiness. The
+  post-failure stats query was empty because the SDK had already closed the peer,
+  so it could not determine whether a candidate pair existed before cleanup.
+  The gateway security group independently proves unrestricted UDP egress; the
+  temporary inbound UDP rule and browser public `/32` were present during the
+  attempt. This rules out missing server trickle signaling and an outbound-SG
+  restriction, but does not yet distinguish browser pair construction from UDP
+  packet delivery.
+- The next diagnostic revision samples browser remote-candidate and candidate-
+  pair stats every 100 ms and retains only per-category maxima after peer
+  cleanup. The EC2 host has `tcpdump`; the next single attempt will run a
+  count-only, address-free inbound/outbound packet observer for the WebRTC media
+  port range. Together these observations will prove whether a pair was formed
+  and whether ICE packets crossed the instance boundary. No packet body, IP,
+  port outside the fixed configured range, SDP, candidate string, or identifier
+  will be retained.
