@@ -102,6 +102,10 @@ const SIGNALING_STATES = new Set([
   "stable", "have-local-offer", "have-remote-offer", "have-local-pranswer",
   "have-remote-pranswer", "closed",
 ]);
+const QUALIFICATION_STUN_URLS = new Set([
+  "stun:stun.kinesisvideo.us-west-2.amazonaws.com:443",
+  "stun:stun.kinesisvideo.us-east-1.amazonaws.com:443",
+]);
 
 class HarnessError extends Error {}
 
@@ -257,6 +261,11 @@ function validateRouteInput(path) {
     || attachment.subprotocols[1] !== `token.${attachment.signaling_credential.token}`
     || attachment.subprotocols[2] !== `bridgefu.attach.${attachment.token}`
     || !Array.isArray(attachment.ice_servers)
+    || attachment.ice_servers.length !== 1
+    || !exactKeys(attachment.ice_servers[0], new Set(["urls"]))
+    || !Array.isArray(attachment.ice_servers[0].urls)
+    || attachment.ice_servers[0].urls.length !== 1
+    || !QUALIFICATION_STUN_URLS.has(attachment.ice_servers[0].urls[0])
     || ![binding.tenantId, binding.callId, binding.legId].every(
       (field) => typeof field === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(field),
     )
@@ -450,6 +459,13 @@ function installProbe() {
     dtmfAgentToSourceObserved: false,
     dtmfActive: false,
     remoteAudioTracks: 0,
+    iceCandidateSummary: {
+      udpIpv4Srflx: 0,
+      udpIpv4Host: 0,
+      udpIpv6: 0,
+      tcp: 0,
+      other: 0,
+    },
   };
   globalThis.__bridgefuVapiProbe = state;
   globalThis.__bridgefuVapiPeers = [];
@@ -527,6 +543,25 @@ function installProbe() {
         globalThis.__bridgefuVapiPeers.push(peer);
         peer.addEventListener("track", (event) => {
           if (event.track?.kind === "audio") observeTrack(event.track);
+        });
+        peer.addEventListener("icecandidate", (event) => {
+          const candidate = event.candidate;
+          if (!candidate) return;
+          const protocol = String(candidate.protocol ?? "").toLowerCase();
+          const type = String(candidate.type ?? "").toLowerCase();
+          const address = String(candidate.address ?? "");
+          if (protocol === "tcp") state.iceCandidateSummary.tcp += 1;
+          else if (
+            protocol === "udp" && type === "srflx"
+            && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(address)
+          ) state.iceCandidateSummary.udpIpv4Srflx += 1;
+          else if (
+            protocol === "udp" && type === "host"
+            && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(address)
+          ) state.iceCandidateSummary.udpIpv4Host += 1;
+          else if (protocol === "udp" && address.includes(":")) {
+            state.iceCandidateSummary.udpIpv6 += 1;
+          } else state.iceCandidateSummary.other += 1;
         });
         return peer;
       },
@@ -616,8 +651,17 @@ function sourceDtmfSchedule(captureStartedAtMs, triggerAtMs, observedAtMs) {
 
 async function applicationSnapshot(page, nonce) {
   const value = await page.evaluate(
-    (qualificationNonce) =>
-      globalThis.__BRIDGEFU_RECIPE_QUALIFICATION__?.snapshot(qualificationNonce) ?? null,
+    (qualificationNonce) => {
+      const snapshot =
+        globalThis.__BRIDGEFU_RECIPE_QUALIFICATION__?.snapshot(qualificationNonce) ?? null;
+      if (snapshot === null) return null;
+      return {
+        ...snapshot,
+        iceCandidateSummary: {
+          ...(globalThis.__bridgefuVapiProbe?.iceCandidateSummary ?? {}),
+        },
+      };
+    },
     nonce,
   );
   if (value === null) return null;
@@ -628,6 +672,13 @@ async function applicationSnapshot(page, nonce) {
     || !ICE_CONNECTION_STATES.has(value.iceConnectionState)
     || !ICE_GATHERING_STATES.has(value.iceGatheringState)
     || !SIGNALING_STATES.has(value.signalingState)
+    || !exactKeys(
+      value.iceCandidateSummary,
+      new Set(["udpIpv4Srflx", "udpIpv4Host", "udpIpv6", "tcp", "other"]),
+    )
+    || !Object.values(value.iceCandidateSummary).every(
+      (count) => Number.isSafeInteger(count) && count >= 0 && count <= 256,
+    )
   ) {
     fail("Bridgefu WebRTC application returned invalid diagnostic state");
   }
@@ -640,7 +691,11 @@ function failStartup(value) {
   fail(
     `Bridgefu WebRTC call failed error=${errorType} peer=${value.peerConnectionState} `
     + `ice=${value.iceConnectionState} gathering=${value.iceGatheringState} `
-    + `signaling=${value.signalingState}`,
+    + `signaling=${value.signalingState} `
+    + `udp4srflx=${value.iceCandidateSummary.udpIpv4Srflx} `
+    + `udp4host=${value.iceCandidateSummary.udpIpv4Host} `
+    + `udp6=${value.iceCandidateSummary.udpIpv6} `
+    + `tcp=${value.iceCandidateSummary.tcp} other=${value.iceCandidateSummary.other}`,
   );
 }
 

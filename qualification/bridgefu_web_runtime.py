@@ -26,6 +26,7 @@ CONNECT_ARN = re.compile(
 )
 REGIONS = {"us-west-2", "us-east-1"}
 VAPI_CIDRS = ["44.229.228.186/32", "44.238.177.138/32"]
+AWS_STUN_HOST_TEMPLATE = "stun.kinesisvideo.{region}.amazonaws.com"
 WEB_ROUTE_ID = "vapi-direct-assistant"
 CONNECT_ROUTE_ID = "amazon-connect"
 VAPI_PASSWORD_ENV = "BRIDGEFU_QUALIFICATION_VAPI_SIP_PASSWORD"  # noqa: S105
@@ -176,6 +177,7 @@ def build_runtime_config(
     target = f"sip:{vapi_sip_username}@sip.vapi.ai:5061;transport=tls"
     signaling_origin = f"wss://{sip_hostname}:{signaling_port}"
     signing_uri = f"{signaling_origin}/webrtc"
+    browser_stun_url = f"stun:{AWS_STUN_HOST_TEMPLATE.format(region=region)}:443"
     connect_destination = {
         "direction": "outbound",
         "signaling_initiator": "bridgefu",
@@ -233,7 +235,16 @@ def build_runtime_config(
                 "identity_idle_ttl_secs": 300,
             },
             "route_attachments": {
-                "webrtc": {"signaling_uri": signing_uri, "ice_servers": []}
+                "webrtc": {
+                    "signaling_uri": signing_uri,
+                    # The browser must have one public IPv4/UDP candidate when
+                    # it calls the IPv4-only retained EC2 edge. Chromium may
+                    # otherwise expose only private/TCP or IPv6 host
+                    # candidates. This AWS-owned STUN endpoint is passed to
+                    # the Bridgefu SDK through its one-use route attachment;
+                    # no credentials or customer data are involved.
+                    "ice_servers": [{"urls": [browser_stun_url]}],
+                }
             },
             "routes": {
                 WEB_ROUTE_ID: {

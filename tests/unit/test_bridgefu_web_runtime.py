@@ -68,6 +68,17 @@ class BridgefuWebRuntimeTests(unittest.TestCase):
             value["api"]["route_attachments"]["webrtc"]["signaling_uri"],
             "wss://bfq-runtime-test.vapi-internal.com:18443/webrtc",
         )
+        self.assertEqual(
+            value["api"]["route_attachments"]["webrtc"]["ice_servers"],
+            [
+                {
+                    "urls": [
+                        "stun:stun.kinesisvideo.us-west-2.amazonaws.com:443"
+                    ]
+                }
+            ],
+        )
+        self.assertEqual(value["generic_bridge"]["webrtc"]["ice_servers"], [])
         self.assertEqual(value["generic_bridge"]["sip_bind"], "127.0.0.1:5070")
         target = "sip:bfq_runtime_test@sip.vapi.ai:5061;transport=tls"
         self.assertEqual(

@@ -1450,3 +1450,59 @@ and full 226-test Python suite passed.
   every resulting command is nonempty. The affected focused suites, all **267**
   unit tests, Ruff, deterministic release validation, and diff checks pass.
   One Web-only retry is permitted; the SIP source remains blocked.
+- The normalized-command retry ran from distribution commit
+  `602b418c5d8361e62c9e15b744515fda695dd2e6` and again stopped before browser
+  readiness with the closed state `signaling-failed`, peer `new`, ICE `new`,
+  gathering `complete`, signaling `stable`. The WebSocket offer did reach the
+  exact retained Bridgefu runtime; this attempt is therefore distinct from the
+  previously closed TCP/5061 egress failure. A bounded Vapi query found zero
+  calls for the stack-owned assistant in the attempt window, so no SIP INVITE,
+  SDP exchange with Vapi, handoff, or Connect call occurred.
+- Exact on-instance runtime evidence at `2026-08-13T14:12:32Z` shows the WebRTC
+  answerer accepted the remote offer and entered ICE checking. It then reported
+  no usable candidate pair. Chromium's IPv4 candidates were TCP-active
+  candidates, which rvoip correctly ignored; the remaining UDP candidates were
+  IPv6. The retained EC2 WebRTC media socket is IPv4-only, so every attempted
+  IPv6 send failed with the fixed operating-system category `address family not
+  supported`. There was no IPv4/UDP server-reflexive browser candidate.
+- Root cause is the qualification browser attachment's empty ICE-server list.
+  In this browser/NAT environment, an empty list does not produce the public
+  IPv4/UDP candidate required to reach the IPv4-only retained EC2 edge. This is
+  a Bridgefu Web SDK qualification ICE configuration defect; it is not a Vapi,
+  SIP, SDP, TLS, SRTP, Amazon Connect, or TCP/5061 result.
+- The correction supplies the AWS-owned regional Kinesis Video WebRTC STUN
+  endpoint on port 443 through the Bridgefu SDK's one-use route attachment.
+  It does not add TURN credentials, a Vapi key, customer data, or a customer
+  CloudFormation resource, and the Bridgefu EC2 side continues to advertise
+  its configured public IPv4 directly. A regression requires the exact
+  regional STUN URL in the generated browser attachment while keeping the
+  server-side ICE list empty. No additional live retry is permitted until the
+  local browser proves it gathers an IPv4/UDP server-reflexive candidate and
+  all local gates pass.
+- Cleanup after the failed retry is independently proven: the handoff table
+  scan count is zero; the temporary media ingress rule is absent; the owned
+  Vapi endpoint count is zero; the disposable authentication secret is `{}`;
+  the Web-runtime S3 prefix has zero versions and delete markers; and a closed
+  SSM receipt proves the overlay, systemd drop-in, and auth file absent with
+  Bridgefu active and ready. The retained Oregon stacks remain intentionally
+  deployed. The SIP-source smoke remains blocked.
+- The exact local Playwright/Chromium runtime then exercised the configured
+  Oregon STUN URL independently and produced a closed passing result:
+  gathering complete, one IPv4/UDP server-reflexive candidate, no retained
+  addresses, and `passed=true`. The browser harness now rejects an empty,
+  foreign, or non-regional ICE-server attachment at its private input boundary
+  and reports only bounded candidate-category counts if startup fails.
+- The post-fix local contract ladder passed: all **267** Python unit tests; all
+  4 rvoip SIP-source tests; all 16 direct-secure-probe tests; Rust formatting
+  and Clippy with warnings denied; both browser syntax checks; Ruff; Lambda and
+  deterministic release packaging; local release validation and `cfn-lint`;
+  and Packer 1.12.0 initialization/validation using the ignored pinned binary.
+  The first unqualified `make` invocation could not find Packer on `PATH`; it
+  performed no build or AWS action, and the exact pinned rerun passed.
+- AWS CloudFormation `ValidateTemplate` passed for all 13 rendered product,
+  nested, qualification, and publisher templates in both `us-west-2` and
+  `us-east-1` (**26/26** remote validations). No template deployment, candidate
+  build, GitHub runner, Virginia smoke, version reservation, or publication was
+  started. The next permitted live action is exactly one retained Oregon Web
+  SDK smoke with this STUN-bound attachment; the SIP-source smoke remains
+  blocked until it passes.

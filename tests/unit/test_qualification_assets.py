@@ -591,6 +591,9 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("STARTUP_ERROR_TYPES", web)
         self.assertIn("failStartup(value)", web)
         self.assertIn("Bridgefu WebRTC call failed error=", web)
+        self.assertIn("QUALIFICATION_STUN_URLS", web)
+        self.assertIn("udp4srflx=", web)
+        self.assertIn("iceCandidateSummary", web)
 
     def test_connect_available_is_selected_before_either_source_starts(self):
         controller = (QUALIFICATION / "controller.py").read_text()
