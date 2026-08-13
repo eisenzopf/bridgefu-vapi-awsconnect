@@ -94,9 +94,22 @@ def lambda_handler(event, _context):
                 headers,
                 load_secret(os.environ["VAPI_WEBHOOK_SECRET_ARN"]),
             )
+        # Direct-Web qualification deliberately rebinds its dedicated secret for
+        # each temporary assistant. Bypass the general 5-minute secret cache so
+        # a warm Lambda can never authenticate the preceding assistant.
         identity_binding = json.loads(
-            load_secret(os.environ["VAPI_IDENTITY_BINDING_ARN"])
+            load_secret(
+                os.environ["VAPI_IDENTITY_BINDING_ARN"],
+                use_cache=not direct,
+                minimum_length=1,
+            )
         )
+        # The product provisioner temporarily uses an unbound identity while it
+        # creates its assistant.  The qualification-only direct endpoint must
+        # never inherit that bootstrap behavior: until its disposable assistant
+        # is explicitly bound, reject every request.
+        if direct and identity_binding == {"status": "unbound"}:
+            raise HandoffError("vapi_identity_binding_invalid", 500)
         verify_vapi_binding(
             payload,
             identity_binding,

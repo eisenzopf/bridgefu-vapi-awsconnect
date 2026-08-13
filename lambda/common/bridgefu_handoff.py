@@ -150,7 +150,7 @@ def _vapi_identity(message: Mapping[str, Any]) -> VapiIdentity:
 def verify_vapi_binding(event: Mapping[str, Any], binding: Mapping[str, Any]) -> None:
     """Bind authenticated requests to the exact setup-created assistant."""
     if binding == {"status": "unbound"}:
-        return
+        raise HandoffError("vapi_identity_binding_invalid", 500)
     if (
         not isinstance(binding, Mapping)
         or set(binding) != {"status", "organization_id", "assistant_id"}
@@ -402,7 +402,7 @@ def direct_browser_handoff(
             {
                 "toolCallId": tool_call_id,
                 "result": json.dumps(
-                    {"accepted": True, "route_id": route_id, "spoken": ""},
+                    {"accepted": True, "spoken": ""},
                     separators=(",", ":"),
                     sort_keys=True,
                 ),

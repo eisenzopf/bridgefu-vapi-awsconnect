@@ -942,6 +942,24 @@ class ReleaseContractTests(unittest.TestCase):
         full_role = policy.split("  QualificationRunnerRole:\n", 1)[1]
         self.assertEqual(full_role.count("Action: connect:PutUserStatus"), 2)
 
+    def test_qualification_runner_updates_only_tagged_generated_secrets(self):
+        policy = (ROOT / "publisher" / "qualification-role.yaml").read_text()
+        inspect = policy.split("- Sid: InspectGeneratedQualificationSecrets", 1)[
+            1
+        ].split("- Sid:", 1)[0]
+        self.assertIn("secret:bridgefu-bfq-*", inspect)
+        self.assertIn("secret:bridgefu/bfq-*", inspect)
+        statement = policy.split(
+            "- Sid: UpdateOnlyTaggedGeneratedQualificationSecrets", 1
+        )[1].split("- Sid:", 1)[0]
+        self.assertIn("Action: secretsmanager:PutSecretValue", statement)
+        self.assertIn("secret:bridgefu/bfq-*", statement)
+        self.assertIn(
+            "aws:ResourceTag/ManagedBy: bridgefu-qualification", statement
+        )
+        self.assertNotIn("VapiApiKeySecretArn", statement)
+        self.assertNotIn("Resource: '*'", statement)
+
     def test_test_retention_mode_deletes_vapi_qualification_resources(self):
         root = (ROOT / "cloudformation" / "template.yaml").read_text()
         nested = (ROOT / "cloudformation" / "nested" / "vapi.yaml").read_text()

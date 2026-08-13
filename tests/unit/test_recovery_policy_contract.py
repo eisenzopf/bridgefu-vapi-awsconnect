@@ -3,9 +3,11 @@ from __future__ import annotations
 import copy
 import fnmatch
 import hashlib
+import importlib.util
 import json
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -157,6 +159,7 @@ CLI_ACTIONS = {
     ("s3api", "list-object-versions"): {"s3:ListBucketVersions"},
     ("s3api", "put-object"): {"s3:PutObject"},
     ("secretsmanager", "get-secret-value"): {"secretsmanager:GetSecretValue"},
+    ("secretsmanager", "put-secret-value"): {"secretsmanager:PutSecretValue"},
     # GetCallerIdentity requires no identity-policy permission.
     ("sts", "get-caller-identity"): set(),
 }
@@ -273,15 +276,769 @@ class RecoveryPolicyContractTests(unittest.TestCase):
             "qualification/bfq-w-123-1/ownership/"
         )
         intent = prefix + "vapi-phone-intent.json"
+        request = prefix + "vapi-phone-request.json"
         ownership = prefix + "vapi-phone.json"
         unrelated = prefix + "customer-phone.json"
         for action in ("s3:GetObject", "s3:GetObjectVersion"):
             self.assertTrue(allows(statements, action, intent))
+            self.assertTrue(allows(statements, action, request))
             self.assertTrue(allows(statements, action, ownership))
             self.assertFalse(allows(statements, action, unrelated))
         self.assertFalse(allows(statements, "s3:PutObject", intent))
+        self.assertFalse(allows(statements, "s3:PutObject", request))
         self.assertTrue(allows(statements, "s3:PutObject", ownership))
         self.assertFalse(allows(statements, "s3:PutObject", unrelated))
+
+    def test_direct_vapi_recovery_permissions_are_journal_and_binding_scoped(self):
+        statements = recovery_statements()
+        prefix = (
+            "arn:aws:s3:::bridgefu-vapi-awsconnect-225478700523-us-west-2/"
+            "qualification/bfq-w-123-1/ownership/"
+        )
+        intent_names = (
+            "vapi-direct-tool-intent.json",
+            "vapi-direct-tool-request.json",
+            "vapi-direct-assistant-intent.json",
+            "vapi-direct-assistant-request.json",
+        )
+        ownership_names = (
+            "vapi-direct-tool.json",
+            "vapi-direct-assistant.json",
+        )
+        for name in intent_names + ownership_names:
+            self.assertTrue(allows(statements, "s3:GetObject", prefix + name))
+        for name in intent_names:
+            self.assertFalse(allows(statements, "s3:PutObject", prefix + name))
+        for name in ownership_names:
+            self.assertTrue(allows(statements, "s3:PutObject", prefix + name))
+        self.assertFalse(
+            allows(statements, "s3:GetObject", prefix + "foreign-vapi.json")
+        )
+        direct_binding = (
+            "arn:aws:secretsmanager:us-west-2:225478700523:secret:"
+            "bridgefu/bfq-w-123-1/qualification/direct-vapi-identity-AbCdEf"
+        )
+        product_binding = (
+            "arn:aws:secretsmanager:us-west-2:225478700523:secret:"
+            "bridgefu-bfq-w-123-1-vapi-identity-AbCdEf"
+        )
+        foreign_binding = (
+            "arn:aws:secretsmanager:us-west-2:225478700523:secret:"
+            "customer/vapi-identity-AbCdEf"
+        )
+        self.assertTrue(
+            allows(statements, "secretsmanager:GetSecretValue", direct_binding)
+        )
+        self.assertTrue(
+            allows(statements, "secretsmanager:GetSecretValue", product_binding)
+        )
+        self.assertTrue(
+            allows(statements, "secretsmanager:PutSecretValue", direct_binding)
+        )
+        self.assertFalse(
+            allows(statements, "secretsmanager:PutSecretValue", product_binding)
+        )
+        self.assertFalse(
+            allows(statements, "secretsmanager:GetSecretValue", foreign_binding)
+        )
+
+    def test_direct_vapi_recovery_is_reverse_ordered_bounded_and_fail_closed(self):
+        source = QUALIFICATION_REAPER_PATH.read_text()
+        prepare = source.split("prepare_exact_direct_vapi_recovery() {", 1)[1].split(
+            "validate_vapi_phone_intent_journal_exact() {", 1
+        )[0]
+        loop = source.split("for pair in us-west-2:w us-east-1:e; do", 1)[1]
+        for producer in (
+            "bridgefu-vapi-direct-tool-intent@1",
+            "bridgefu-vapi-direct-tool-ownership@1",
+            "bridgefu-vapi-direct-assistant-intent@1",
+            "bridgefu-vapi-direct-assistant-ownership@1",
+        ):
+            self.assertIn(producer, source)
+        self.assertIn("https://api.vapi.ai/tool?limit=100", prepare)
+        self.assertIn("https://api.vapi.ai/assistant?limit=100", prepare)
+        self.assertIn(".server.credentialId == $credential", prepare)
+        self.assertIn('.function.name == "bridgefu_direct_handoff"', prepare)
+        self.assertIn(".metadata.bridgefu_owner == $owner", prepare)
+        self.assertIn("($tool_ids | index($tool)) != null", prepare)
+        self.assertGreaterEqual(prepare.count("length < 100"), 2)
+        self.assertGreaterEqual(prepare.count('test "$direct_related_count" -le 1'), 2)
+        self.assertIn(
+            "Direct Vapi tool intent exists but absence cannot be proven safe.",
+            prepare,
+        )
+        self.assertIn(
+            "Direct Vapi assistant intent exists but absence cannot be proven safe.",
+            prepare,
+        )
+        self.assertLess(
+            loop.index("prepare_exact_direct_vapi_recovery"),
+            loop.index("cleanup_exact_vapi_phone"),
+        )
+        self.assertLess(
+            loop.index("cleanup_exact_vapi_phone"),
+            loop.index("finish_exact_direct_vapi_recovery"),
+        )
+        finish = source.split("finish_exact_direct_vapi_recovery() {", 1)[1].split(
+            "validate_vapi_phone_intent_journal_exact() {", 1
+        )[0]
+        self.assertLess(
+            finish.index("put-secret-value"),
+            finish.index("api.vapi.ai/assistant/$direct_recovery_assistant_id"),
+        )
+        self.assertLess(
+            finish.index("api.vapi.ai/assistant/$direct_recovery_assistant_id"),
+            finish.index("api.vapi.ai/tool/$direct_recovery_tool_id"),
+        )
+        self.assertNotIn('echo "$direct_vapi_key"', prepare + finish)
+        self.assertIn("vapi-direct-assistant-post-delete-list.json", finish)
+        self.assertIn("vapi-direct-tool-post-delete-list.json", finish)
+        self.assertGreaterEqual(finish.count("length == 0"), 2)
+        self.assertIn("bridgefu-vapi-direct-tool-request@1", source)
+        self.assertIn("bridgefu-vapi-direct-assistant-request@1", source)
+        self.assertLess(
+            prepare.index('if [[ "$direct_tool_request_present" = false ]]'),
+            prepare.index('load_vapi_curl_config "$direct_region"'),
+        )
+        self.assertLess(
+            prepare.index('if [[ "$direct_assistant_request_present" = false ]]'),
+            prepare.index("direct_product_binding="),
+        )
+
+    def test_vapi_key_is_loaded_through_mode_0600_curl_config_not_argv(self):
+        source = QUALIFICATION_REAPER_PATH.read_text()
+        match = re.search(
+            r"^load_vapi_curl_config\(\) \{\n(.+?)^\}\n",
+            source,
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        function = f"load_vapi_curl_config() {{\n{match.group(1)}\n}}"
+        cleanup_match = re.search(
+            r"^cleanup_sensitive_files\(\) \{\n(.+?)^\}\n",
+            source,
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertIsNotNone(cleanup_match)
+        cleanup_function = (
+            f"cleanup_sensitive_files() {{\n{cleanup_match.group(1)}\n}}"
+        )
+        secret = "_".join(("vapi", "private", "key", "TEST", "123"))
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "curl.config"
+            argv = Path(directory) / "curl.argv"
+            script = f"""
+set -euo pipefail
+sensitive_files=()
+VAPI_API_KEY_SECRET_ARN_US_WEST_2=arn:west
+VAPI_API_KEY_SECRET_ARN_US_EAST_1=arn:east
+aws() {{ printf '%s' '{secret}'; }}
+curl() {{ printf '%s\n' "$@" >'{argv}'; }}
+{function}
+{cleanup_function}
+trap cleanup_sensitive_files EXIT
+load_vapi_curl_config us-west-2 '{config}'
+mode="$(stat -c '%a' '{config}' 2>/dev/null || stat -f '%Lp' '{config}')"
+test "$mode" = 600
+grep -Fx 'header = "Authorization: Bearer {secret}"' '{config}' >/dev/null
+curl --config '{config}' --silent https://api.vapi.ai/tool
+if grep -F '{secret}' '{argv}' >/dev/null; then exit 10; fi
+"""
+            result = subprocess.run(  # noqa: S603
+                ["bash", "-c", script],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertFalse(config.exists())
+        self.assertNotIn('Authorization: Bearer $', source)
+        self.assertIn("trap cleanup_sensitive_files EXIT", source)
+
+    def test_direct_vapi_journal_validators_reject_hash_and_owner_tampering(self):
+        source = QUALIFICATION_REAPER_PATH.read_text()
+
+        def shell_function(name: str) -> str:
+            match = re.search(
+                rf"^{name}\(\) \{{\n(.+?)^\}}\n",
+                source,
+                re.MULTILINE | re.DOTALL,
+            )
+            self.assertIsNotNone(match)
+            return f"{name}() {{\n{match.group(1)}\n}}"
+
+        execution_id = "bfq-w-123-1"
+        region = "us-west-2"
+        tool_id = "tool-owned-123"
+        assistant_id = "assistant-owned-123"
+        credential_id = "credential-owned-123"
+        endpoint = (
+            "https://abc123.execute-api.us-west-2.amazonaws.com/v1/direct-handoff"
+        )
+        tool_desired = {
+            "type": "function",
+            "function": {
+                "name": "bridgefu_direct_handoff",
+                "description": "exact qualification tool",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            },
+            "server": {
+                "url": endpoint,
+                "credentialId": credential_id,
+                "timeoutSeconds": 10,
+            },
+            "parameters": [
+                {
+                    "key": "handoff_token",
+                    "value": "{{ bridgefu_handoff_token }}",
+                }
+            ],
+        }
+        tool_desired_hash = hashlib.sha256(
+            json.dumps(tool_desired, separators=(",", ":"), sort_keys=True).encode()
+        ).hexdigest()
+        tool_core = {
+            "execution_id": execution_id,
+            "region": region,
+            "resource_type": "tool",
+            "endpoint_url": endpoint,
+            "credential_id": credential_id,
+            "desired_sha256": tool_desired_hash,
+        }
+        tool_intent_hash = hashlib.sha256(
+            json.dumps(tool_core, separators=(",", ":"), sort_keys=True).encode()
+        ).hexdigest()
+        tool_intent = {
+            "schema_version": 1,
+            "producer": "bridgefu-vapi-direct-tool-intent@1",
+            **tool_core,
+            "desired": tool_desired,
+            "intent_sha256": tool_intent_hash,
+            "created_at": "2026-08-13T12:00:00Z",
+            "redacted": True,
+        }
+        tool_ownership_core = {
+            **tool_core,
+            "tool_id": tool_id,
+            "intent_sha256": tool_intent_hash,
+        }
+        tool_ownership = {
+            "schema_version": 1,
+            "producer": "bridgefu-vapi-direct-tool-ownership@1",
+            **tool_ownership_core,
+            "ownership_sha256": hashlib.sha256(
+                json.dumps(
+                    tool_ownership_core, separators=(",", ":"), sort_keys=True
+                ).encode()
+            ).hexdigest(),
+            "created_at": "2026-08-13T12:00:01Z",
+            "redacted": True,
+        }
+        prompt = "[bridgefu-direct-browser-handoff@1] exact prompt"
+        assistant_desired = {
+            "name": f"BFQ direct {execution_id}",
+            "model": {
+                "provider": "openai",
+                "model": "gpt-4.1-mini",
+                "temperature": 0,
+                "messages": [{"role": "system", "content": prompt}],
+                "toolIds": [tool_id],
+            },
+            "voice": {"provider": "vapi", "voiceId": "Elliot"},
+            "metadata": {
+                "bridgefu_qualification": execution_id,
+                "bridgefu_owner": "bridgefu-direct-web-qualification@1",
+            },
+        }
+        assistant_desired_hash = hashlib.sha256(
+            json.dumps(
+                assistant_desired, separators=(",", ":"), sort_keys=True
+            ).encode()
+        ).hexdigest()
+        assistant_core = {
+            "execution_id": execution_id,
+            "region": region,
+            "resource_type": "assistant",
+            "owned_name": f"BFQ direct {execution_id}",
+            "owner_marker": "bridgefu-direct-web-qualification@1",
+            "tool_id": tool_id,
+            "organization_id": "organization-owned-123",
+            "model_name": "gpt-4.1-mini",
+            "voice_id": "Elliot",
+            "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+            "desired_sha256": assistant_desired_hash,
+        }
+        assistant_intent_hash = hashlib.sha256(
+            json.dumps(assistant_core, separators=(",", ":"), sort_keys=True).encode()
+        ).hexdigest()
+        assistant_intent = {
+            "schema_version": 1,
+            "producer": "bridgefu-vapi-direct-assistant-intent@1",
+            **assistant_core,
+            "desired": assistant_desired,
+            "intent_sha256": assistant_intent_hash,
+            "created_at": "2026-08-13T12:00:02Z",
+            "redacted": True,
+        }
+        assistant_ownership_core = {
+            **assistant_core,
+            "assistant_id": assistant_id,
+            "intent_sha256": assistant_intent_hash,
+        }
+        assistant_ownership = {
+            "schema_version": 1,
+            "producer": "bridgefu-vapi-direct-assistant-ownership@1",
+            **assistant_ownership_core,
+            "ownership_sha256": hashlib.sha256(
+                json.dumps(
+                    assistant_ownership_core,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest(),
+            "created_at": "2026-08-13T12:00:03Z",
+            "redacted": True,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            paths = {
+                "tool_intent": Path(directory) / "tool-intent.json",
+                "tool_ownership": Path(directory) / "tool.json",
+                "assistant_intent": Path(directory) / "assistant-intent.json",
+                "assistant_ownership": Path(directory) / "assistant.json",
+                "tampered": Path(directory) / "tampered.json",
+            }
+            paths["tool_intent"].write_text(json.dumps(tool_intent))
+            paths["tool_ownership"].write_text(json.dumps(tool_ownership))
+            paths["assistant_intent"].write_text(json.dumps(assistant_intent))
+            paths["assistant_ownership"].write_text(json.dumps(assistant_ownership))
+            tampered = copy.deepcopy(assistant_intent)
+            tampered["desired"]["metadata"]["bridgefu_owner"] = "foreign-owner"
+            paths["tampered"].write_text(json.dumps(tampered))
+            functions = "\n".join(
+                shell_function(name)
+                for name in (
+                    "validate_vapi_direct_tool_intent_exact",
+                    "validate_vapi_direct_tool_ownership_exact",
+                    "validate_vapi_direct_assistant_intent_exact",
+                    "validate_vapi_direct_assistant_ownership_exact",
+                )
+            )
+            script = f"""
+set -euo pipefail
+{functions}
+validate_vapi_direct_tool_intent_exact {paths["tool_intent"]} \
+  {execution_id} {region}
+validate_vapi_direct_tool_ownership_exact {paths["tool_ownership"]} \
+  {paths["tool_intent"]}
+validate_vapi_direct_assistant_intent_exact {paths["assistant_intent"]} \
+  {execution_id} {region}
+validate_vapi_direct_assistant_ownership_exact \
+  {paths["assistant_ownership"]} {paths["assistant_intent"]}
+"""
+            result = subprocess.run(  # noqa: S603
+                ["bash", "-c", script],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            tamper_result = subprocess.run(  # noqa: S603
+                [
+                    "bash",
+                    "-c",
+                    f"""
+set -euo pipefail
+{shell_function("validate_vapi_direct_assistant_intent_exact")}
+validate_vapi_direct_assistant_intent_exact {paths["tampered"]} \
+  {execution_id} {region}
+""",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertNotEqual(tamper_result.returncode, 0)
+
+    def test_direct_assistant_remote_validator_allows_omitted_org_only(self):
+        source = QUALIFICATION_REAPER_PATH.read_text()
+        match = re.search(
+            r"^validate_remote_vapi_direct_assistant_exact\(\) \{\n(.+?)^\}\n",
+            source,
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        function = (
+            f"validate_remote_vapi_direct_assistant_exact() {{\n{match.group(1)}\n}}"
+        )
+        desired = {
+            "name": "BFQ direct bfq-w-123-1",
+            "firstMessageMode": "assistant-waits-for-user",
+            "model": {
+                "provider": "openai",
+                "model": "gpt-4.1-mini",
+                "temperature": 0,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "[bridgefu-direct-browser-handoff@1] prompt",
+                    }
+                ],
+                "toolIds": ["tool-owned-123"],
+            },
+            "voice": {"provider": "vapi", "voiceId": "Elliot"},
+            "transcriber": {
+                "provider": "deepgram",
+                "model": "nova-3",
+                "language": "en",
+            },
+            "artifactPlan": {"recordingEnabled": False},
+            "maxDurationSeconds": 300,
+            "metadata": {
+                "bridgefu_qualification": "bfq-w-123-1",
+                "bridgefu_owner": "bridgefu-direct-web-qualification@1",
+            },
+        }
+        intent = {"organization_id": "organization-owned-123", "desired": desired}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            intent_path = root / "intent.json"
+            remote_path = root / "remote.json"
+            intent_path.write_text(json.dumps(intent))
+            script = f"""
+set -euo pipefail
+{function}
+validate_remote_vapi_direct_assistant_exact {remote_path} \
+  assistant-owned-123 {intent_path}
+"""
+            for org_id, expected in (
+                (None, True),
+                ("", True),
+                ("organization-owned-123", True),
+                ("organization-foreign-123", False),
+            ):
+                remote = {"id": "assistant-owned-123", **desired}
+                if org_id is not None:
+                    remote["orgId"] = org_id
+                remote_path.write_text(json.dumps(remote))
+                result = subprocess.run(  # noqa: S603
+                    ["bash", "-c", script],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                with self.subTest(org_id=org_id):
+                    self.assertEqual(result.returncode == 0, expected)
+            valid_defaults = {
+                "id": "assistant-owned-123",
+                "orgId": None,
+                "createdAt": "2026-08-13T12:00:00Z",
+                "updatedAt": None,
+                "server": None,
+                "serverMessages": [],
+                "credentialIds": [],
+                **desired,
+            }
+            valid_defaults["voice"]["fallbackPlan"] = {}
+            valid_defaults["transcriber"]["smartFormat"] = True
+            valid_defaults["artifactPlan"]["loggingEnabled"] = False
+            adversarial = [(valid_defaults, True)]
+            normalized_defaults = copy.deepcopy(valid_defaults)
+            normalized_defaults["serverUrl"] = None
+            normalized_defaults["hooks"] = []
+            normalized_defaults["model"]["tools"] = []
+            normalized_defaults["model"]["knowledgeBase"] = None
+            normalized_defaults["model"]["knowledgeBaseId"] = None
+            adversarial.append((normalized_defaults, True))
+            second_tool = copy.deepcopy(valid_defaults)
+            second_tool["model"]["toolIds"].append("foreign-tool")
+            adversarial.append((second_tool, False))
+            second_prompt = copy.deepcopy(valid_defaults)
+            second_prompt["model"]["messages"].append(
+                {"role": "system", "content": "foreign prompt"}
+            )
+            adversarial.append((second_prompt, False))
+            inline_tool = copy.deepcopy(valid_defaults)
+            inline_tool["model"]["tools"] = [{"type": "function"}]
+            adversarial.append((inline_tool, False))
+            external_server = copy.deepcopy(valid_defaults)
+            external_server["server"] = {"url": "https://foreign.example"}
+            adversarial.append((external_server, False))
+            unknown_surface = copy.deepcopy(valid_defaults)
+            unknown_surface["foreign"] = True
+            adversarial.append((unknown_surface, False))
+            changed_duration = copy.deepcopy(valid_defaults)
+            changed_duration["maxDurationSeconds"] = 600
+            adversarial.append((changed_duration, False))
+            unsafe_voice_default = copy.deepcopy(valid_defaults)
+            unsafe_voice_default["voice"]["fallbackPlan"] = {
+                "voices": [{"provider": "foreign"}]
+            }
+            adversarial.append((unsafe_voice_default, False))
+            unsafe_transcriber_default = copy.deepcopy(valid_defaults)
+            unsafe_transcriber_default["transcriber"]["smartFormat"] = False
+            adversarial.append((unsafe_transcriber_default, False))
+            unsafe_artifact_default = copy.deepcopy(valid_defaults)
+            unsafe_artifact_default["artifactPlan"]["loggingEnabled"] = True
+            adversarial.append((unsafe_artifact_default, False))
+            wrong_empty_server = copy.deepcopy(valid_defaults)
+            wrong_empty_server["server"] = {}
+            adversarial.append((wrong_empty_server, False))
+            wrong_empty_hooks = copy.deepcopy(valid_defaults)
+            wrong_empty_hooks["hooks"] = ""
+            adversarial.append((wrong_empty_hooks, False))
+            wrong_empty_tools = copy.deepcopy(valid_defaults)
+            wrong_empty_tools["model"]["tools"] = {}
+            adversarial.append((wrong_empty_tools, False))
+            for index, (remote, expected) in enumerate(adversarial):
+                remote_path.write_text(json.dumps(remote))
+                result = subprocess.run(  # noqa: S603
+                    ["bash", "-c", script],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                with self.subTest(adversarial=index):
+                    self.assertEqual(result.returncode == 0, expected)
+
+    def test_direct_tool_remote_validator_rejects_every_foreign_surface(self):
+        source = QUALIFICATION_REAPER_PATH.read_text()
+        match = re.search(
+            r"^validate_remote_vapi_direct_tool_exact\(\) \{\n(.+?)^\}\n",
+            source,
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        function = f"validate_remote_vapi_direct_tool_exact() {{\n{match.group(1)}\n}}"
+        desired = {
+            "type": "function",
+            "function": {
+                "name": "bridgefu_direct_handoff",
+                "description": "exact",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            },
+            "server": {
+                "url": "https://abc.execute-api.us-west-2.amazonaws.com/v1/direct-handoff",
+                "credentialId": "credential-owned-123",
+                "timeoutSeconds": 10,
+            },
+            "parameters": [
+                {
+                    "key": "handoff_token",
+                    "value": "{{ bridgefu_handoff_token }}",
+                }
+            ],
+        }
+        intent = {"desired": desired}
+        valid = {
+            "id": "tool-owned-123",
+            "orgId": "organization-owned-123",
+            "createdAt": "2026-08-13T12:00:00Z",
+            **desired,
+        }
+        changed_endpoint = copy.deepcopy(valid)
+        changed_endpoint["server"]["url"] = "https://foreign.example"
+        changed_function = copy.deepcopy(valid)
+        changed_function["function"]["name"] = "foreign"
+        unknown = copy.deepcopy(valid)
+        unknown["foreign"] = True
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            intent_path = root / "intent.json"
+            remote_path = root / "remote.json"
+            intent_path.write_text(json.dumps(intent))
+            script = f"""
+set -euo pipefail
+{function}
+validate_remote_vapi_direct_tool_exact {remote_path} tool-owned-123 {intent_path}
+"""
+            for index, (remote, expected) in enumerate(
+                (
+                    (valid, True),
+                    (changed_endpoint, False),
+                    (changed_function, False),
+                    (unknown, False),
+                )
+            ):
+                remote_path.write_text(json.dumps(remote))
+                result = subprocess.run(  # noqa: S603
+                    ["bash", "-c", script],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                with self.subTest(case=index):
+                    self.assertEqual(result.returncode == 0, expected)
+    def test_direct_vapi_reaper_accepts_controller_emitted_journals(self):
+        module_path = ROOT / "qualification" / "controller.py"
+        spec = importlib.util.spec_from_file_location(
+            "qualification_controller_recovery_contract", module_path
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        controller = importlib.util.module_from_spec(spec)
+        qualification_path = str(ROOT / "qualification")
+        sys.path.insert(0, qualification_path)
+        try:
+            spec.loader.exec_module(controller)
+        finally:
+            sys.path.remove(qualification_path)
+        handoff = controller.bridgefu_web_handoff
+        execution_id = "bfq-w-123-1"
+        region = "us-west-2"
+        endpoint = (
+            "https://abc123.execute-api.us-west-2.amazonaws.com/v1/direct-handoff"
+        )
+        credential_id = "credential-owned-123"
+        tool_id = "tool-owned-123"
+        assistant_id = "assistant-owned-123"
+        desired_tool = handoff.direct_tool_payload(
+            endpoint_url=endpoint,
+            credential_id=credential_id,
+            field_schema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+            execution_id=execution_id,
+        )
+        tool_intent = controller.direct_tool_intent_journal(
+            execution_id,
+            region,
+            endpoint,
+            credential_id,
+            desired_tool,
+            created_at="2026-08-13T12:00:00Z",
+        )
+        tool_ownership = controller.direct_tool_ownership_journal(
+            tool_intent, tool_id, created_at="2026-08-13T12:00:01Z"
+        )
+        tool_request = controller.direct_vapi_request_journal(
+            tool_intent,
+            "0" * 32,
+            authorized_at="2026-08-13T12:00:00.500Z",
+        )
+        desired_assistant, prompt_hash = handoff.direct_assistant_payload(
+            execution_id=execution_id,
+            tool_id=tool_id,
+            model_name="gpt-4.1-mini",
+            voice_id="Elliot",
+        )
+        assistant_intent = controller.direct_assistant_intent_journal(
+            execution_id,
+            region,
+            "organization-owned-123",
+            tool_id,
+            "gpt-4.1-mini",
+            "Elliot",
+            prompt_hash,
+            desired_assistant,
+            created_at="2026-08-13T12:00:02Z",
+        )
+        assistant_ownership = controller.direct_assistant_ownership_journal(
+            assistant_intent,
+            assistant_id,
+            created_at="2026-08-13T12:00:03Z",
+        )
+        assistant_request = controller.direct_vapi_request_journal(
+            assistant_intent,
+            "1" * 32,
+            authorized_at="2026-08-13T12:00:02.500Z",
+        )
+        phone_intent = controller.vapi_phone_intent_journal(
+            execution_id,
+            region,
+            controller.vapi_phone_intent(
+                execution_id,
+                assistant_id,
+                {
+                    "realm": "sip.vapi.ai",
+                    "username": "bfq_0123456789abcdef",
+                    "password": "_".join(("temporary", "test", "secret")),
+                },
+            ),
+            created_at="2026-08-13T12:00:04Z",
+        )
+        phone_request = controller.vapi_phone_request_journal(
+            phone_intent,
+            "2" * 32,
+            authorized_at="2026-08-13T12:00:04.500Z",
+        )
+        source = QUALIFICATION_REAPER_PATH.read_text()
+
+        def shell_function(name: str) -> str:
+            match = re.search(
+                rf"^{name}\(\) \{{\n(.+?)^\}}\n",
+                source,
+                re.MULTILINE | re.DOTALL,
+            )
+            self.assertIsNotNone(match)
+            return f"{name}() {{\n{match.group(1)}\n}}"
+
+        with tempfile.TemporaryDirectory() as directory:
+            paths = {}
+            for name, value in (
+                ("tool-intent", tool_intent),
+                ("tool-request", tool_request),
+                ("tool", tool_ownership),
+                ("assistant-intent", assistant_intent),
+                ("assistant-request", assistant_request),
+                ("assistant", assistant_ownership),
+                ("phone-intent", phone_intent),
+                ("phone-request", phone_request),
+            ):
+                path = Path(directory) / f"{name}.json"
+                path.write_text(
+                    json.dumps(value, separators=(",", ":"), sort_keys=True)
+                )
+                paths[name] = path
+            functions = "\n".join(
+                shell_function(name)
+                for name in (
+                    "validate_vapi_direct_tool_intent_exact",
+                    "validate_vapi_direct_request_exact",
+                    "validate_vapi_direct_tool_ownership_exact",
+                    "validate_vapi_direct_assistant_intent_exact",
+                    "validate_vapi_direct_assistant_ownership_exact",
+                    "validate_vapi_phone_intent_journal_exact",
+                    "validate_vapi_phone_request_journal_exact",
+                )
+            )
+            script = f"""
+set -euo pipefail
+{functions}
+validate_vapi_direct_tool_intent_exact {paths["tool-intent"]} \
+  {execution_id} {region}
+validate_vapi_direct_request_exact {paths["tool-request"]} \
+  {paths["tool-intent"]} tool
+validate_vapi_direct_tool_ownership_exact {paths["tool"]} \
+  {paths["tool-intent"]}
+validate_vapi_direct_assistant_intent_exact {paths["assistant-intent"]} \
+  {execution_id} {region}
+validate_vapi_direct_request_exact {paths["assistant-request"]} \
+  {paths["assistant-intent"]} assistant
+validate_vapi_direct_assistant_ownership_exact {paths["assistant"]} \
+  {paths["assistant-intent"]}
+validate_vapi_phone_intent_journal_exact {paths["phone-intent"]} \
+  {execution_id} {region}
+validate_vapi_phone_request_journal_exact {paths["phone-request"]} \
+  {paths["phone-intent"]}
+"""
+            result = subprocess.run(  # noqa: S603
+                ["bash", "-c", script],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
 
     def test_vapi_intent_recovery_is_bounded_exact_and_sealed_before_delete(self):
         workflow = reaper_source()
@@ -289,8 +1046,13 @@ class RecoveryPolicyContractTests(unittest.TestCase):
             "          validate_vapi_phone_intent_journal_exact() {", 1
         )[1].split("          load_exact_acm_validation_journal() {", 1)[0]
         self.assertIn("bridgefu-vapi-phone-intent@1", recovery)
+        self.assertIn("bridgefu-vapi-phone-request@1", recovery)
         self.assertIn(
             'intent_key="qualification/$execution_id/ownership/vapi-phone-intent.json"',
+            recovery,
+        )
+        self.assertIn(
+            'request_key="qualification/$execution_id/ownership/vapi-phone-request.json"',
             recovery,
         )
         self.assertIn("load_latest_s3_object_exact", recovery)
@@ -301,6 +1063,9 @@ class RecoveryPolicyContractTests(unittest.TestCase):
         self.assertIn("for attempt in $(seq 1 30); do", recovery)
         self.assertIn('type == "array" and length < 100', recovery)
         self.assertIn('test "$related_count" -le 1', recovery)
+        self.assertIn(
+            "Vapi phone request exists but absence cannot be proven safe.", recovery
+        )
         for field in (
             '.provider == "vapi"',
             ".assistantId == $assistant_id",

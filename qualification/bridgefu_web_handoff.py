@@ -23,9 +23,14 @@ from urllib.parse import urlsplit
 WEB_SCENARIO = "bridgefu-web-sdk-handoff"
 DIRECT_TOOL_NAME = "bridgefu_direct_handoff"
 DIRECT_PROMPT_MARKER = "bridgefu-direct-browser-handoff@1"
+DIRECT_ASSISTANT_OWNER = "bridgefu-direct-web-qualification@1"
 HANDOFF_ISSUER = "bridgefu-vapi-awsconnect-qualification"
 HANDOFF_AUDIENCE = "bridgefu-direct-handoff"
 IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+UUID = re.compile(
+    r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
+    r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+)
 TOKEN = re.compile(r"^[A-Za-z0-9_.-]{1,4096}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -193,7 +198,7 @@ def parse_route_response(value: Any, expected_route_id: str) -> DirectRouteBindi
         not isinstance(tenant, str)
         or not IDENTIFIER.fullmatch(tenant)
         or not isinstance(call, str)
-        or not IDENTIFIER.fullmatch(call)
+        or not UUID.fullmatch(call)
         or not isinstance(legs, list)
         or len(legs) != 2
         or not isinstance(attachment, Mapping)
@@ -218,7 +223,7 @@ def parse_route_response(value: Any, expected_route_id: str) -> DirectRouteBindi
     source_leg = inbound[0].get("leg_id")
     destination_leg = outbound[0].get("leg_id")
     if not all(
-        isinstance(item, str) and IDENTIFIER.fullmatch(item)
+        isinstance(item, str) and UUID.fullmatch(item)
         for item in (source_leg, destination_leg)
     ):
         raise DirectHandoffContractError("direct route leg identity is invalid")
@@ -360,69 +365,163 @@ def direct_tool_owned(
     )
 
 
-def apply_assistant_overlay(
-    assistant: Mapping[str, Any], tool_id: str
+def direct_assistant_payload(
+    *, execution_id: str, tool_id: str, model_name: str, voice_id: str
 ) -> tuple[dict[str, Any], str]:
-    """Add one owned tool and prompt while preserving the complete assistant."""
-    if not IDENTIFIER.fullmatch(tool_id):
-        raise DirectHandoffContractError("direct Vapi tool identity is invalid")
-    desired = json.loads(json.dumps(assistant))
-    model = desired.get("model")
-    if not isinstance(model, dict):
-        raise DirectHandoffContractError("Vapi assistant model is invalid")
-    tool_ids = model.setdefault("toolIds", [])
-    messages = model.setdefault("messages", [])
-    if not isinstance(tool_ids, list) or not isinstance(messages, list):
-        raise DirectHandoffContractError("Vapi assistant overlay target is invalid")
-    marker = f"[{DIRECT_PROMPT_MARKER}]"
-    if tool_id in tool_ids or any(
-        isinstance(message, Mapping)
-        and isinstance(message.get("content"), str)
-        and marker in message["content"]
-        for message in messages
+    """Build a disposable assistant with exactly one prompt and one tool surface."""
+    if (
+        not isinstance(execution_id, str)
+        or not IDENTIFIER.fullmatch(execution_id)
+        or not isinstance(tool_id, str)
+        or not IDENTIFIER.fullmatch(tool_id)
+        or not all(
+            isinstance(value, str)
+            and 1 <= len(value) <= 128
+            and not re.search(r"[\x00-\x1f\x7f]", value)
+            for value in (model_name, voice_id)
+        )
     ):
-        raise DirectHandoffContractError("direct Vapi assistant overlay already exists")
-    tool_ids.append(tool_id)
+        raise DirectHandoffContractError(
+            "direct Vapi assistant configuration is invalid"
+        )
+    marker = f"[{DIRECT_PROMPT_MARKER}]"
     prompt = (
-        f"{marker} When this SIP call includes the trusted static "
-        "bridgefu_handoff_token tool parameter, collect only the fields declared "
-        "by bridgefu_direct_handoff and call that tool exactly once when the caller "
-        "asks for a human. Do not call prepare_handoff or transferCall in this "
-        "direct-browser mode. The model must never request, repeat, invent, or "
-        "modify the token, a route, a URI, a call ID, or a leg ID."
+        f"{marker} This is a disposable Bridgefu release-qualification assistant. "
+        "Collect only the fields declared by bridgefu_direct_handoff and call that "
+        "tool exactly once when the caller asks for a human. The trusted static "
+        "bridgefu_handoff_token is supplied by the tool configuration. Never ask "
+        "for, repeat, invent, or modify the token, a route, a URI, a call ID, or a "
+        "leg ID."
     )
-    messages.append({"role": "system", "content": prompt})
+    desired = {
+        "name": f"BFQ direct {execution_id}",
+        "firstMessageMode": "assistant-waits-for-user",
+        "model": {
+            "provider": "openai",
+            "model": model_name,
+            "temperature": 0,
+            "messages": [{"role": "system", "content": prompt}],
+            "toolIds": [tool_id],
+        },
+        "voice": {"provider": "vapi", "voiceId": voice_id},
+        "transcriber": {
+            "provider": "deepgram",
+            "model": "nova-3",
+            "language": "en",
+        },
+        "artifactPlan": {"recordingEnabled": False},
+        "maxDurationSeconds": 300,
+        "metadata": {
+            "bridgefu_qualification": execution_id,
+            "bridgefu_owner": DIRECT_ASSISTANT_OWNER,
+        },
+    }
     return desired, hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
 
-def remove_assistant_overlay(
-    assistant: Mapping[str, Any], tool_id: str, prompt_sha256: str
-) -> dict[str, Any]:
-    """Remove only the exact owned tool and exact marked prompt."""
-    if not IDENTIFIER.fullmatch(tool_id) or not SHA256.fullmatch(prompt_sha256):
-        raise DirectHandoffContractError("direct Vapi overlay ownership is invalid")
-    desired = json.loads(json.dumps(assistant))
-    model = desired.get("model")
-    if not isinstance(model, dict):
-        raise DirectHandoffContractError("Vapi assistant model is invalid")
-    tool_ids = model.get("toolIds")
-    messages = model.get("messages")
-    if not isinstance(tool_ids, list) or tool_ids.count(tool_id) != 1:
-        raise DirectHandoffContractError("direct Vapi tool ownership is ambiguous")
-    owned = [
-        message
-        for message in messages or []
-        if isinstance(message, Mapping)
-        and isinstance(message.get("content"), str)
-        and f"[{DIRECT_PROMPT_MARKER}]" in message["content"]
-    ]
+def direct_assistant_owned(
+    value: Mapping[str, Any],
+    *,
+    execution_id: str,
+    tool_id: str,
+    prompt_sha256: str,
+    model_name: str,
+    voice_id: str,
+) -> bool:
+    """Prove the exact direct-only assistant surface before adoption or deletion."""
     if (
-        not isinstance(messages, list)
-        or len(owned) != 1
-        or hashlib.sha256(owned[0]["content"].encode("utf-8")).hexdigest()
-        != prompt_sha256
+        not all(
+            isinstance(item, str) and IDENTIFIER.fullmatch(item)
+            for item in (execution_id, tool_id)
+        )
+        or not isinstance(prompt_sha256, str)
+        or not SHA256.fullmatch(prompt_sha256)
     ):
-        raise DirectHandoffContractError("direct Vapi prompt ownership is ambiguous")
-    model["toolIds"] = [value for value in tool_ids if value != tool_id]
-    model["messages"] = [message for message in messages if message is not owned[0]]
-    return desired
+        return False
+    metadata = value.get("metadata")
+    model = value.get("model")
+    messages = model.get("messages") if isinstance(model, Mapping) else None
+    prompt = (
+        messages[0].get("content")
+        if isinstance(messages, list)
+        and len(messages) == 1
+        and isinstance(messages[0], Mapping)
+        else None
+    )
+    voice = value.get("voice")
+    transcriber = value.get("transcriber")
+    artifact_plan = value.get("artifactPlan")
+    allowed_top_level = {
+        "id",
+        "orgId",
+        "createdAt",
+        "updatedAt",
+        "name",
+        "firstMessageMode",
+        "model",
+        "voice",
+        "transcriber",
+        "artifactPlan",
+        "maxDurationSeconds",
+        "metadata",
+        "server",
+        "serverUrl",
+        "serverMessages",
+        "hooks",
+        "credentialIds",
+    }
+    allowed_model = {
+        "provider",
+        "model",
+        "temperature",
+        "messages",
+        "toolIds",
+        "tools",
+        "knowledgeBase",
+        "knowledgeBaseId",
+    }
+    allowed_voice = {"provider", "voiceId", "fallbackPlan"}
+    allowed_transcriber = {"provider", "model", "language", "smartFormat"}
+    allowed_artifact_plan = {"recordingEnabled", "loggingEnabled"}
+    return (
+        set(value) <= allowed_top_level
+        and value.get("name") == f"BFQ direct {execution_id}"
+        and value.get("firstMessageMode") == "assistant-waits-for-user"
+        and isinstance(metadata, Mapping)
+        and set(metadata) == {"bridgefu_qualification", "bridgefu_owner"}
+        and metadata.get("bridgefu_qualification") == execution_id
+        and metadata.get("bridgefu_owner") == DIRECT_ASSISTANT_OWNER
+        and isinstance(model, Mapping)
+        and set(model) <= allowed_model
+        and model.get("provider") == "openai"
+        and model.get("model") == model_name
+        and model.get("temperature") == 0
+        and model.get("toolIds") == [tool_id]
+        and model.get("tools") in (None, [])
+        and model.get("knowledgeBase") is None
+        and model.get("knowledgeBaseId") is None
+        and isinstance(prompt, str)
+        and f"[{DIRECT_PROMPT_MARKER}]" in prompt
+        and hashlib.sha256(prompt.encode("utf-8")).hexdigest() == prompt_sha256
+        and value.get("server") is None
+        and value.get("serverUrl") is None
+        and value.get("serverMessages") in (None, [])
+        and value.get("hooks") in (None, [])
+        and value.get("credentialIds") in (None, [])
+        and isinstance(voice, Mapping)
+        and set(voice) <= allowed_voice
+        and voice.get("provider") == "vapi"
+        and voice.get("voiceId") == voice_id
+        and voice.get("fallbackPlan") in (None, {}, [])
+        and isinstance(transcriber, Mapping)
+        and set(transcriber) <= allowed_transcriber
+        and transcriber.get("provider") == "deepgram"
+        and transcriber.get("model") == "nova-3"
+        and transcriber.get("language") == "en"
+        and transcriber.get("smartFormat") in (None, True)
+        and isinstance(artifact_plan, Mapping)
+        and set(artifact_plan) <= allowed_artifact_plan
+        and artifact_plan.get("recordingEnabled") is False
+        and artifact_plan.get("loggingEnabled") in (None, False)
+        and value.get("maxDurationSeconds") == 300
+    )

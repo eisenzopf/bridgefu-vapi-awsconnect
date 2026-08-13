@@ -35,7 +35,7 @@ happened.
 | Vapi SIP/SDP A/B | **PASSED** — optional mode uses `sip:...;transport=tls` over observed TLS with RTP/AVP |
 | Direct mandatory-SRTP control | **PASSED** — SIPS/TLS plus RTP/SAVP/SDES-SRTP |
 | Prior Web smoke | **INVALID / SUPERSEDED** — used stock `@vapi-ai/web`, not Bridgefu's SDK |
-| Next permitted AWS action | Retained Oregon only: review and execute a two-rule qualification TLS-egress change set, prove EC2-to-Vapi TLS reachability, then rerun the Web SDK smoke; SIP-source smoke remains blocked |
+| Next permitted AWS action | **NONE until the direct-only Vapi assistant boundary, exact replacement-status diagnostic, and runtime-restoration regression pass locally.** Then inspect a retained-Oregon-only qualification change set before one Web smoke; SIP-source smoke remains blocked |
 
 ## Source under evaluation
 
@@ -46,8 +46,8 @@ happened.
 | Repository | `eisenzopf/bridgefu` |
 | Local worktree | `/Users/jonathan/Developer/bridgefu-main-clean` |
 | Branch | `codex/vapi-tls-rtp-evidence` |
-| Commit | `2fb2eaede9420c7d6980c5e0cfeb74eb786a2add` |
-| Local delta | None; outbound Bridgefu-to-Vapi redacted security evidence is committed and pushed |
+| Commit | `22424d27650979e7e2071a5d0c1d17b6b2ebcb72` |
+| Local delta | None; the named SIP-egress media-bind fix is committed and pushed |
 | Pull request | [bridgefu#4](https://github.com/eisenzopf/bridgefu/pull/4) |
 | PR state at last update | Open, not merged |
 | Dependency posture | Exact crates.io `rvoip = 0.3.7`; no local rvoip dependency |
@@ -64,8 +64,8 @@ and fresh regional qualifications pass.
 | Repository | `eisenzopf/bridgefu-vapi-awsconnect` |
 | Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
 | Branch | `codex/staged-vapi-qualification` |
-| Implementation commit | `f9e87120a1c451e143f64336b4a712eec43ce492` |
-| Local delta | Status-ledger update recording the retained add-on and reachability proof; implementation is committed and pushed |
+| Implementation commit | `bb6a6ebaf40b1bfcae7511f1ebffe4a828260d4a` |
+| Local delta | None before this ledger correction; the source lock is repinned to Bridgefu `22424d2` and pushed |
 | Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
 | PR state at last update | Draft, open, not merged |
 
@@ -159,18 +159,40 @@ Stage 2 preflight evidence gathered without writing AWS resources:
 - [x] Select the diagnostic URI/media contract from observed evidence:
   optional-SRTP returns `sip:...;transport=tls`, requires actual TLS, and may
   negotiate RTP/AVP; mandatory SRTP remains `sips:` plus RTP/SAVP/SDES.
-- [ ] Run rvoip SIP-source end-to-end smoke.
 - [ ] Run Bridgefu Web SDK end-to-end smoke.
+- [ ] Run rvoip SIP-source end-to-end smoke after Web passes.
 - [ ] Run Vapi create/delete/recreate resilience cycle.
 - [ ] Tear down and produce zero-resource evidence.
 
+Bridgefu `22424d2` is now installed in the retained environment and the
+corrected call crossed ICE, authenticated to Vapi, negotiated TLS plus
+`RTP/SAVP`/SDES-SRTP, and no longer failed on the first outbound RTP write.
+The Web gate still failed before Amazon Connect. The stack-owned assistant was
+temporarily configured by appending the direct tool and prompt while retaining
+its production `prepare_handoff` tool, inline `transferCall`, and original
+prepare/transfer prompt. The Vapi artifact consequently proves exactly one
+`prepare_handoff` call and exactly one `bridgefu_direct_handoff` call, with no
+`transferCall`. The direct call returned the safe category
+`bridgefu_replacement_unavailable`; no Amazon Connect leg was started.
+
+The mixed tool surface is an exact qualification-harness defect. It is not yet
+evidence that the extra prepare call caused replacement to fail. The current
+Bridgefu control client also catches Python `HTTPError` through its broader
+`URLError` branch, so any Bridgefu HTTP 4xx/5xx is currently collapsed into the
+same `bridgefu_replacement_unavailable` category as DNS, TLS, connection, and
+timeout failures. A retry cannot distinguish those causes and is blocked.
+
 ### Stage 4 — Finalize product behavior: IN PROGRESS
 
-The corrected Bridgefu Web SDK harness, outbound security evidence, cleanup
-ordering, and live Vapi delete/recreate/lost-response gate are locally green.
-The next boundary is freezing those exact sources in commits, repinning the
-distribution, and repeating local plus remote CloudFormation validation before
-the retained Oregon environment is touched.
+The named SIP-egress media-bind fix is locally and live-probe validated, but the
+qualification harness is not ready for another call. The next implementation
+must create a qualification-owned direct-only Vapi assistant and dedicated
+identity binding instead of patching the product assistant, require exactly one
+successful direct tool call and zero other tool calls, preserve the exact
+upstream Bridgefu HTTP status without retaining its body or URL, and repair the
+failed runtime-restoration proof. Final local and remote CloudFormation
+validation must be repeated after those changes and before the retained stack
+is changed.
 
 ### Stage 5 — Fresh Oregon release qualification: NOT STARTED
 
@@ -190,7 +212,7 @@ Blocked on a signed, sealed candidate.
 
 ## Current CI state
 
-Last observed on 2026-08-12 against implementation commit `19854f1`:
+Last observed on 2026-08-13 against the current pushed heads:
 
 ### Bridgefu PR #4
 
@@ -200,14 +222,16 @@ Last observed on 2026-08-12 against implementation commit `19854f1`:
 - `test`: passed.
 - `Trivy`: passed.
 
+Head checked: `22424d27650979e7e2071a5d0c1d17b6b2ebcb72`.
+
 ### Distribution PR #26
 
 - `validate`: passed.
 - `sdp-diagnostics`: passed.
 - `qualification-client`: passed.
 
-Authoritative CI run: `31662616227`. Stage 1 passed against the exact current
-diagnostic source.
+Current CI run: `31726812109`, head
+`bb6a6ebaf40b1bfcae7511f1ebffe4a828260d4a`.
 
 CI monitors are not running locally. CI completion must be read explicitly
 before updating these states.
@@ -218,12 +242,13 @@ before updating these states.
 |---|---|---|
 | Qualification plan | `docs/maintainers/CLOUDFORMATION_RELEASE_QUALIFICATION_PLAN.md` | Committed and pushed |
 | Status ledger | `docs/maintainers/CLOUDFORMATION_RELEASE_QUALIFICATION_STATUS.md` | Committed and pushed; this update is local pending the next implementation commit |
-| Bridgefu implementation commit | `2fb2eaede9420c7d6980c5e0cfeb74eb786a2add` | Pushed, unmerged |
-| Distribution implementation commit | `b41417b44efad39c92dc28ae7f6d15d29a064ec3` | Pushed, unmerged |
+| Bridgefu implementation commit | `22424d27650979e7e2071a5d0c1d17b6b2ebcb72` | Pushed, unmerged; all current checks passed |
+| Distribution implementation commit | `bb6a6ebaf40b1bfcae7511f1ebffe4a828260d4a` | Pushed, unmerged; all three current CI jobs passed, but the live Web gate found a later harness defect |
 | Local test results | Current task execution logs | Passed as listed above |
 | Remote template-body validation | AWS account `225478700523`, both supported regions | Passed against current branch render |
 | Oregon A/B SIP/SDP traces | Retained diagnostic execution `bfq-d19854f1-1` | Passed; `sip:...;transport=tls` produced actual TLS plus RTP/AVP in optional mode |
-| Oregon end-to-end smoke evidence | — | Not created |
+| Oregon Web diagnostic evidence | `target/diagnostic/bfq-d19854f1-1/qualification/retained-web-smoke-authready-22424d2-3/` | Failed: mixed Vapi tool surface, unclassified replacement rejection/transport result, and runtime restoration failure |
+| Oregon passing end-to-end smoke evidence | — | Not created |
 | Oregon zero-resource receipt | — | Not created |
 | Virginia qualification evidence | — | Not created |
 | Signed candidate receipt | — | Not created |
@@ -234,21 +259,46 @@ before updating these states.
    Stage 3 sources pass and retained-environment cleanup proves zero state.
 2. The retained diagnostic must not be updated with an aggregate nested-stack
    change set that proposes replacement of persistent or call-path resources.
+3. No further call is permitted while the Web assistant exposes production
+   tools, Bridgefu HTTP rejection is collapsed into transport unavailability,
+   or runtime restoration lacks a passing regression and receipt.
 
 ## Next actions
 
 The next actions, in order, are:
 
-1. Create and inspect a retained diagnostic add-on change set containing only
-   two outbound TCP/5061 rules to Vapi's published US signaling `/32`s. Reject
-   the change set if it replaces any resource or changes the customer stack.
-2. Execute that change set and require the closed EC2-side reachability probe to
-   prove DNS, TCP, and certificate-verified TLS before creating any Vapi
-   resource.
-3. Run only the Bridgefu Web SDK smoke against the same retained environment.
-   If it fails, diagnose that same call; do not run the SIP source.
-4. After Web passes, run the rvoip SIP source, Vapi create/delete/recreate
-   cycle, and exact retained-environment cleanup/zero-resource proof.
+1. Replace the temporary assistant overlay with a separately created,
+   qualification-owned Vapi assistant whose complete model surface contains
+   one marked prompt, one direct function-tool ID, and no inline tools. Build
+   its request from the selected model/voice outputs rather than copying a Vapi
+   response containing read-only or unrelated fields.
+2. Give the direct-handoff Lambda a qualification-only identity-binding secret.
+   Bind it to the verified temporary assistant and organization; do not change
+   the product assistant's binding. Create the phone only after the assistant
+   and binding are exact. Cleanup must delete the phone first, unbind only the
+   exact direct identity, delete the exact assistant, then delete the exact
+   direct tool while leaving the shared credential and product assistant
+   untouched.
+3. Split Bridgefu control `HTTPError` from transport failure. Retain only a
+   bounded exact HTTP status and low-cardinality category, never the body, URL,
+   bearer, call identity, or route. Require Web evidence to contain exactly one
+   successful direct call with `accepted=true` and zero prepare, transfer, or
+   other tool calls.
+4. Add normal, ambiguous-create, collision, partial-create, concurrent-change,
+   exact-delete, crash-recovery, product-assistant-unchanged, replacement-status,
+   and runtime-restoration regressions. Pass Python tests, Ruff, deterministic
+   packaging, rendered-template lint/policy checks, and exact remote
+   `ValidateTemplate` in both supported regions.
+5. Inspect a retained-Oregon-only CloudFormation change set and reject any
+   customer-stack or persistent-resource replacement. After it applies and
+   readiness plus clean transient state are proven, run exactly one Web SDK
+   smoke. If it fails, diagnose that same call using the now exact replacement
+   status; do not run the SIP source.
+6. After Web passes, run the rvoip SIP-source smoke and Vapi
+   create/delete/recreate resilience cycle in the same retained environment.
+7. Tear down the retained environment and produce exact zero-resource evidence.
+8. Freeze the final sources, repeat the full local gate and exact private remote
+   CloudFormation validation in both regions, then proceed to fresh Oregon.
 
 ### 2026-08-12 — Retained Oregon deployment started
 
@@ -1877,3 +1927,132 @@ and full 226-test Python suite passed.
   Cargo.lock remains unchanged and still resolves exact crates.io rvoip 0.3.7.
   Per the explicit stop point, no rebuilt binary, AWS deployment, or live call
   retry has been started from this fix.
+- Current distribution CI run `31726812109` completed successfully at exact
+  head `bb6a6ebaf40b1bfcae7511f1ebffe4a828260d4a`: `validate`,
+  `sdp-diagnostics`, and `qualification-client` all passed.
+- Exact Bridgefu `22424d27650979e7e2071a5d0c1d17b6b2ebcb72` built on the
+  retained ARM instance with the locked Cargo digest. The optimized build took
+  27m14s and produced mode-0755, root-owned binary SHA-256
+  `f6a3bdbd488ed3b1b95b855c709d92ca165f718d31d43873e58b9a0a1da97428`.
+- The first guarded install attempt stopped before mutation because the old
+  runtime returned 503. Its closed readiness state was `call_runtime=lease_lost`:
+  the all-core build delayed coordination heartbeats and the fail-closed lease
+  state intentionally required restart. The installed digest remained the
+  prior `29db3618…e6f4`, no backup or `.next` file existed, and the handoff table
+  contained zero records.
+- The adjusted guarded install required that exact lease-lost state, the exact
+  old/new digests, and zero call context. It preserved the prior binary at
+  `/var/lib/bridgefu/diagnostic-backup/22424d27650979e7/bridgefu`, installed
+  `f6a3bdbd…97428` atomically, restarted once, and passed an independent check
+  of installed/backup/source digests, systemd state, `/readyz`, and healthy call
+  runtime. No live call had begun at this ledger update.
+
+### 2026-08-13 — Direct-only assistant defect found after media-bind fix
+
+- The retained Web run against installed Bridgefu `22424d2` crossed the prior
+  WebRTC, SIP-authentication, SRTP-negotiation, and first-media-write boundaries.
+  It therefore confirms the named SIP-egress media-bind fix changed the live
+  failure boundary as intended.
+- The terminal Vapi call was an `inboundPhoneCall` that ended
+  `silence-timed-out`. Its bounded artifact classification contains 14 messages,
+  exactly two function-tool calls, and exactly two tool results. One call/result
+  is `prepare_handoff`; the other is `bridgefu_direct_handoff`. There is no
+  `transferCall`, no transfer artifact, and no Amazon Connect destination leg.
+- This behavior follows directly from the current harness. The product
+  assistant template contains one production prepare tool ID, one inline
+  `transferCall`, and a system message directing that two-step sequence. The
+  Web overlay appends the direct tool ID and a second system message but removes
+  none of those production capabilities. A prompt that says not to use an
+  exposed tool is not an isolation boundary.
+- The direct tool reached its Lambda but returned
+  `bridgefu_replacement_unavailable`. That category is not a root-cause-level
+  network result: `urllib.error.HTTPError` derives from `URLError`, and the
+  current replacement client catches the broader type. A Bridgefu HTTP reject
+  is therefore indistinguishable from DNS, TLS, connection, or timeout failure
+  in this evidence. The extra prepare call made the scenario invalid but is not
+  proven to have caused the replacement result.
+- Cleanup removed the temporary Vapi assistant overlay and call transients, but
+  the run also reported `Bridgefu Web runtime restoration failed`. That cleanup
+  boundary must have a local regression and a positive retained receipt before
+  the next call; passing call behavior cannot waive failed restoration.
+- The accepted fix is a separately created qualification assistant, not a more
+  forceful patch of the product assistant. Its request is constructed only from
+  known model/voice settings and contains one direct prompt, one direct tool ID,
+  no inline tools, no assistant-wide server, and deterministic ownership
+  metadata. A dedicated qualification identity secret binds only that assistant
+  and organization to the direct Lambda. The temporary SIP endpoint is created
+  only after both are verified.
+- Ambiguous assistant creation reconciles by deterministic name and exact
+  ownership metadata, adopts exactly one match, fails on multiple matches, and
+  retries once only after bounded reads prove zero. Cleanup deletes the exact
+  phone, unbinds the exact direct identity, deletes the exact assistant, and
+  deletes the exact direct tool. The product assistant and shared webhook
+  credential are never patched or deleted.
+- No AWS mutation, Vapi mutation, release run, candidate reservation, or
+  publication occurred while establishing this root cause and fix contract.
+  SIP-source qualification remains blocked until the corrected Web gate passes.
+
+### 2026-08-13 — Direct-Web root cause fixed locally and release gates re-proven
+
+- The replacement failure is now exact. The retained AMI's HAProxy private
+  control allowlist admitted health checks and route creation, but not
+  `POST /v1/calls/{call_uuid}/legs/{leg_uuid}/replace`. HAProxy returned 404
+  before the request reached Bridgefu. Python then caught that `HTTPError`
+  through its `URLError` superclass and mislabeled it
+  `bridgefu_replacement_unavailable`. The unrelated production
+  `prepare_handoff` call came from the conflicting overlay described above.
+- HAProxy now permits only `POST` to the exact UUID-shaped replacement path;
+  all other private-control paths remain denied. The Bridgefu client validates
+  both identifiers as UUIDs before issuing the request. HTTP 4xx/5xx responses
+  are caught before transport failures and mapped to bounded status categories
+  without response bodies, URLs, tokens, call IDs, or customer data.
+- The product-assistant overlay has been removed. The Web scenario now creates
+  an execution-owned assistant containing one marked prompt and exactly one
+  direct tool reference. It has no inline transfer tool, assistant server, or
+  extra tool surface. The product assistant is read only to bind its
+  organization and to prove its canonical digest remains unchanged.
+- The direct endpoint has a dedicated identity-binding secret and bypasses the
+  warm Lambda secret cache. An unbound identity fails closed. Cleanup order is
+  exact: temporary phone, identity unbind, direct assistant, direct tool. Web
+  acceptance now requires exactly one accepted direct-tool call/result and
+  rejects any prepare, transfer, or other tool activity.
+- Each direct Vapi tool, assistant, and temporary phone now writes three
+  encrypted, non-secret records: desired-state intent, a separate
+  request-authorization marker immediately before `POST`, and exact returned-ID
+  ownership after remote verification. Intent without authorization proves
+  that no create request was permitted. An authorized request with one exact
+  owner-equivalent object can be recovered. An authorized request whose result
+  cannot be found remains fail-closed with its stack and journals retained;
+  cleanup never converts one empty eventually-consistent list response into a
+  false absence claim.
+- Normal cleanup and the recovery job both use bounded complete-list checks,
+  exact assistant/tool surfaces, and reverse dependency order. They reject
+  ambiguity, changed prompts or tools, unknown remote surface, a full result
+  page, a foreign relationship, a changed identity binding, or a fetched
+  object's ID differing from the exact deletion target. The Vapi API key is
+  supplied to recovery through a private mode-0600 curl configuration, never
+  through process arguments, and the file and variables are removed by the exit
+  trap.
+- The direct tool result visible to the model now contains only
+  `{accepted:true, spoken:""}`. It no longer exposes the logical route name;
+  tests also prove that call, leg, route, idempotency, session, token, and
+  correlation identifiers are absent from the serialized result.
+- Runtime restoration now recognizes only the exact latched
+  `call_runtime=lease_lost` state as eligible for one bounded restart and then
+  requires 15 continuous healthy seconds, crossing the lease-renewal cadence.
+  Every other degraded state still fails cleanup.
+- Local validation after all fixes passed: **291** Python unit/contract tests;
+  all 4 rvoip SIP-source tests; all 16 direct-secure-probe tests; Rust format
+  and Clippy with warnings denied; Playwright Chromium installation and both
+  browser syntax checks; Ruff; ShellCheck; actionlint; deterministic Lambda and
+  release packaging; local release validation and `cfn-lint`; and Packer
+  1.12.0 initialization/validation.
+- AWS CloudFormation `ValidateTemplate` accepted all 13 rendered product,
+  nested, qualification, and publisher templates in both `us-west-2` and
+  `us-east-1`: **26/26** remote validations under account `225478700523`.
+- No template was deployed, no Vapi object was created, and no call, candidate,
+  GitHub release run, version reservation, or publication was started by this
+  fix pass. The next permitted live action is to rebuild/install these exact
+  local bits into the one retained Oregon diagnostic environment and run one
+  Web SDK smoke. The SIP-source smoke, Virginia, candidate sealing, and release
+  publication remain blocked until that Web smoke passes and cleans up.

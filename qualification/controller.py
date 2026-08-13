@@ -119,6 +119,13 @@ SCREEN_POP_KEYS = (
 DIAGNOSTIC_LIMIT = 2048
 PHONE_OWNERSHIP_PRODUCER = "bridgefu-vapi-phone-ownership@1"
 PHONE_INTENT_PRODUCER = "bridgefu-vapi-phone-intent@1"
+PHONE_REQUEST_PRODUCER = "bridgefu-vapi-phone-request@1"
+DIRECT_TOOL_INTENT_PRODUCER = "bridgefu-vapi-direct-tool-intent@1"
+DIRECT_TOOL_REQUEST_PRODUCER = "bridgefu-vapi-direct-tool-request@1"
+DIRECT_TOOL_OWNERSHIP_PRODUCER = "bridgefu-vapi-direct-tool-ownership@1"
+DIRECT_ASSISTANT_INTENT_PRODUCER = "bridgefu-vapi-direct-assistant-intent@1"
+DIRECT_ASSISTANT_REQUEST_PRODUCER = "bridgefu-vapi-direct-assistant-request@1"
+DIRECT_ASSISTANT_OWNERSHIP_PRODUCER = "bridgefu-vapi-direct-assistant-ownership@1"
 AGENT_OBSERVER_PRODUCER = "bridgefu-agent-workspace-playwright@1"
 MAX_OBJECT_VERSION_PAGES = 100
 MAX_OBJECT_VERSIONS = 10_000
@@ -205,6 +212,34 @@ def desired_payload_present(actual: Any, desired: Any) -> bool:
     if isinstance(desired, list):
         return isinstance(actual, list) and actual == desired
     return actual == desired
+
+
+def direct_tool_surface_matches(
+    actual: Mapping[str, Any], desired: Mapping[str, Any]
+) -> bool:
+    """Compare every customer-controlled tool field while ignoring API metadata."""
+    allowed = {
+        "id",
+        "orgId",
+        "createdAt",
+        "updatedAt",
+        "type",
+        "function",
+        "server",
+        "parameters",
+    }
+    org_id = actual.get("orgId")
+    timestamps = (actual.get("createdAt"), actual.get("updatedAt"))
+    return (
+        set(desired) == {"type", "function", "server", "parameters"}
+        and set(actual) <= allowed
+        and (
+            org_id in (None, "")
+            or (isinstance(org_id, str) and RESOURCE_ID.fullmatch(org_id) is not None)
+        )
+        and all(value is None or isinstance(value, str) for value in timestamps)
+        and all(actual.get(key) == value for key, value in desired.items())
+    )
 
 
 def vapi_phone_owned_name(execution_id: str) -> str:
@@ -393,6 +428,34 @@ def vapi_phone_ownership_journal(
     return dict(validate_vapi_phone_ownership_journal(value))
 
 
+def vapi_phone_request_journal(
+    intent: Mapping[str, Any],
+    request_nonce: str,
+    *,
+    authorized_at: str | None = None,
+) -> dict[str, Any]:
+    """Seal authorization for one exact temporary-phone create request."""
+    validate_vapi_phone_intent_journal(intent)
+    if re.fullmatch(r"[0-9a-f]{32}", request_nonce) is None:
+        raise QualificationError("temporary Vapi endpoint request is invalid")
+    owned = {
+        "execution_id": intent["execution_id"],
+        "region": intent["region"],
+        "resource_type": "phone-number",
+        "intent_sha256": intent["intent_sha256"],
+        "request_nonce": request_nonce,
+        "attempt_state": "authorized",
+    }
+    return {
+        "schema_version": 1,
+        "producer": PHONE_REQUEST_PRODUCER,
+        **owned,
+        "request_sha256": canonical_sha256(owned),
+        "authorized_at": authorized_at or utc_now(),
+        "redacted": True,
+    }
+
+
 def validate_vapi_phone_ownership_journal(value: Any) -> Mapping[str, Any]:
     keys = {
         "schema_version",
@@ -443,6 +506,217 @@ def validate_vapi_phone_ownership_journal(value: Any) -> Mapping[str, Any]:
     if value.get("ownership_sha256") != canonical_sha256(owned):
         raise QualificationError("temporary Vapi endpoint journal hash is invalid")
     return value
+
+
+def direct_tool_intent_journal(
+    execution_id: str,
+    region: str,
+    endpoint_url: str,
+    credential_id: str,
+    desired: Mapping[str, Any],
+    *,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    if (
+        not EXECUTION_ID.fullmatch(execution_id)
+        or region not in REGIONS
+        or not RESOURCE_ID.fullmatch(credential_id)
+        or not bridgefu_web_handoff.direct_tool_owned(
+            desired,
+            execution_id=execution_id,
+            endpoint_url=endpoint_url,
+            credential_id=credential_id,
+        )
+    ):
+        raise QualificationError("direct Vapi tool intent is invalid")
+    desired_copy = json.loads(json.dumps(desired))
+    desired_sha256 = canonical_sha256(desired_copy)
+    owned = {
+        "execution_id": execution_id,
+        "region": region,
+        "resource_type": "tool",
+        "endpoint_url": endpoint_url,
+        "credential_id": credential_id,
+        "desired_sha256": desired_sha256,
+    }
+    return {
+        "schema_version": 1,
+        "producer": DIRECT_TOOL_INTENT_PRODUCER,
+        **owned,
+        "desired": desired_copy,
+        "intent_sha256": canonical_sha256(owned),
+        "created_at": created_at or utc_now(),
+        "redacted": True,
+    }
+
+
+def direct_tool_ownership_journal(
+    intent: Mapping[str, Any],
+    tool_id: str,
+    *,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    if (
+        intent.get("producer") != DIRECT_TOOL_INTENT_PRODUCER
+        or not isinstance(tool_id, str)
+        or not RESOURCE_ID.fullmatch(tool_id)
+    ):
+        raise QualificationError("direct Vapi tool ownership is invalid")
+    owned = {
+        "execution_id": intent["execution_id"],
+        "region": intent["region"],
+        "resource_type": "tool",
+        "tool_id": tool_id,
+        "endpoint_url": intent["endpoint_url"],
+        "credential_id": intent["credential_id"],
+        "desired_sha256": intent["desired_sha256"],
+        "intent_sha256": intent["intent_sha256"],
+    }
+    return {
+        "schema_version": 1,
+        "producer": DIRECT_TOOL_OWNERSHIP_PRODUCER,
+        **owned,
+        "ownership_sha256": canonical_sha256(owned),
+        "created_at": created_at or utc_now(),
+        "redacted": True,
+    }
+
+
+def direct_vapi_request_journal(
+    intent: Mapping[str, Any],
+    request_nonce: str,
+    *,
+    authorized_at: str | None = None,
+) -> dict[str, Any]:
+    """Seal that one exact Vapi POST was authorized after its durable intent."""
+    resource_type = intent.get("resource_type")
+    producer = {
+        "tool": DIRECT_TOOL_REQUEST_PRODUCER,
+        "assistant": DIRECT_ASSISTANT_REQUEST_PRODUCER,
+    }.get(resource_type)
+    expected_intent_producer = {
+        "tool": DIRECT_TOOL_INTENT_PRODUCER,
+        "assistant": DIRECT_ASSISTANT_INTENT_PRODUCER,
+    }.get(resource_type)
+    if (
+        producer is None
+        or intent.get("producer") != expected_intent_producer
+        or not isinstance(intent.get("execution_id"), str)
+        or not EXECUTION_ID.fullmatch(intent["execution_id"])
+        or intent.get("region") not in REGIONS
+        or not isinstance(intent.get("intent_sha256"), str)
+        or not SHA256.fullmatch(intent["intent_sha256"])
+        or not isinstance(request_nonce, str)
+        or re.fullmatch(r"[0-9a-f]{32}", request_nonce) is None
+    ):
+        raise QualificationError("direct Vapi request authorization is invalid")
+    owned = {
+        "execution_id": intent["execution_id"],
+        "region": intent["region"],
+        "resource_type": resource_type,
+        "intent_sha256": intent["intent_sha256"],
+        "request_nonce": request_nonce,
+        "attempt_state": "authorized",
+    }
+    return {
+        "schema_version": 1,
+        "producer": producer,
+        **owned,
+        "request_sha256": canonical_sha256(owned),
+        "authorized_at": authorized_at or utc_now(),
+        "redacted": True,
+    }
+
+
+def direct_assistant_intent_journal(
+    execution_id: str,
+    region: str,
+    organization_id: str,
+    tool_id: str,
+    model_name: str,
+    voice_id: str,
+    prompt_sha256: str,
+    desired: Mapping[str, Any],
+    *,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    if (
+        not EXECUTION_ID.fullmatch(execution_id)
+        or region not in REGIONS
+        or not RESOURCE_ID.fullmatch(organization_id)
+        or not RESOURCE_ID.fullmatch(tool_id)
+        or not SHA256.fullmatch(prompt_sha256)
+        or not bridgefu_web_handoff.direct_assistant_owned(
+            desired,
+            execution_id=execution_id,
+            tool_id=tool_id,
+            prompt_sha256=prompt_sha256,
+            model_name=model_name,
+            voice_id=voice_id,
+        )
+    ):
+        raise QualificationError("direct Vapi assistant intent is invalid")
+    desired_copy = json.loads(json.dumps(desired))
+    desired_sha256 = canonical_sha256(desired_copy)
+    owned = {
+        "execution_id": execution_id,
+        "region": region,
+        "resource_type": "assistant",
+        "owned_name": f"BFQ direct {execution_id}",
+        "owner_marker": bridgefu_web_handoff.DIRECT_ASSISTANT_OWNER,
+        "tool_id": tool_id,
+        "organization_id": organization_id,
+        "model_name": model_name,
+        "voice_id": voice_id,
+        "prompt_sha256": prompt_sha256,
+        "desired_sha256": desired_sha256,
+    }
+    return {
+        "schema_version": 1,
+        "producer": DIRECT_ASSISTANT_INTENT_PRODUCER,
+        **owned,
+        "desired": desired_copy,
+        "intent_sha256": canonical_sha256(owned),
+        "created_at": created_at or utc_now(),
+        "redacted": True,
+    }
+
+
+def direct_assistant_ownership_journal(
+    intent: Mapping[str, Any],
+    assistant_id: str,
+    *,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    if (
+        intent.get("producer") != DIRECT_ASSISTANT_INTENT_PRODUCER
+        or not isinstance(assistant_id, str)
+        or not RESOURCE_ID.fullmatch(assistant_id)
+    ):
+        raise QualificationError("direct Vapi assistant ownership is invalid")
+    owned = {
+        "execution_id": intent["execution_id"],
+        "region": intent["region"],
+        "resource_type": "assistant",
+        "assistant_id": assistant_id,
+        "owned_name": intent["owned_name"],
+        "owner_marker": intent["owner_marker"],
+        "tool_id": intent["tool_id"],
+        "organization_id": intent["organization_id"],
+        "model_name": intent["model_name"],
+        "voice_id": intent["voice_id"],
+        "prompt_sha256": intent["prompt_sha256"],
+        "desired_sha256": intent["desired_sha256"],
+        "intent_sha256": intent["intent_sha256"],
+    }
+    return {
+        "schema_version": 1,
+        "producer": DIRECT_ASSISTANT_OWNERSHIP_PRODUCER,
+        **owned,
+        "ownership_sha256": canonical_sha256(owned),
+        "created_at": created_at or utc_now(),
+        "redacted": True,
+    }
 
 
 def sha256_file(path: Path) -> str:
@@ -1603,23 +1877,35 @@ class Vapi:
         credential_id: str,
         desired: Mapping[str, Any],
     ) -> Mapping[str, Any] | None:
-        matches = [
-            tool
-            for tool in self.list("tool")
-            if bridgefu_web_handoff.direct_tool_owned(
-                tool,
-                execution_id=execution_id,
-                endpoint_url=endpoint_url,
-                credential_id=credential_id,
+        tools = self.list("tool")
+        if len(tools) == 100:
+            raise QualificationError(
+                "direct Vapi tool reconciliation exceeded its safe bound"
             )
-        ]
-        if len(matches) > 1:
+        related: list[Mapping[str, Any]] = []
+        for tool in tools:
+            server = tool.get("server")
+            function = tool.get("function")
+            if (isinstance(server, Mapping) and server.get("url") == endpoint_url) or (
+                isinstance(server, Mapping)
+                and server.get("credentialId") == credential_id
+                and isinstance(function, Mapping)
+                and function.get("name") == bridgefu_web_handoff.DIRECT_TOOL_NAME
+            ):
+                related.append(tool)
+        if len(related) > 1:
             raise QualificationError("direct Vapi tool ownership is ambiguous")
-        if not matches:
+        if not related:
             return None
-        if not desired_payload_present(matches[0], desired):
+        match = related[0]
+        if not bridgefu_web_handoff.direct_tool_owned(
+            match,
+            execution_id=execution_id,
+            endpoint_url=endpoint_url,
+            credential_id=credential_id,
+        ) or not direct_tool_surface_matches(match, desired):
             raise QualificationError("direct Vapi tool ownership conflicts")
-        return matches[0]
+        return match
 
     def create_direct_tool(
         self,
@@ -1666,7 +1952,12 @@ class Vapi:
             credential_id=credential_id,
             desired=desired,
         )
-        if exact is None or owned is None or owned.get("id") != resource_id:
+        if (
+            exact is None
+            or not direct_tool_surface_matches(exact, desired)
+            or owned is None
+            or owned.get("id") != resource_id
+        ):
             raise QualificationError("direct Vapi tool creation was not verified")
         return owned
 
@@ -1677,15 +1968,20 @@ class Vapi:
         execution_id: str,
         endpoint_url: str,
         credential_id: str,
+        desired: Mapping[str, Any],
     ) -> None:
         exact = self.get("tool", resource_id)
         if exact is None:
             return
-        if not bridgefu_web_handoff.direct_tool_owned(
-            exact,
-            execution_id=execution_id,
-            endpoint_url=endpoint_url,
-            credential_id=credential_id,
+        if (
+            exact.get("id") != resource_id
+            or not bridgefu_web_handoff.direct_tool_owned(
+                exact,
+                execution_id=execution_id,
+                endpoint_url=endpoint_url,
+                credential_id=credential_id,
+            )
+            or not direct_tool_surface_matches(exact, desired)
         ):
             raise QualificationError("direct Vapi tool deletion target is not owned")
         self.request("DELETE", f"/tool/{resource_id}", allow_missing=True)
@@ -1695,20 +1991,162 @@ class Vapi:
                 raise QualificationError("direct Vapi tool deletion timed out")
             time.sleep(0.5)
 
-    def patch_assistant_model(
-        self, assistant_id: str, model: Mapping[str, Any]
+    def find_direct_assistant(
+        self,
+        *,
+        execution_id: str,
+        tool_id: str,
+        prompt_sha256: str,
+        model_name: str,
+        voice_id: str,
+        desired: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        assistants = self.list("assistant")
+        if len(assistants) == 100:
+            raise QualificationError(
+                "direct Vapi assistant reconciliation exceeded its safe bound"
+            )
+        name = f"BFQ direct {execution_id}"
+        related: list[Mapping[str, Any]] = []
+        for item in assistants:
+            metadata = item.get("metadata")
+            model = item.get("model")
+            tool_ids = model.get("toolIds") if isinstance(model, Mapping) else None
+            if (
+                item.get("name") == name
+                or (
+                    isinstance(metadata, Mapping)
+                    and metadata.get("bridgefu_qualification") == execution_id
+                )
+                or (
+                    isinstance(metadata, Mapping)
+                    and metadata.get("bridgefu_owner")
+                    == bridgefu_web_handoff.DIRECT_ASSISTANT_OWNER
+                    and isinstance(tool_ids, list)
+                    and tool_id in tool_ids
+                )
+            ):
+                related.append(item)
+        if len(related) > 1:
+            raise QualificationError("direct Vapi assistant ownership is ambiguous")
+        if not related:
+            return None
+        match = related[0]
+        if not bridgefu_web_handoff.direct_assistant_owned(
+            match,
+            execution_id=execution_id,
+            tool_id=tool_id,
+            prompt_sha256=prompt_sha256,
+            model_name=model_name,
+            voice_id=voice_id,
+        ) or not desired_payload_present(match, desired):
+            raise QualificationError("direct Vapi assistant ownership conflicts")
+        return match
+
+    def create_direct_assistant(
+        self,
+        *,
+        execution_id: str,
+        tool_id: str,
+        prompt_sha256: str,
+        model_name: str,
+        voice_id: str,
+        desired: Mapping[str, Any],
+        reconcile_timeout: int = 10,
     ) -> Mapping[str, Any]:
-        if not RESOURCE_ID.fullmatch(assistant_id) or not isinstance(model, Mapping):
-            raise QualificationError("Vapi assistant model update is invalid")
-        payload = {"model": json.loads(json.dumps(model))}
+        existing = self.find_direct_assistant(
+            execution_id=execution_id,
+            tool_id=tool_id,
+            prompt_sha256=prompt_sha256,
+            model_name=model_name,
+            voice_id=voice_id,
+            desired=desired,
+        )
+        if existing is not None:
+            return existing
         try:
-            self.request("PATCH", f"/assistant/{assistant_id}", payload)
-        except VapiAmbiguousWriteError:
-            pass
-        exact = self.get("assistant", assistant_id)
-        if exact is None or exact.get("model") != payload["model"]:
-            raise QualificationError("Vapi assistant model update was not verified")
+            created = self.request("POST", "/assistant", desired)
+        except VapiAmbiguousWriteError as error:
+            deadline = time.monotonic() + reconcile_timeout
+            while True:
+                found = self.find_direct_assistant(
+                    execution_id=execution_id,
+                    tool_id=tool_id,
+                    prompt_sha256=prompt_sha256,
+                    model_name=model_name,
+                    voice_id=voice_id,
+                    desired=desired,
+                )
+                if found is not None:
+                    return found
+                if time.monotonic() >= deadline:
+                    raise QualificationError(
+                        "direct Vapi assistant creation could not be reconciled"
+                    ) from error
+                time.sleep(0.5)
+        resource_id = created.get("id") if isinstance(created, Mapping) else None
+        if not isinstance(resource_id, str) or not RESOURCE_ID.fullmatch(resource_id):
+            raise QualificationError(
+                "direct Vapi assistant creation returned no identity"
+            )
+        exact = self.get("assistant", resource_id)
+        owned = self.find_direct_assistant(
+            execution_id=execution_id,
+            tool_id=tool_id,
+            prompt_sha256=prompt_sha256,
+            model_name=model_name,
+            voice_id=voice_id,
+            desired=desired,
+        )
+        if (
+            exact is None
+            or not bridgefu_web_handoff.direct_assistant_owned(
+                exact,
+                execution_id=execution_id,
+                tool_id=tool_id,
+                prompt_sha256=prompt_sha256,
+                model_name=model_name,
+                voice_id=voice_id,
+            )
+            or not desired_payload_present(exact, desired)
+            or owned is None
+            or owned.get("id") != resource_id
+        ):
+            raise QualificationError("direct Vapi assistant creation was not verified")
         return exact
+
+    def delete_direct_assistant(
+        self,
+        resource_id: str,
+        *,
+        execution_id: str,
+        tool_id: str,
+        prompt_sha256: str,
+        model_name: str,
+        voice_id: str,
+    ) -> None:
+        exact = self.get("assistant", resource_id)
+        if exact is None:
+            return
+        if exact.get(
+            "id"
+        ) != resource_id or not bridgefu_web_handoff.direct_assistant_owned(
+            exact,
+            execution_id=execution_id,
+            tool_id=tool_id,
+            prompt_sha256=prompt_sha256,
+            model_name=model_name,
+            voice_id=voice_id,
+        ):
+            raise QualificationError(
+                "direct Vapi assistant deletion target is not owned"
+            )
+        self.request("DELETE", f"/assistant/{resource_id}", allow_missing=True)
+        deadline = time.monotonic() + 30
+        while self.get("assistant", resource_id) is not None:
+            if time.monotonic() >= deadline:
+                raise QualificationError("direct Vapi assistant deletion timed out")
+            time.sleep(0.5)
 
     def create_phone(
         self,
@@ -2099,6 +2537,7 @@ def stack_outputs(value: Any) -> dict[str, str]:
         "VapiPrepareToolId",
         "VapiWebhookCredentialId",
         "VapiWebhookSecretArn",
+        "ProductVapiIdentityBindingArn",
         "HandoffTableName",
         "CorrelationKeySecretArn",
         "RuntimeLogGroupName",
@@ -2106,6 +2545,7 @@ def stack_outputs(value: Any) -> dict[str, str]:
         "QualificationSipPrivateHostedZoneId",
         "DirectHandoffUrl",
         "DirectHandoffSigningKeyArn",
+        "DirectVapiIdentityBindingArn",
         "DirectVapiSipAuthSecretArn",
         "BridgefuApiBearerSecretArn",
         "BridgefuPublicIp",
@@ -2447,7 +2887,56 @@ def call_contains_transfer(value: Any, scenario: str = "vapi-sip-transfer") -> b
     if not isinstance(value, Mapping) or value.get("status") != "ended":
         return False
     if scenario == WEB_SCENARIO:
-        return bridgefu_web_handoff.DIRECT_TOOL_NAME in names
+        artifact = value.get("artifact")
+        messages = artifact.get("messages") if isinstance(artifact, Mapping) else None
+        if not isinstance(messages, list):
+            return False
+        calls: list[str] = []
+        results: list[str] = []
+        accepted_results = 0
+        for message in messages:
+            if not isinstance(message, Mapping):
+                continue
+            role = message.get("role")
+            if role == "tool_calls":
+                tool_calls = message.get("toolCalls", message.get("toolCallList", []))
+                if not isinstance(tool_calls, list):
+                    return False
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, Mapping):
+                        return False
+                    function = tool_call.get("function")
+                    name = (
+                        function.get("name")
+                        if isinstance(function, Mapping)
+                        else tool_call.get("name")
+                    )
+                    if not isinstance(name, str):
+                        return False
+                    calls.append(name)
+            elif role == "tool_call_result":
+                name = message.get("name", message.get("toolName"))
+                if not isinstance(name, str):
+                    return False
+                results.append(name)
+                if name != bridgefu_web_handoff.DIRECT_TOOL_NAME:
+                    continue
+                raw_result = message.get("result", message.get("content"))
+                try:
+                    result = (
+                        json.loads(raw_result)
+                        if isinstance(raw_result, str)
+                        else raw_result
+                    )
+                except json.JSONDecodeError:
+                    return False
+                if isinstance(result, Mapping) and result.get("accepted") is True:
+                    accepted_results += 1
+        return (
+            calls == [bridgefu_web_handoff.DIRECT_TOOL_NAME]
+            and results == [bridgefu_web_handoff.DIRECT_TOOL_NAME]
+            and accepted_results == 1
+        )
     return "prepare_handoff" in names and "transferCall" in names and transfer
 
 
@@ -2868,11 +3357,26 @@ class Controller:
         self.temp_phone_creation_ambiguous = False
         self.temp_sip_auth_object: str | None = None
         self.temp_phone_intent_journal_object: str | None = None
+        self.temp_phone_request_journal_object: str | None = None
         self.temp_phone_journal_object: str | None = None
         self.direct_tool_id: str | None = None
         self.direct_tool_prompt_sha256: str | None = None
         self.direct_tool_desired: dict[str, Any] | None = None
-        self.direct_assistant_overlay_installed = False
+        self.direct_tool_creation_ambiguous = False
+        self.direct_tool_intent: dict[str, Any] | None = None
+        self.direct_tool_intent_journal_object: str | None = None
+        self.direct_tool_request_journal_object: str | None = None
+        self.direct_tool_journal_object: str | None = None
+        self.direct_assistant_id: str | None = None
+        self.direct_assistant_desired: dict[str, Any] | None = None
+        self.direct_assistant_creation_ambiguous = False
+        self.direct_assistant_intent: dict[str, Any] | None = None
+        self.direct_assistant_intent_journal_object: str | None = None
+        self.direct_assistant_request_journal_object: str | None = None
+        self.direct_assistant_journal_object: str | None = None
+        self.direct_vapi_cleanup_required = False
+        self.direct_identity_binding_installed = False
+        self.product_assistant_sha256: str | None = None
         self.direct_context_correlation_id: str | None = None
         self.web_runtime_object_key: str | None = None
         self.web_runtime_cleanup_required = False
@@ -3010,7 +3514,8 @@ class Controller:
         if (
             self.temp_phone_id is not None
             or getattr(self, "temp_phone_intent", None) is not None
-            or getattr(self, "direct_assistant_overlay_installed", False)
+            or getattr(self, "direct_identity_binding_installed", False)
+            or getattr(self, "direct_assistant_id", None) is not None
             or getattr(self, "direct_tool_id", None) is not None
             or getattr(self, "web_runtime_cleanup_required", False)
         ):
@@ -3107,11 +3612,14 @@ class Controller:
             self.outputs.get("VapiPrepareToolId"),
             self.outputs.get("VapiWebhookCredentialId"),
             self.temp_phone_id,
+            getattr(self, "direct_assistant_id", None),
+            getattr(self, "direct_tool_id", None),
         )
         phone_intent_exists = (
             getattr(self, "temp_phone_intent", None) is not None
             or getattr(self, "temp_phone_creation_ambiguous", False)
             or getattr(self, "temp_phone_intent_journal_object", None) is not None
+            or getattr(self, "temp_phone_request_journal_object", None) is not None
         )
         if self.vapi is None and (
             any(isinstance(item, str) for item in ids) or phone_intent_exists
@@ -3714,15 +4222,22 @@ class Controller:
 
     def provision_temporary_vapi_phone(
         self,
+        assistant_id: str | None = None,
     ) -> tuple[dict[str, str], str, str]:
         if self.vapi is None:
             raise QualificationError("Vapi client is unavailable")
+        selected_assistant_id = assistant_id or self.outputs["VapiAssistantId"]
+        if not isinstance(selected_assistant_id, str) or not RESOURCE_ID.fullmatch(
+            selected_assistant_id
+        ):
+            raise QualificationError("temporary Vapi assistant is unavailable")
         if any(
             value is not None
             for value in (
                 self.temp_phone_id,
                 getattr(self, "temp_phone_intent", None),
                 getattr(self, "temp_phone_intent_journal_object", None),
+                getattr(self, "temp_phone_request_journal_object", None),
                 getattr(self, "temp_phone_journal_object", None),
             )
         ):
@@ -3734,15 +4249,19 @@ class Controller:
         }
         intent = vapi_phone_intent(
             self.args.execution_id,
-            self.outputs["VapiAssistantId"],
+            selected_assistant_id,
             authentication,
         )
         self.temp_phone_intent = intent
         self.write_phone_intent_journal(intent)
+        self.write_phone_request_journal(intent)
+        # From this point until exact returned-ID ownership is durably sealed,
+        # a process stop may have happened after Vapi committed the POST.
+        self.temp_phone_creation_ambiguous = True
         try:
             phone = self.vapi.create_phone(
                 self.args.execution_id,
-                self.outputs["VapiAssistantId"],
+                selected_assistant_id,
                 authentication,
             )
         except VapiPhoneReconciliationError:
@@ -3753,14 +4272,15 @@ class Controller:
         if not isinstance(phone_id, str) or not RESOURCE_ID.fullmatch(phone_id):
             raise QualificationError("temporary Vapi SIP endpoint is invalid")
         self.temp_phone_id = phone_id
-        self.write_phone_ownership_journal(phone_id, self.outputs["VapiAssistantId"])
+        self.write_phone_ownership_journal(phone_id, selected_assistant_id)
+        self.temp_phone_creation_ambiguous = False
         if sip_uri != intent["sip_uri"]:
             raise QualificationError("temporary Vapi SIP endpoint is invalid")
         wait_for_vapi_phone_active(
             self.vapi,
             phone_id,
             str(sip_uri),
-            self.outputs["VapiAssistantId"],
+            selected_assistant_id,
         )
         return authentication, phone_id, str(sip_uri)
 
@@ -3785,9 +4305,32 @@ class Controller:
             timeout=120,
         )
 
-    def install_direct_assistant_overlay(self) -> None:
+    def install_direct_assistant(self) -> None:
+        """Create a direct-only assistant without mutating the product assistant."""
         if self.vapi is None:
             raise QualificationError("Vapi client is unavailable")
+        product_assistant_id = self.outputs["VapiAssistantId"]
+        product_assistant = self.vapi.get("assistant", product_assistant_id)
+        if product_assistant is None:
+            raise QualificationError("product Vapi assistant is unavailable")
+        self.product_assistant_sha256 = canonical_sha256(product_assistant)
+        try:
+            product_binding = json.loads(
+                self.aws.secret(self.outputs["ProductVapiIdentityBindingArn"])
+            )
+        except json.JSONDecodeError as error:
+            raise QualificationError(
+                "product Vapi identity binding is invalid"
+            ) from error
+        if (
+            not isinstance(product_binding, Mapping)
+            or set(product_binding) != {"status", "organization_id", "assistant_id"}
+            or product_binding.get("status") != "bound"
+            or product_binding.get("assistant_id") != product_assistant_id
+            or not isinstance(product_binding.get("organization_id"), str)
+            or not RESOURCE_ID.fullmatch(product_binding["organization_id"])
+        ):
+            raise QualificationError("product Vapi identity binding is invalid")
         endpoint = self.outputs["DirectHandoffUrl"]
         credential_id = self.outputs["VapiWebhookCredentialId"]
         try:
@@ -3799,6 +4342,23 @@ class Controller:
             )
         except bridgefu_web_handoff.DirectHandoffContractError as error:
             raise QualificationError("direct Vapi tool contract is invalid") from error
+        self.direct_tool_desired = desired_tool
+        self.direct_tool_intent = direct_tool_intent_journal(
+            self.args.execution_id,
+            self.args.region,
+            endpoint,
+            credential_id,
+            desired_tool,
+        )
+        self.direct_tool_intent_journal_object = self.write_direct_vapi_journal(
+            "vapi-direct-tool-intent.json", self.direct_tool_intent
+        )
+        self.direct_vapi_cleanup_required = True
+        self.direct_tool_request_journal_object = self.write_direct_vapi_journal(
+            "vapi-direct-tool-request.json",
+            direct_vapi_request_journal(self.direct_tool_intent, secrets.token_hex(16)),
+        )
+        self.direct_tool_creation_ambiguous = True
         tool = self.vapi.create_direct_tool(
             execution_id=self.args.execution_id,
             endpoint_url=endpoint,
@@ -3809,86 +4369,324 @@ class Controller:
         if not isinstance(tool_id, str) or not RESOURCE_ID.fullmatch(tool_id):
             raise QualificationError("direct Vapi tool identity is invalid")
         self.direct_tool_id = tool_id
-        self.direct_tool_desired = desired_tool
-        assistant_id = self.outputs["VapiAssistantId"]
-        baseline = self.vapi.get("assistant", assistant_id)
-        if baseline is None:
-            raise QualificationError("Vapi assistant is unavailable")
+        self.direct_tool_journal_object = self.write_direct_vapi_journal(
+            "vapi-direct-tool.json",
+            direct_tool_ownership_journal(self.direct_tool_intent, tool_id),
+        )
+        self.direct_tool_creation_ambiguous = False
         try:
             desired_assistant, prompt_hash = (
-                bridgefu_web_handoff.apply_assistant_overlay(baseline, tool_id)
+                bridgefu_web_handoff.direct_assistant_payload(
+                    execution_id=self.args.execution_id,
+                    tool_id=tool_id,
+                    model_name=self.outputs["VapiModel"],
+                    voice_id=self.outputs["VapiVoiceId"],
+                )
             )
         except bridgefu_web_handoff.DirectHandoffContractError as error:
-            raise QualificationError(
-                "direct Vapi assistant overlay is invalid"
-            ) from error
-        current = self.vapi.get("assistant", assistant_id)
-        if current != baseline:
-            raise QualificationError("Vapi assistant changed during overlay planning")
-        model = desired_assistant.get("model")
-        if not isinstance(model, Mapping):
-            raise QualificationError("direct Vapi assistant model is invalid")
-        self.vapi.patch_assistant_model(assistant_id, model)
+            raise QualificationError("direct Vapi assistant is invalid") from error
+        self.direct_assistant_desired = desired_assistant
         self.direct_tool_prompt_sha256 = prompt_hash
-        self.direct_assistant_overlay_installed = True
+        self.direct_assistant_intent = direct_assistant_intent_journal(
+            self.args.execution_id,
+            self.args.region,
+            product_binding["organization_id"],
+            tool_id,
+            self.outputs["VapiModel"],
+            self.outputs["VapiVoiceId"],
+            prompt_hash,
+            desired_assistant,
+        )
+        self.direct_assistant_intent_journal_object = self.write_direct_vapi_journal(
+            "vapi-direct-assistant-intent.json", self.direct_assistant_intent
+        )
+        self.direct_assistant_request_journal_object = self.write_direct_vapi_journal(
+            "vapi-direct-assistant-request.json",
+            direct_vapi_request_journal(
+                self.direct_assistant_intent, secrets.token_hex(16)
+            ),
+        )
+        self.direct_assistant_creation_ambiguous = True
+        assistant = self.vapi.create_direct_assistant(
+            execution_id=self.args.execution_id,
+            tool_id=tool_id,
+            prompt_sha256=prompt_hash,
+            model_name=self.outputs["VapiModel"],
+            voice_id=self.outputs["VapiVoiceId"],
+            desired=desired_assistant,
+        )
+        assistant_id = assistant.get("id")
+        if not isinstance(assistant_id, str) or not RESOURCE_ID.fullmatch(assistant_id):
+            raise QualificationError("direct Vapi assistant identity is invalid")
+        assistant_org_id = assistant.get("orgId")
+        if assistant_org_id not in (
+            None,
+            "",
+            product_binding["organization_id"],
+        ):
+            raise QualificationError("direct Vapi assistant organization changed")
+        self.direct_assistant_id = assistant_id
+        self.direct_assistant_journal_object = self.write_direct_vapi_journal(
+            "vapi-direct-assistant.json",
+            direct_assistant_ownership_journal(
+                self.direct_assistant_intent, assistant_id
+            ),
+        )
+        self.direct_assistant_creation_ambiguous = False
+        # Treat the write as ambiguous until cleanup proves the secret is
+        # either still unbound or has been restored to unbound. This closes the
+        # commit-then-timeout window in Secrets Manager.
+        self.direct_identity_binding_installed = True
+        self.put_secret_json(
+            self.outputs["DirectVapiIdentityBindingArn"],
+            {
+                "status": "bound",
+                "organization_id": product_binding["organization_id"],
+                "assistant_id": assistant_id,
+            },
+        )
 
-    def cleanup_direct_assistant_overlay(self) -> list[str]:
+    def cleanup_direct_assistant(self) -> list[str]:
+        """Delete Vapi transients in unbind -> assistant -> tool order."""
         errors: list[str] = []
         endpoint = self.outputs.get("DirectHandoffUrl")
         credential_id = self.outputs.get("VapiWebhookCredentialId")
-        assistant_id = self.outputs.get("VapiAssistantId")
-        if getattr(self, "direct_assistant_overlay_installed", False):
+        tool_id = getattr(self, "direct_tool_id", None)
+        prompt_hash = getattr(self, "direct_tool_prompt_sha256", None)
+        if (
+            self.temp_phone_id is not None
+            or getattr(self, "temp_phone_intent", None) is not None
+            or getattr(self, "temp_phone_creation_ambiguous", False)
+        ):
+            return ["direct Vapi assistant cleanup requires an absent phone"]
+        if getattr(self, "direct_identity_binding_installed", False):
             try:
+                current_binding = json.loads(
+                    self.aws.secret(self.outputs["DirectVapiIdentityBindingArn"])
+                )
+                try:
+                    product_binding = json.loads(
+                        self.aws.secret(self.outputs["ProductVapiIdentityBindingArn"])
+                    )
+                except json.JSONDecodeError as error:
+                    raise QualificationError(
+                        "product Vapi identity binding is invalid"
+                    ) from error
+                expected_binding = {
+                    "status": "bound",
+                    "organization_id": product_binding.get("organization_id"),
+                    "assistant_id": getattr(self, "direct_assistant_id", None),
+                }
+                if current_binding == {"status": "unbound"}:
+                    self.direct_identity_binding_installed = False
+                elif current_binding != expected_binding:
+                    raise QualificationError(
+                        "direct Vapi identity binding ownership changed"
+                    )
+                else:
+                    self.put_secret_json(
+                        self.outputs["DirectVapiIdentityBindingArn"],
+                        {"status": "unbound"},
+                    )
+                    self.direct_identity_binding_installed = False
+            except (QualificationError, json.JSONDecodeError):
+                errors.append("direct Vapi identity unbind failed")
+        if not getattr(self, "direct_identity_binding_installed", False):
+            try:
+                assistant_request_authorized = (
+                    getattr(self, "direct_assistant_request_journal_object", None)
+                    is not None
+                )
                 if (
                     self.vapi is None
-                    or not isinstance(assistant_id, str)
-                    or getattr(self, "direct_tool_id", None) is None
-                    or getattr(self, "direct_tool_prompt_sha256", None) is None
-                ):
-                    raise QualificationError(
-                        "direct Vapi overlay ownership proof is unavailable"
+                    or not isinstance(tool_id, str)
+                    or not isinstance(prompt_hash, str)
+                    or not isinstance(
+                        getattr(self, "direct_assistant_desired", None), Mapping
                     )
-                current = self.vapi.get("assistant", assistant_id)
-                if current is None:
-                    raise QualificationError("Vapi assistant is unavailable")
-                restored = bridgefu_web_handoff.remove_assistant_overlay(
-                    current,
-                    self.direct_tool_id,
-                    self.direct_tool_prompt_sha256,
-                )
-                model = restored.get("model")
-                if not isinstance(model, Mapping):
-                    raise QualificationError("direct Vapi assistant model is invalid")
-                self.vapi.patch_assistant_model(assistant_id, model)
-                self.direct_assistant_overlay_installed = False
-                self.direct_tool_prompt_sha256 = None
-            except (
-                QualificationError,
-                bridgefu_web_handoff.DirectHandoffContractError,
-            ):
-                errors.append("direct Vapi assistant overlay removal failed")
-        if getattr(self, "direct_tool_id", None) is not None and not getattr(
-            self, "direct_assistant_overlay_installed", False
+                ):
+                    if (
+                        getattr(self, "direct_assistant_id", None) is not None
+                        or getattr(self, "direct_assistant_creation_ambiguous", False)
+                        or assistant_request_authorized
+                    ):
+                        raise QualificationError(
+                            "direct Vapi assistant ownership proof is unavailable"
+                        )
+                else:
+                    if getattr(self, "direct_assistant_id", None) is None and getattr(
+                        self, "direct_assistant_creation_ambiguous", False
+                    ):
+                        found = self.vapi.find_direct_assistant(
+                            execution_id=self.args.execution_id,
+                            tool_id=tool_id,
+                            prompt_sha256=prompt_hash,
+                            model_name=self.outputs["VapiModel"],
+                            voice_id=self.outputs["VapiVoiceId"],
+                            desired=self.direct_assistant_desired,
+                        )
+                        if found is None:
+                            raise QualificationError(
+                                "direct Vapi assistant creation remains ambiguous"
+                            )
+                        self.direct_assistant_id = str(found["id"])
+                        self.direct_assistant_creation_ambiguous = False
+                    if getattr(self, "direct_assistant_id", None) is not None:
+                        self.vapi.delete_direct_assistant(
+                            self.direct_assistant_id,
+                            execution_id=self.args.execution_id,
+                            tool_id=tool_id,
+                            prompt_sha256=prompt_hash,
+                            model_name=self.outputs["VapiModel"],
+                            voice_id=self.outputs["VapiVoiceId"],
+                        )
+                        self.direct_assistant_id = None
+            except QualificationError:
+                errors.append("direct Vapi assistant deletion failed")
+        if getattr(self, "direct_assistant_id", None) is None and not getattr(
+            self, "direct_assistant_creation_ambiguous", False
         ):
             try:
-                if (
-                    self.vapi is None
-                    or not isinstance(endpoint, str)
-                    or not isinstance(credential_id, str)
+                if self.vapi is None or not isinstance(
+                    getattr(self, "direct_tool_desired", None), Mapping
                 ):
-                    raise QualificationError(
-                        "direct Vapi tool ownership proof is unavailable"
+                    if tool_id is not None or getattr(
+                        self, "direct_tool_creation_ambiguous", False
+                    ):
+                        raise QualificationError(
+                            "direct Vapi tool ownership proof is unavailable"
+                        )
+                elif tool_id is None and getattr(
+                    self, "direct_tool_creation_ambiguous", False
+                ):
+                    found = self.vapi.find_direct_tool(
+                        execution_id=self.args.execution_id,
+                        endpoint_url=str(endpoint),
+                        credential_id=str(credential_id),
+                        desired=self.direct_tool_desired,
                     )
-                self.vapi.delete_direct_tool(
-                    self.direct_tool_id,
-                    execution_id=self.args.execution_id,
-                    endpoint_url=endpoint,
-                    credential_id=credential_id,
-                )
-                self.direct_tool_id = None
-                self.direct_tool_desired = None
+                    if found is None:
+                        raise QualificationError(
+                            "direct Vapi tool creation remains ambiguous"
+                        )
+                    self.direct_tool_id = str(found["id"])
+                    tool_id = self.direct_tool_id
+                    self.direct_tool_creation_ambiguous = False
+                if tool_id is not None:
+                    if not isinstance(endpoint, str) or not isinstance(
+                        credential_id, str
+                    ):
+                        raise QualificationError(
+                            "direct Vapi tool ownership proof is unavailable"
+                        )
+                    self.vapi.delete_direct_tool(
+                        tool_id,
+                        execution_id=self.args.execution_id,
+                        endpoint_url=endpoint,
+                        credential_id=credential_id,
+                        desired=self.direct_tool_desired,
+                    )
+                    self.direct_tool_id = None
             except QualificationError:
                 errors.append("direct Vapi tool deletion failed")
+        if getattr(self, "product_assistant_sha256", None) is not None:
+            try:
+                if self.vapi is None:
+                    raise QualificationError("Vapi client is unavailable")
+                product = self.vapi.get("assistant", self.outputs["VapiAssistantId"])
+                if (
+                    product is None
+                    or canonical_sha256(product) != self.product_assistant_sha256
+                ):
+                    raise QualificationError("product Vapi assistant changed")
+                self.product_assistant_sha256 = None
+            except QualificationError:
+                errors.append("product Vapi assistant unchanged proof failed")
+        if (
+            not errors
+            and not getattr(self, "direct_identity_binding_installed", False)
+            and getattr(self, "direct_assistant_id", None) is None
+            and not getattr(self, "direct_assistant_creation_ambiguous", False)
+            and getattr(self, "direct_tool_id", None) is None
+            and not getattr(self, "direct_tool_creation_ambiguous", False)
+        ):
+            try:
+                if self.vapi is None:
+                    if getattr(self, "direct_vapi_cleanup_required", False):
+                        raise QualificationError("Vapi client is unavailable")
+                else:
+                    if (
+                        getattr(self, "direct_assistant_request_journal_object", None)
+                        is not None
+                    ):
+                        if (
+                            not isinstance(tool_id, str)
+                            or not isinstance(prompt_hash, str)
+                            or not isinstance(
+                                getattr(self, "direct_assistant_desired", None),
+                                Mapping,
+                            )
+                        ):
+                            raise QualificationError(
+                                "direct Vapi assistant absence proof is unavailable"
+                            )
+                        if (
+                            self.vapi.find_direct_assistant(
+                                execution_id=self.args.execution_id,
+                                tool_id=tool_id,
+                                prompt_sha256=prompt_hash,
+                                model_name=self.outputs["VapiModel"],
+                                voice_id=self.outputs["VapiVoiceId"],
+                                desired=self.direct_assistant_desired,
+                            )
+                            is not None
+                        ):
+                            raise QualificationError(
+                                "direct Vapi assistant remains after deletion"
+                            )
+                    if (
+                        getattr(self, "direct_tool_request_journal_object", None)
+                        is not None
+                    ):
+                        if (
+                            not isinstance(endpoint, str)
+                            or not isinstance(credential_id, str)
+                            or not isinstance(
+                                getattr(self, "direct_tool_desired", None), Mapping
+                            )
+                        ):
+                            raise QualificationError(
+                                "direct Vapi tool absence proof is unavailable"
+                            )
+                        if (
+                            self.vapi.find_direct_tool(
+                                execution_id=self.args.execution_id,
+                                endpoint_url=endpoint,
+                                credential_id=credential_id,
+                                desired=self.direct_tool_desired,
+                            )
+                            is not None
+                        ):
+                            raise QualificationError(
+                                "direct Vapi tool remains after deletion"
+                            )
+                self.direct_vapi_cleanup_required = False
+                self.direct_tool_desired = None
+                self.direct_tool_prompt_sha256 = None
+                self.direct_tool_intent = None
+                self.direct_assistant_desired = None
+                self.direct_assistant_intent = None
+                # The journals stay durably present until the final versioned-prefix
+                # purge. Clearing only their in-memory recovery flags is safe after
+                # exact remote absence has been proved.
+                self.direct_tool_intent_journal_object = None
+                self.direct_tool_request_journal_object = None
+                self.direct_tool_journal_object = None
+                self.direct_assistant_intent_journal_object = None
+                self.direct_assistant_request_journal_object = None
+                self.direct_assistant_journal_object = None
+            except QualificationError:
+                errors.append("direct Vapi resource absence proof failed")
         return errors
 
     @staticmethod
@@ -4297,8 +5095,8 @@ class Controller:
         cleanup_errors = self.stop_active_work()
         cleanup_errors.extend(self.cleanup_direct_context())
         cleanup_errors.extend(self.cleanup_web_runtime())
-        cleanup_errors.extend(self.cleanup_direct_assistant_overlay())
         cleanup_errors.extend(self.cleanup_sip_transients())
+        cleanup_errors.extend(self.cleanup_direct_assistant())
         if primary_error is not None:
             if cleanup_errors:
                 raise QualificationError(
@@ -4321,8 +5119,10 @@ class Controller:
             "Vapi TLS reachability preflight",
         )
         bridgefu_web_runtime.validate_vapi_tls_reachability(reachability)
-        authentication, phone_id, _ = self.provision_temporary_vapi_phone()
-        self.install_direct_assistant_overlay()
+        self.install_direct_assistant()
+        authentication, phone_id, _ = self.provision_temporary_vapi_phone(
+            self.direct_assistant_id
+        )
         signaling_port = self.reserve_local_port()
         control_port = self.reserve_local_port()
         self.install_web_runtime(
@@ -4440,7 +5240,7 @@ class Controller:
             if bridgefu_call_id != binding.call_id:
                 raise QualificationError("Bridgefu WebRTC call identity changed")
             call = self.wait_for_vapi_call(
-                assistant_id=self.outputs["VapiAssistantId"],
+                assistant_id=str(self.direct_assistant_id),
                 started_after=started,
                 phone_id=phone_id,
                 timeout=120,
@@ -4473,12 +5273,14 @@ class Controller:
         errors: list[str] = []
         intent = getattr(self, "temp_phone_intent", None)
         intent_journal = getattr(self, "temp_phone_intent_journal_object", None)
+        request_journal = getattr(self, "temp_phone_request_journal_object", None)
         creation_ambiguous = getattr(self, "temp_phone_creation_ambiguous", False)
         phone_absent = (
             self.temp_phone_id is None
             and intent is None
             and self.temp_phone_journal_object is None
             and intent_journal is None
+            and request_journal is None
         )
         if self.vapi is not None and intent is not None:
             try:
@@ -4496,7 +5298,7 @@ class Controller:
                         self.write_phone_ownership_journal(
                             phone_id, intent["assistant_id"]
                         )
-                    elif creation_ambiguous:
+                    elif creation_ambiguous or request_journal is not None:
                         raise QualificationError(
                             "temporary Vapi SIP endpoint creation remains ambiguous"
                         )
@@ -4512,6 +5314,7 @@ class Controller:
             or intent is not None
             or self.temp_phone_journal_object is not None
             or intent_journal is not None
+            or request_journal is not None
         ):
             errors.append("temporary Vapi SIP endpoint ownership proof is unavailable")
         if phone_absent and self.temp_phone_journal_object is not None:
@@ -4530,6 +5333,25 @@ class Controller:
         if (
             phone_absent
             and self.temp_phone_journal_object is None
+            and request_journal is not None
+        ):
+            try:
+                self.aws.text(
+                    [
+                        "s3",
+                        "rm",
+                        request_journal,
+                        "--only-show-errors",
+                    ]
+                )
+                self.temp_phone_request_journal_object = None
+                request_journal = None
+            except QualificationError:
+                errors.append("temporary Vapi endpoint request journal deletion failed")
+        if (
+            phone_absent
+            and self.temp_phone_journal_object is None
+            and request_journal is None
             and intent_journal is not None
         ):
             try:
@@ -4548,6 +5370,7 @@ class Controller:
         if (
             phone_absent
             and self.temp_phone_journal_object is None
+            and request_journal is None
             and intent_journal is None
         ):
             self.temp_phone_intent = None
@@ -4628,6 +5451,79 @@ class Controller:
             timeout=120,
         )
         self.temp_phone_intent_journal_object = target
+
+    def write_phone_request_journal(self, intent: Mapping[str, str]) -> None:
+        bucket = self.outputs.get("ArtifactBucket")
+        if not isinstance(bucket, str) or not S3_BUCKET.fullmatch(bucket):
+            raise QualificationError("qualification artifact bucket is invalid")
+        intent_journal = vapi_phone_intent_journal(
+            self.args.execution_id,
+            self.args.region,
+            intent,
+        )
+        request = vapi_phone_request_journal(
+            intent_journal,
+            secrets.token_hex(16),
+        )
+        target = (
+            f"s3://{bucket}/qualification/{self.args.execution_id}/"
+            "ownership/vapi-phone-request.json"
+        )
+        self.runner.run(
+            [
+                "aws",
+                "s3",
+                "cp",
+                "-",
+                target,
+                "--sse",
+                "AES256",
+                "--content-type",
+                "application/json",
+                "--only-show-errors",
+                "--region",
+                self.args.region,
+            ],
+            input_text=json.dumps(request, separators=(",", ":"), sort_keys=True),
+            timeout=120,
+        )
+        self.temp_phone_request_journal_object = target
+
+    def write_direct_vapi_journal(self, name: str, value: Mapping[str, Any]) -> str:
+        if name not in {
+            "vapi-direct-tool-intent.json",
+            "vapi-direct-tool-request.json",
+            "vapi-direct-tool.json",
+            "vapi-direct-assistant-intent.json",
+            "vapi-direct-assistant-request.json",
+            "vapi-direct-assistant.json",
+        }:
+            raise QualificationError("direct Vapi journal name is invalid")
+        bucket = self.outputs.get("ArtifactBucket")
+        if not isinstance(bucket, str) or not S3_BUCKET.fullmatch(bucket):
+            raise QualificationError("qualification artifact bucket is invalid")
+        target = (
+            f"s3://{bucket}/qualification/{self.args.execution_id}/ownership/{name}"
+        )
+        self.runner.run(
+            [
+                "aws",
+                "s3",
+                "cp",
+                "-",
+                target,
+                "--sse",
+                "AES256",
+                "--content-type",
+                "application/json",
+                "--only-show-errors",
+                "--region",
+                self.args.region,
+            ],
+            input_text=json.dumps(value, separators=(",", ":"), sort_keys=True),
+            timeout=120,
+        )
+        return target
 
     def sip_smoke(self, storage: Path, correlation_key: str) -> None:
         primary_error: BaseException | None = None
@@ -5027,8 +5923,8 @@ class Controller:
         except QualificationError:
             errors.append("Vapi cleanup verifier initialization failed")
         errors.extend(self.cleanup_vapi_provisioning_resilience())
-        errors.extend(self.cleanup_direct_assistant_overlay())
         errors.extend(self.cleanup_sip_transients())
+        errors.extend(self.cleanup_direct_assistant())
         try:
             self.ensure_acm_validation_journal()
         except QualificationError:
@@ -5039,13 +5935,18 @@ class Controller:
             or getattr(self, "temp_phone_creation_ambiguous", False)
             or self.temp_phone_journal_object is not None
             or getattr(self, "temp_phone_intent_journal_object", None) is not None
+            or getattr(self, "temp_phone_request_journal_object", None) is not None
         )
         acm_recovery_required = (
             self.created_stack and not self.acm_validation_discovery_complete
         )
         direct_vapi_recovery_required = (
-            getattr(self, "direct_assistant_overlay_installed", False)
+            getattr(self, "direct_vapi_cleanup_required", False)
+            or getattr(self, "direct_identity_binding_installed", False)
+            or getattr(self, "direct_assistant_id", None) is not None
+            or getattr(self, "direct_assistant_creation_ambiguous", False)
             or getattr(self, "direct_tool_id", None) is not None
+            or getattr(self, "direct_tool_creation_ambiguous", False)
         )
         ownership_recovery_required = (
             phone_recovery_required
@@ -5062,7 +5963,7 @@ class Controller:
         if direct_vapi_recovery_required and not any(
             "direct Vapi" in error for error in errors
         ):
-            errors.append("direct Vapi overlay ownership cleanup is incomplete")
+            errors.append("direct Vapi resource ownership cleanup is incomplete")
         if getattr(self, "vapi_provisioning_cleanup_required", False) and not any(
             "provisioning resilience" in error for error in errors
         ):
@@ -5172,6 +6073,8 @@ class Controller:
             ("tool", self.outputs.get("VapiPrepareToolId")),
             ("credential", self.outputs.get("VapiWebhookCredentialId")),
             ("phone-number", self.temp_phone_id),
+            ("assistant", getattr(self, "direct_assistant_id", None)),
+            ("tool", getattr(self, "direct_tool_id", None)),
         ]
         vapi_absent = self.vapi is not None or not any(
             isinstance(resource_id, str) for _, resource_id in ids
@@ -5183,7 +6086,7 @@ class Controller:
                     and self.vapi.get(resource, resource_id) is not None
                 ):
                     vapi_absent = False
-        if phone_recovery_required:
+        if phone_recovery_required or direct_vapi_recovery_required:
             vapi_absent = False
         zero = {
             "schema_version": 1,
@@ -5253,8 +6156,18 @@ class Controller:
                     or self.secure_preflight_cleanup_passed
                 )
                 and not getattr(self, "web_runtime_cleanup_required", False)
-                and not getattr(self, "direct_assistant_overlay_installed", False)
+                and self.temp_phone_id is None
+                and getattr(self, "temp_phone_intent", None) is None
+                and not getattr(self, "temp_phone_creation_ambiguous", False)
+                and getattr(self, "temp_phone_intent_journal_object", None) is None
+                and getattr(self, "temp_phone_request_journal_object", None) is None
+                and getattr(self, "temp_phone_journal_object", None) is None
+                and not getattr(self, "direct_vapi_cleanup_required", False)
+                and not getattr(self, "direct_identity_binding_installed", False)
+                and getattr(self, "direct_assistant_id", None) is None
+                and not getattr(self, "direct_assistant_creation_ambiguous", False)
                 and getattr(self, "direct_tool_id", None) is None
+                and not getattr(self, "direct_tool_creation_ambiguous", False)
                 and not getattr(self, "vapi_provisioning_cleanup_required", False)
             )
             if retain_environment:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -97,6 +98,38 @@ class ImageRuntimeRendererTests(unittest.TestCase):
             self.assertIn(
                 "ssl crt /etc/haproxy/bridgefu.pem",
                 (installed / "etc/haproxy/haproxy.cfg").read_text(),
+            )
+
+            haproxy = (installed / "etc/haproxy/haproxy.cfg").read_text()
+            replacement_acl = next(
+                line.strip()
+                for line in haproxy.splitlines()
+                if line.strip().startswith("acl exact_leg_replacement path_reg ")
+            )
+            replacement_pattern = replacement_acl.split(" path_reg ", 1)[1]
+            call_id = "018f9c2a-7b3d-7ef0-bfee-9d5a5c600001"
+            leg_id = "018f9c2a-7b3d-7ef0-bfee-9d5a5c600002"
+            self.assertRegex(
+                f"/v1/calls/{call_id}/legs/{leg_id}/replace",
+                re.compile(replacement_pattern),
+            )
+            for denied in (
+                f"/v1/calls/{call_id}/legs/{leg_id}/replace/extra",
+                f"/v1/calls/not-a-uuid/legs/{leg_id}/replace",
+                f"/v1/calls/{call_id}/legs/{leg_id}/dtmf",
+                "/v1/calls",
+            ):
+                with self.subTest(denied=denied):
+                    self.assertIsNone(re.fullmatch(replacement_pattern, denied))
+            self.assertIn(
+                "deny deny_status 404 unless health_path or exact_reservation or "
+                "exact_leg_replacement",
+                haproxy,
+            )
+            self.assertIn(
+                "deny deny_status 405 if exact_leg_replacement "
+                "!exact_leg_replacement_method",
+                haproxy,
             )
 
 

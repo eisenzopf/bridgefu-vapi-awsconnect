@@ -132,6 +132,19 @@ Resources:
         - {Key: ManagedBy, Value: bridgefu-qualification}
         - {Key: BridgefuExecutionId, Value: !Ref DeploymentId}
 
+  DirectVapiIdentityBinding:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Name: !Sub 'bridgefu/${DeploymentId}/qualification/direct-vapi-identity'
+      Description: !Sub 'Disposable direct-Web assistant identity for ${DeploymentId}'
+      SecretString: '{"status":"unbound"}'
+      Tags:
+        - {Key: Project, Value: bridgefu-vapi-awsconnect}
+        - {Key: ManagedBy, Value: bridgefu-qualification}
+        - {Key: BridgefuExecutionId, Value: !Ref DeploymentId}
+
   DirectVapiSipAuthSecret:
     Type: AWS::SecretsManager::Secret
     DeletionPolicy: Delete
@@ -220,8 +233,8 @@ Resources:
                 Action: secretsmanager:GetSecretValue
                 Resource:
                   - !Ref DirectHandoffSigningKey
+                  - !Ref DirectVapiIdentityBinding
                   - !GetAtt Candidate.Outputs.VapiWebhookSecretArn
-                  - !GetAtt Candidate.Outputs.VapiIdentityBindingArn
                   - !GetAtt Candidate.Outputs.BridgefuApiBearerSecretArn
       Tags:
         - {Key: Project, Value: bridgefu-vapi-awsconnect}
@@ -247,7 +260,7 @@ Resources:
         Variables:
           HANDOFF_TABLE_NAME: !GetAtt Candidate.Outputs.HandoffTableName
           VAPI_WEBHOOK_SECRET_ARN: !GetAtt Candidate.Outputs.VapiWebhookSecretArn
-          VAPI_IDENTITY_BINDING_ARN: !GetAtt Candidate.Outputs.VapiIdentityBindingArn
+          VAPI_IDENTITY_BINDING_ARN: !Ref DirectVapiIdentityBinding
           BRIDGEFU_API_BEARER_SECRET_ARN: !GetAtt Candidate.Outputs.BridgefuApiBearerSecretArn
           BRIDGEFU_CONTROL_BASE_URL: !Sub 'https://control.${SipHostname}'
           DIRECT_HANDOFF_SIGNING_KEY_SECRET_ARN: !Ref DirectHandoffSigningKey
@@ -351,6 +364,8 @@ Outputs:
     Value: !GetAtt Candidate.Outputs.VapiWebhookCredentialId
   VapiWebhookSecretArn:
     Value: !GetAtt Candidate.Outputs.VapiWebhookSecretArn
+  ProductVapiIdentityBindingArn:
+    Value: !GetAtt Candidate.Outputs.VapiIdentityBindingArn
   ConnectWrapperFlowArn:
     Value: !GetAtt Candidate.Outputs.ConnectWrapperFlowArn
   HandoffTableName:
@@ -361,6 +376,8 @@ Outputs:
     Value: !Sub 'https://${DirectHandoffApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/v1/direct-handoff'
   DirectHandoffSigningKeyArn:
     Value: !Ref DirectHandoffSigningKey
+  DirectVapiIdentityBindingArn:
+    Value: !Ref DirectVapiIdentityBinding
   DirectVapiSipAuthSecretArn:
     Value: !Ref DirectVapiSipAuthSecret
   BridgefuApiBearerSecretArn:

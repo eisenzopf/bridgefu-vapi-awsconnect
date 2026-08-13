@@ -104,7 +104,6 @@ class QualificationControllerTests(unittest.TestCase):
         }
         controller.temp_phone_id = None
         controller.temp_phone_intent = None
-        controller.direct_assistant_overlay_installed = False
         controller.direct_tool_id = None
         controller.web_runtime_cleanup_required = False
         controller.vapi_provisioning_resilience_evidence = None
@@ -568,38 +567,596 @@ class QualificationControllerTests(unittest.TestCase):
             desired=desired,
         )
         self.assertEqual(created["id"], "tool_1234")
+        client.tools[0]["foreign"] = True
+        with self.assertRaisesRegex(CONTROLLER.QualificationError, "conflicts"):
+            client.find_direct_tool(
+                execution_id="bfq-test1234",
+                endpoint_url="https://direct.example.test/v1/direct-handoff",
+                credential_id="credential_1234",
+                desired=desired,
+            )
+        del client.tools[0]["foreign"]
         client.delete_direct_tool(
             "tool_1234",
             execution_id="bfq-test1234",
             endpoint_url="https://direct.example.test/v1/direct-handoff",
             credential_id="credential_1234",
+            desired=desired,
         )
         self.assertTrue(client.deleted)
 
-    def test_vapi_assistant_model_patch_requires_exact_reread(self):
-        model = {"provider": "openai", "model": "gpt-4.1", "toolIds": ["tool_1"]}
+    def test_direct_assistant_ambiguous_create_reconciles_without_second_post(self):
+        desired, prompt_hash = CONTROLLER.bridgefu_web_handoff.direct_assistant_payload(
+            execution_id="bfq-test1234",
+            tool_id="tool_1234",
+            model_name="gpt-4.1",
+            voice_id="Elliot",
+        )
+        remote = {"id": "assistant_direct", **desired}
 
         class FakeVapi(CONTROLLER.Vapi):
-            def __init__(self, accepted):
+            def __init__(self):
                 super().__init__("private-test-key")
-                self.accepted = accepted
-                self.payload = None
+                self.assistants = []
+                self.posts = 0
 
-            def request(self, method, path, payload=None, *, allow_missing=False):
-                self.payload = payload
-                return {"id": "assistant_1234"}
+            def list(self, resource, *, limit=100):
+                return list(self.assistants)
 
             def get(self, resource, resource_id):
-                return {
-                    "id": resource_id,
-                    "model": model if self.accepted else {"provider": "openai"},
-                }
+                return next(
+                    (item for item in self.assistants if item.get("id") == resource_id),
+                    None,
+                )
 
-        accepted = FakeVapi(True)
-        accepted.patch_assistant_model("assistant_1234", model)
-        self.assertEqual(accepted.payload, {"model": model})
-        with self.assertRaisesRegex(CONTROLLER.QualificationError, "not verified"):
-            FakeVapi(False).patch_assistant_model("assistant_1234", model)
+            def request(self, method, path, payload=None, *, allow_missing=False):
+                if method == "POST":
+                    self.posts += 1
+                    self.assistants = [remote]
+                    raise CONTROLLER.VapiAmbiguousWriteError("lost response")
+                raise AssertionError("unexpected request")
+
+        client = FakeVapi()
+        created = client.create_direct_assistant(
+            execution_id="bfq-test1234",
+            tool_id="tool_1234",
+            prompt_sha256=prompt_hash,
+            model_name="gpt-4.1",
+            voice_id="Elliot",
+            desired=desired,
+            reconcile_timeout=0,
+        )
+        self.assertEqual(created["id"], "assistant_direct")
+        self.assertEqual(client.posts, 1)
+
+    def test_direct_assistant_collision_and_foreign_delete_fail_closed(self):
+        desired, prompt_hash = CONTROLLER.bridgefu_web_handoff.direct_assistant_payload(
+            execution_id="bfq-test1234",
+            tool_id="tool_1234",
+            model_name="gpt-4.1",
+            voice_id="Elliot",
+        )
+        foreign = {
+            "id": "assistant_foreign",
+            **desired,
+            "metadata": {"owner": "someone-else"},
+        }
+
+        class FakeVapi(CONTROLLER.Vapi):
+            def __init__(self):
+                super().__init__("private-test-key")
+                self.deleted = False
+
+            def list(self, resource, *, limit=100):
+                return [foreign]
+
+            def get(self, resource, resource_id):
+                return foreign
+
+            def request(self, method, path, payload=None, *, allow_missing=False):
+                self.deleted = True
+                raise AssertionError("foreign assistant must not be mutated")
+
+        client = FakeVapi()
+        with self.assertRaisesRegex(CONTROLLER.QualificationError, "conflicts"):
+            client.find_direct_assistant(
+                execution_id="bfq-test1234",
+                tool_id="tool_1234",
+                prompt_sha256=prompt_hash,
+                model_name="gpt-4.1",
+                voice_id="Elliot",
+                desired=desired,
+            )
+        with self.assertRaisesRegex(CONTROLLER.QualificationError, "not owned"):
+            client.delete_direct_assistant(
+                "assistant_foreign",
+                execution_id="bfq-test1234",
+                tool_id="tool_1234",
+                prompt_sha256=prompt_hash,
+                model_name="gpt-4.1",
+                voice_id="Elliot",
+            )
+        self.assertFalse(client.deleted)
+
+    def test_direct_deletion_rejects_owned_surface_with_wrong_returned_id(self):
+        desired_tool = CONTROLLER.bridgefu_web_handoff.direct_tool_payload(
+            endpoint_url="https://direct.example.test/v1/direct-handoff",
+            credential_id="credential_1234",
+            field_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
+            },
+            execution_id="bfq-test1234",
+        )
+        desired_assistant, prompt_hash = (
+            CONTROLLER.bridgefu_web_handoff.direct_assistant_payload(
+                execution_id="bfq-test1234",
+                tool_id="tool_1234",
+                model_name="gpt-4.1",
+                voice_id="Elliot",
+            )
+        )
+
+        class MisdirectedGet(CONTROLLER.Vapi):
+            def __init__(self):
+                super().__init__("private-test-key")
+                self.deleted = False
+
+            def get(self, resource, resource_id):
+                if resource == "tool":
+                    return {"id": "tool_other", **desired_tool}
+                if resource == "assistant":
+                    return {"id": "assistant_other", **desired_assistant}
+                raise AssertionError("unexpected resource")
+
+            def request(self, method, path, payload=None, *, allow_missing=False):
+                self.deleted = True
+                raise AssertionError("mismatched identity must not be deleted")
+
+        client = MisdirectedGet()
+        with self.assertRaisesRegex(CONTROLLER.QualificationError, "not owned"):
+            client.delete_direct_tool(
+                "tool_1234",
+                execution_id="bfq-test1234",
+                endpoint_url="https://direct.example.test/v1/direct-handoff",
+                credential_id="credential_1234",
+                desired=desired_tool,
+            )
+        with self.assertRaisesRegex(CONTROLLER.QualificationError, "not owned"):
+            client.delete_direct_assistant(
+                "assistant_1234",
+                execution_id="bfq-test1234",
+                tool_id="tool_1234",
+                prompt_sha256=prompt_hash,
+                model_name="gpt-4.1",
+                voice_id="Elliot",
+            )
+        self.assertFalse(client.deleted)
+
+    def test_direct_reconciliation_rejects_full_lists_and_metadata_collisions(self):
+        desired_tool = CONTROLLER.bridgefu_web_handoff.direct_tool_payload(
+            endpoint_url="https://direct.example.test/v1/direct-handoff",
+            credential_id="credential_1234",
+            field_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
+            },
+            execution_id="bfq-test1234",
+        )
+
+        class FullToolList(CONTROLLER.Vapi):
+            def __init__(self):
+                super().__init__("private-test-key")
+
+            def list(self, resource, *, limit=100):
+                return [{"id": f"tool_{index}"} for index in range(100)]
+
+        with self.assertRaisesRegex(CONTROLLER.QualificationError, "safe bound"):
+            FullToolList().find_direct_tool(
+                execution_id="bfq-test1234",
+                endpoint_url="https://direct.example.test/v1/direct-handoff",
+                credential_id="credential_1234",
+                desired=desired_tool,
+            )
+
+        desired_assistant, prompt_hash = (
+            CONTROLLER.bridgefu_web_handoff.direct_assistant_payload(
+                execution_id="bfq-test1234",
+                tool_id="tool_1234",
+                model_name="gpt-4.1",
+                voice_id="Elliot",
+            )
+        )
+        renamed = {
+            "id": "assistant_direct",
+            **desired_assistant,
+            "name": "renamed-after-create",
+            "metadata": {
+                "bridgefu_qualification": "bfq-test1234",
+                "bridgefu_owner": "foreign",
+            },
+        }
+
+        class RenamedAssistant(CONTROLLER.Vapi):
+            def __init__(self):
+                super().__init__("private-test-key")
+
+            def list(self, resource, *, limit=100):
+                return [renamed]
+
+        with self.assertRaisesRegex(CONTROLLER.QualificationError, "conflicts"):
+            RenamedAssistant().find_direct_assistant(
+                execution_id="bfq-test1234",
+                tool_id="tool_1234",
+                prompt_sha256=prompt_hash,
+                model_name="gpt-4.1",
+                voice_id="Elliot",
+                desired=desired_assistant,
+            )
+
+    def test_direct_assistant_install_reads_but_never_patches_product(self):
+        events = []
+        product = {
+            "id": "assistant_product",
+            "model": {
+                "provider": "openai",
+                "model": "gpt-4.1",
+                "toolIds": ["tool_prepare"],
+                "tools": [{"type": "transferCall"}],
+            },
+        }
+        vapi = mock.Mock()
+        vapi.get.return_value = product
+        vapi.create_direct_tool.side_effect = lambda **_kwargs: (
+            events.append("create-tool") or {"id": "tool_direct"}
+        )
+        vapi.create_direct_assistant.side_effect = lambda **_kwargs: (
+            events.append("create-assistant") or {"id": "assistant_direct"}
+        )
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.args = SimpleNamespace(
+            execution_id="bfq-test1234", region="us-west-2"
+        )
+        controller.outputs = {
+            "VapiAssistantId": "assistant_product",
+            "DirectHandoffUrl": "https://direct.example.test/v1/direct-handoff",
+            "VapiWebhookCredentialId": "credential_1234",
+            "VapiModel": "gpt-4.1",
+            "VapiVoiceId": "Elliot",
+            "ProductVapiIdentityBindingArn": "arn:aws:secretsmanager:product",
+            "DirectVapiIdentityBindingArn": "arn:aws:secretsmanager:direct",
+            "ArtifactBucket": "bridgefu-test-artifacts",
+        }
+        controller.vapi = vapi
+        controller.aws = mock.Mock()
+        controller.aws.secret.return_value = json.dumps(
+            {
+                "status": "bound",
+                "organization_id": "org_1234",
+                "assistant_id": "assistant_product",
+            }
+        )
+        controller.put_secret_json = mock.Mock(
+            side_effect=lambda *_args, **_kwargs: events.append("bind")
+        )
+        controller.write_direct_vapi_journal = mock.Mock(
+            side_effect=lambda name, _value: (
+                events.append(name) or f"s3://bridgefu-test-artifacts/{name}"
+            )
+        )
+        controller.install_direct_assistant()
+        self.assertEqual(controller.direct_assistant_id, "assistant_direct")
+        vapi.get.assert_called_once_with("assistant", "assistant_product")
+        self.assertFalse(hasattr(CONTROLLER.Vapi, "patch_assistant_model"))
+        desired = vapi.create_direct_assistant.call_args.kwargs["desired"]
+        self.assertEqual(desired["model"]["toolIds"], ["tool_direct"])
+        self.assertNotIn("tools", desired["model"])
+        self.assertNotIn("server", desired)
+        controller.put_secret_json.assert_called_once_with(
+            "arn:aws:secretsmanager:direct",
+            {
+                "status": "bound",
+                "organization_id": "org_1234",
+                "assistant_id": "assistant_direct",
+            },
+        )
+        self.assertEqual(
+            events,
+            [
+                "vapi-direct-tool-intent.json",
+                "vapi-direct-tool-request.json",
+                "create-tool",
+                "vapi-direct-tool.json",
+                "vapi-direct-assistant-intent.json",
+                "vapi-direct-assistant-request.json",
+                "create-assistant",
+                "vapi-direct-assistant.json",
+                "bind",
+            ],
+        )
+
+    def test_direct_vapi_journals_are_exact_hashed_and_nonsecret(self):
+        desired_tool = CONTROLLER.bridgefu_web_handoff.direct_tool_payload(
+            endpoint_url="https://api123.execute-api.us-west-2.amazonaws.com/v1/direct-handoff",
+            credential_id="credential_1234",
+            field_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
+            },
+            execution_id="bfq-test1234",
+        )
+        tool_intent = CONTROLLER.direct_tool_intent_journal(
+            "bfq-test1234",
+            "us-west-2",
+            "https://api123.execute-api.us-west-2.amazonaws.com/v1/direct-handoff",
+            "credential_1234",
+            desired_tool,
+            created_at="2026-08-13T12:00:00Z",
+        )
+        tool_owner = CONTROLLER.direct_tool_ownership_journal(
+            tool_intent,
+            "tool_1234",
+            created_at="2026-08-13T12:00:01Z",
+        )
+        tool_request = CONTROLLER.direct_vapi_request_journal(
+            tool_intent,
+            "0" * 32,
+            authorized_at="2026-08-13T12:00:00.500Z",
+        )
+        desired_assistant, prompt_hash = (
+            CONTROLLER.bridgefu_web_handoff.direct_assistant_payload(
+                execution_id="bfq-test1234",
+                tool_id="tool_1234",
+                model_name="gpt-4.1",
+                voice_id="Elliot",
+            )
+        )
+        assistant_intent = CONTROLLER.direct_assistant_intent_journal(
+            "bfq-test1234",
+            "us-west-2",
+            "org_1234",
+            "tool_1234",
+            "gpt-4.1",
+            "Elliot",
+            prompt_hash,
+            desired_assistant,
+            created_at="2026-08-13T12:00:02Z",
+        )
+        assistant_owner = CONTROLLER.direct_assistant_ownership_journal(
+            assistant_intent,
+            "assistant_1234",
+            created_at="2026-08-13T12:00:03Z",
+        )
+        assistant_request = CONTROLLER.direct_vapi_request_journal(
+            assistant_intent,
+            "1" * 32,
+            authorized_at="2026-08-13T12:00:02.500Z",
+        )
+        self.assertEqual(
+            tool_intent["desired_sha256"],
+            CONTROLLER.canonical_sha256(desired_tool),
+        )
+        self.assertEqual(tool_owner["intent_sha256"], tool_intent["intent_sha256"])
+        self.assertEqual(
+            assistant_intent["desired_sha256"],
+            CONTROLLER.canonical_sha256(desired_assistant),
+        )
+        self.assertEqual(
+            assistant_owner["intent_sha256"],
+            assistant_intent["intent_sha256"],
+        )
+        self.assertEqual(tool_request["attempt_state"], "authorized")
+        self.assertEqual(
+            assistant_request["intent_sha256"],
+            assistant_intent["intent_sha256"],
+        )
+        serialized = json.dumps(
+            [
+                tool_intent,
+                tool_request,
+                tool_owner,
+                assistant_intent,
+                assistant_request,
+                assistant_owner,
+            ],
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        for forbidden in ("api_key", "password", "Bearer ", "webhook_token"):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_direct_identity_bind_timeout_requires_cleanup_reconciliation(self):
+        product = {"id": "assistant_product", "model": {"provider": "openai"}}
+        vapi = mock.Mock()
+        vapi.get.return_value = product
+        vapi.create_direct_tool.return_value = {"id": "tool_direct"}
+        vapi.create_direct_assistant.return_value = {"id": "assistant_direct"}
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.args = SimpleNamespace(
+            execution_id="bfq-test1234", region="us-west-2"
+        )
+        controller.outputs = {
+            "VapiAssistantId": "assistant_product",
+            "DirectHandoffUrl": "https://direct.example.test/v1/direct-handoff",
+            "VapiWebhookCredentialId": "credential_1234",
+            "VapiModel": "gpt-4.1",
+            "VapiVoiceId": "Elliot",
+            "ProductVapiIdentityBindingArn": "arn:aws:secretsmanager:product",
+            "DirectVapiIdentityBindingArn": "arn:aws:secretsmanager:direct",
+            "ArtifactBucket": "bridgefu-test-artifacts",
+        }
+        controller.vapi = vapi
+        controller.aws = mock.Mock()
+        controller.aws.secret.return_value = json.dumps(
+            {
+                "status": "bound",
+                "organization_id": "org_1234",
+                "assistant_id": "assistant_product",
+            }
+        )
+        controller.put_secret_json = mock.Mock(
+            side_effect=CONTROLLER.QualificationError("ambiguous secret write")
+        )
+        controller.write_direct_vapi_journal = mock.Mock(
+            side_effect=lambda name, _value: f"s3://bridgefu-test-artifacts/{name}"
+        )
+        with self.assertRaisesRegex(
+            CONTROLLER.QualificationError, "ambiguous secret write"
+        ):
+            controller.install_direct_assistant()
+        self.assertTrue(controller.direct_identity_binding_installed)
+        self.assertEqual(controller.direct_assistant_id, "assistant_direct")
+
+    def test_direct_identity_reconciliation_unbinds_before_remote_deletion(self):
+        order = []
+        product = {"id": "assistant_product", "model": {"provider": "openai"}}
+        tool = CONTROLLER.bridgefu_web_handoff.direct_tool_payload(
+            endpoint_url="https://direct.example.test/v1/direct-handoff",
+            credential_id="credential_1234",
+            field_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
+            },
+            execution_id="bfq-test1234",
+        )
+        assistant, prompt_hash = (
+            CONTROLLER.bridgefu_web_handoff.direct_assistant_payload(
+                execution_id="bfq-test1234",
+                tool_id="tool_direct",
+                model_name="gpt-4.1",
+                voice_id="Elliot",
+            )
+        )
+        vapi = mock.Mock()
+        vapi.delete_direct_assistant.side_effect = lambda *_args, **_kwargs: (
+            order.append("assistant")
+        )
+        vapi.delete_direct_tool.side_effect = lambda *_args, **_kwargs: order.append(
+            "tool"
+        )
+        vapi.get.return_value = product
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.args = SimpleNamespace(execution_id="bfq-test1234")
+        controller.outputs = {
+            "VapiAssistantId": "assistant_product",
+            "DirectHandoffUrl": "https://direct.example.test/v1/direct-handoff",
+            "VapiWebhookCredentialId": "credential_1234",
+            "VapiModel": "gpt-4.1",
+            "VapiVoiceId": "Elliot",
+            "ProductVapiIdentityBindingArn": "arn:aws:secretsmanager:product",
+            "DirectVapiIdentityBindingArn": "arn:aws:secretsmanager:direct",
+        }
+        controller.vapi = vapi
+        controller.aws = mock.Mock()
+
+        def secret(arn):
+            if arn.endswith(":direct"):
+                return json.dumps(
+                    {
+                        "status": "bound",
+                        "organization_id": "org_1234",
+                        "assistant_id": "assistant_direct",
+                    }
+                )
+            return json.dumps(
+                {
+                    "status": "bound",
+                    "organization_id": "org_1234",
+                    "assistant_id": "assistant_product",
+                }
+            )
+
+        controller.aws.secret.side_effect = secret
+        controller.put_secret_json = mock.Mock(
+            side_effect=lambda *_args, **_kwargs: order.append("unbind")
+        )
+        controller.temp_phone_id = None
+        controller.temp_phone_intent = None
+        controller.temp_phone_creation_ambiguous = False
+        controller.direct_identity_binding_installed = True
+        controller.direct_assistant_id = "assistant_direct"
+        controller.direct_assistant_creation_ambiguous = False
+        controller.direct_assistant_desired = assistant
+        controller.direct_tool_id = "tool_direct"
+        controller.direct_tool_creation_ambiguous = False
+        controller.direct_tool_desired = tool
+        controller.direct_tool_prompt_sha256 = prompt_hash
+        controller.product_assistant_sha256 = CONTROLLER.canonical_sha256(product)
+        self.assertEqual(controller.cleanup_direct_assistant(), [])
+        self.assertEqual(order, ["unbind", "assistant", "tool"])
+
+    def test_direct_ambiguous_create_cannot_be_cleared_by_one_empty_list(self):
+        tool = CONTROLLER.bridgefu_web_handoff.direct_tool_payload(
+            endpoint_url="https://direct.example.test/v1/direct-handoff",
+            credential_id="credential_1234",
+            field_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
+            },
+            execution_id="bfq-test1234",
+        )
+        assistant, prompt_hash = (
+            CONTROLLER.bridgefu_web_handoff.direct_assistant_payload(
+                execution_id="bfq-test1234",
+                tool_id="tool_direct",
+                model_name="gpt-4.1",
+                voice_id="Elliot",
+            )
+        )
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.args = SimpleNamespace(execution_id="bfq-test1234")
+        controller.outputs = {
+            "DirectHandoffUrl": "https://direct.example.test/v1/direct-handoff",
+            "VapiWebhookCredentialId": "credential_1234",
+            "VapiModel": "gpt-4.1",
+            "VapiVoiceId": "Elliot",
+        }
+        controller.vapi = mock.Mock()
+        controller.vapi.find_direct_assistant.return_value = None
+        controller.temp_phone_id = None
+        controller.temp_phone_intent = None
+        controller.temp_phone_creation_ambiguous = False
+        controller.direct_identity_binding_installed = False
+        controller.direct_assistant_id = None
+        controller.direct_assistant_creation_ambiguous = True
+        controller.direct_assistant_desired = assistant
+        controller.direct_assistant_request_journal_object = "s3://request"
+        controller.direct_tool_id = "tool_direct"
+        controller.direct_tool_creation_ambiguous = False
+        controller.direct_tool_desired = tool
+        controller.direct_tool_prompt_sha256 = prompt_hash
+        controller.direct_vapi_cleanup_required = True
+        controller.product_assistant_sha256 = None
+
+        errors = controller.cleanup_direct_assistant()
+
+        self.assertIn("direct Vapi assistant deletion failed", errors)
+        self.assertTrue(controller.direct_assistant_creation_ambiguous)
+        self.assertTrue(controller.direct_vapi_cleanup_required)
+        controller.vapi.delete_direct_assistant.assert_not_called()
+        controller.vapi.delete_direct_tool.assert_not_called()
+
+    def test_web_smoke_cleanup_orders_phone_unbind_assistant_tool(self):
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        order = []
+        controller._web_smoke = mock.Mock(side_effect=RuntimeError("failed"))
+        controller.stop_active_work = mock.Mock(return_value=[])
+        controller.cleanup_direct_context = mock.Mock(return_value=[])
+        controller.cleanup_web_runtime = mock.Mock(return_value=[])
+        controller.cleanup_sip_transients = mock.Mock(
+            side_effect=lambda: order.append("phone") or []
+        )
+        controller.cleanup_direct_assistant = mock.Mock(
+            side_effect=lambda: order.extend(["unbind", "assistant", "tool"]) or []
+        )
+        with self.assertRaisesRegex(RuntimeError, "failed"):
+            controller.web_smoke(Path("site"), "a" * 64, Path("storage"), "key")
+        self.assertEqual(order, ["phone", "unbind", "assistant", "tool"])
 
     def test_vapi_phone_delete_refuses_foreign_exact_id(self):
         authentication = {
@@ -689,6 +1246,27 @@ class QualificationControllerTests(unittest.TestCase):
         self.assertNotIn(authentication["password"], serialized)
         self.assertNotIn("password", serialized.lower())
         CONTROLLER.validate_vapi_phone_intent_journal(journal)
+        request = CONTROLLER.vapi_phone_request_journal(
+            journal,
+            "0" * 32,
+            authorized_at="2026-08-11T04:20:01Z",
+        )
+        self.assertEqual(request["producer"], "bridgefu-vapi-phone-request@1")
+        self.assertEqual(request["intent_sha256"], journal["intent_sha256"])
+        self.assertEqual(
+            request["request_sha256"],
+            CONTROLLER.canonical_sha256(
+                {
+                    "execution_id": "bfq-test1234",
+                    "region": "us-west-2",
+                    "resource_type": "phone-number",
+                    "intent_sha256": journal["intent_sha256"],
+                    "request_nonce": "0" * 32,
+                    "attempt_state": "authorized",
+                }
+            ),
+        )
+        self.assertNotIn(authentication["password"], json.dumps(request))
         for field, replacement in (
             ("assistant_id", "assistant_other"),
             ("sip_uri", "sip:foreign@sip.vapi.ai"),
@@ -752,6 +1330,7 @@ class QualificationControllerTests(unittest.TestCase):
         controller.outputs = {"ArtifactBucket": "bridgefu-artifacts-test"}
         controller.runner = Runner()
         controller.temp_phone_intent_journal_object = None
+        controller.temp_phone_request_journal_object = None
         controller.write_phone_intent_journal(intent)
         expected = (
             "s3://bridgefu-artifacts-test/qualification/bfq-test1234/"
@@ -765,6 +1344,19 @@ class QualificationControllerTests(unittest.TestCase):
         retained = controller.runner.kwargs["input_text"]
         self.assertNotIn(authentication["password"], retained)
         self.assertNotIn("password", retained.lower())
+        controller.write_phone_request_journal(intent)
+        request_target = (
+            "s3://bridgefu-artifacts-test/qualification/bfq-test1234/"
+            "ownership/vapi-phone-request.json"
+        )
+        self.assertEqual(controller.temp_phone_request_journal_object, request_target)
+        self.assertIn(request_target, controller.runner.arguments)
+        self.assertIn("--content-type", controller.runner.arguments)
+        request = json.loads(controller.runner.kwargs["input_text"])
+        self.assertEqual(request["producer"], "bridgefu-vapi-phone-request@1")
+        self.assertNotIn(
+            authentication["password"], controller.runner.kwargs["input_text"]
+        )
 
     def test_vapi_phone_journal_precedes_uri_and_activation_validation(self):
         order = []
@@ -786,6 +1378,9 @@ class QualificationControllerTests(unittest.TestCase):
         controller.write_phone_intent_journal = mock.Mock(
             side_effect=lambda intent: order.append("intent-journal")
         )
+        controller.write_phone_request_journal = mock.Mock(
+            side_effect=lambda intent: order.append("request-journal")
+        )
         controller.write_phone_ownership_journal = mock.Mock()
         with mock.patch.object(CONTROLLER, "ensure_connect_agent_available"):
             with self.assertRaisesRegex(
@@ -793,12 +1388,14 @@ class QualificationControllerTests(unittest.TestCase):
             ):
                 controller._sip_smoke(Path("unused"), "unused")
         self.assertEqual(controller.temp_phone_id, "phone_1234")
-        self.assertEqual(order, ["intent-journal", "post"])
+        self.assertEqual(order, ["intent-journal", "request-journal", "post"])
         controller.write_phone_intent_journal.assert_called_once()
+        controller.write_phone_request_journal.assert_called_once()
         controller.write_phone_ownership_journal.assert_called_once_with(
             "phone_1234", "assistant_1234"
         )
         controller.vapi.create_phone.reset_mock()
+        controller.write_phone_request_journal.reset_mock()
         controller.temp_phone_id = None
         controller.temp_phone_intent = None
         controller.temp_phone_intent_journal_object = None
@@ -812,6 +1409,7 @@ class QualificationControllerTests(unittest.TestCase):
             ):
                 controller._sip_smoke(Path("unused"), "unused")
         controller.vapi.create_phone.assert_not_called()
+        controller.write_phone_request_journal.assert_not_called()
 
     def test_cleanup_reconciles_lost_phone_id_from_intent_before_delete(self):
         authentication = {
@@ -1042,7 +1640,6 @@ class QualificationControllerTests(unittest.TestCase):
                 ),
             }
             controller.vapi = Vapi()
-            controller.direct_assistant_overlay_installed = False
             controller.direct_tool_id = "tool_1234"
             controller.direct_tool_desired = {}
             controller.direct_tool_prompt_sha256 = None
@@ -1369,10 +1966,19 @@ class QualificationControllerTests(unittest.TestCase):
         }
         call = {
             "status": "ended",
-            "transfers": ["completed"],
             "artifact": {
                 "messages": [
-                    {"toolName": "bridgefu_direct_handoff"},
+                    {
+                        "role": "tool_calls",
+                        "toolCalls": [
+                            {"function": {"name": "bridgefu_direct_handoff"}}
+                        ],
+                    },
+                    {
+                        "role": "tool_call_result",
+                        "name": "bridgefu_direct_handoff",
+                        "result": '{"accepted":true}',
+                    },
                 ]
             },
         }
@@ -2097,7 +2703,45 @@ class QualificationControllerTests(unittest.TestCase):
             CONTROLLER.call_contains_transfer(
                 {
                     "status": "ended",
-                    "artifact": {"messages": [{"toolName": "bridgefu_direct_handoff"}]},
+                    "artifact": {
+                        "messages": [
+                            {
+                                "role": "tool_calls",
+                                "toolCalls": [
+                                    {"function": {"name": "bridgefu_direct_handoff"}}
+                                ],
+                            },
+                            {
+                                "role": "tool_call_result",
+                                "name": "bridgefu_direct_handoff",
+                                "result": '{"accepted":true}',
+                            },
+                        ]
+                    },
+                },
+                "bridgefu-web-sdk-handoff",
+            )
+        )
+        self.assertFalse(
+            CONTROLLER.call_contains_transfer(
+                {
+                    "status": "ended",
+                    "artifact": {
+                        "messages": [
+                            {
+                                "role": "tool_calls",
+                                "toolCalls": [
+                                    {"function": {"name": "prepare_handoff"}},
+                                    {"function": {"name": "bridgefu_direct_handoff"}},
+                                ],
+                            },
+                            {
+                                "role": "tool_call_result",
+                                "name": "bridgefu_direct_handoff",
+                                "result": '{"accepted":true}',
+                            },
+                        ]
+                    },
                 },
                 "bridgefu-web-sdk-handoff",
             )

@@ -160,7 +160,16 @@ Resources:
                 Action:
                   - secretsmanager:DescribeSecret
                   - secretsmanager:GetSecretValue
-                Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:bridgefu-bfq-*'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:bridgefu-bfq-*'
+                  - !Sub 'arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:bridgefu/bfq-*'
+              - Sid: UpdateOnlyTaggedGeneratedQualificationSecrets
+                Effect: Allow
+                Action: secretsmanager:PutSecretValue
+                Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:bridgefu/bfq-*'
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/ManagedBy: bridgefu-qualification
               - Sid: ObserveDisposableConnect
                 Effect: Allow
                 Action:

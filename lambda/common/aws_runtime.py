@@ -23,6 +23,10 @@ from bridgefu_handoff import CORRELATION, HandoffError, SipReservation
 _SECRET_CACHE: dict[str, tuple[str, float]] = {}
 _SECRET_LOCK = threading.Lock()
 SECRET_CACHE_TTL_SECONDS = 300.0
+UUID = re.compile(
+    r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
+    r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+)
 SAFE_EVENTS = {
     "prepare_handoff",
     "transfer_destination",
@@ -41,15 +45,37 @@ SAFE_RESULTS = {
     "delete_success",
     "delete_retained",
     "direct_started",
+    "vapi_identity_binding_invalid",
+    "vapi_identity_mismatch",
     "provisioning_failed",
     "authentication_unavailable",
     "bridgefu_configuration_invalid",
     "bridgefu_destination_expired",
     "bridgefu_destination_invalid",
     "bridgefu_reservation_failed",
+    "bridgefu_reservation_http_400",
+    "bridgefu_reservation_http_401",
+    "bridgefu_reservation_http_403",
+    "bridgefu_reservation_http_404",
+    "bridgefu_reservation_http_408",
+    "bridgefu_reservation_http_409",
+    "bridgefu_reservation_http_422",
+    "bridgefu_reservation_http_425",
+    "bridgefu_reservation_http_429",
+    "bridgefu_reservation_http_5xx",
     "bridgefu_reservation_unavailable",
     "bridgefu_response_invalid",
     "bridgefu_replacement_failed",
+    "bridgefu_replacement_http_400",
+    "bridgefu_replacement_http_401",
+    "bridgefu_replacement_http_403",
+    "bridgefu_replacement_http_404",
+    "bridgefu_replacement_http_408",
+    "bridgefu_replacement_http_409",
+    "bridgefu_replacement_http_422",
+    "bridgefu_replacement_http_425",
+    "bridgefu_replacement_http_429",
+    "bridgefu_replacement_http_5xx",
     "bridgefu_replacement_invalid",
     "bridgefu_replacement_unavailable",
     "conflicting_tool_arguments",
@@ -80,11 +106,31 @@ SAFE_RESULTS = {
     "unsupported_content_type",
     "internal_error",
 }
+BRIDGEFU_EXACT_HTTP_STATUSES = frozenset({400, 401, 403, 404, 408, 409, 422, 425, 429})
+BRIDGEFU_RETRYABLE_HTTP_STATUSES = frozenset({408, 425, 429})
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+def _bridgefu_http_error(operation: str, status: int) -> HandoffError:
+    """Map one upstream status to a closed, body-free diagnostic category."""
+    if operation not in {"reservation", "replacement"}:
+        return HandoffError("internal_error", 500)
+    if status in BRIDGEFU_EXACT_HTTP_STATUSES:
+        result = f"bridgefu_{operation}_http_{status}"
+    elif 500 <= status <= 599:
+        result = f"bridgefu_{operation}_http_5xx"
+    else:
+        result = f"bridgefu_{operation}_failed"
+    public_status = (
+        503
+        if status in BRIDGEFU_RETRYABLE_HTTP_STATUSES or 500 <= status <= 599
+        else 502
+    )
+    return HandoffError(result, public_status)
 
 
 def _boto3_client(service: str):
@@ -93,21 +139,39 @@ def _boto3_client(service: str):
     return boto3.client(service)
 
 
-def load_secret(secret_arn: str, client=None, now=None) -> str:
-    if not isinstance(secret_arn, str) or not secret_arn.startswith("arn:"):
+def load_secret(
+    secret_arn: str,
+    client=None,
+    now=None,
+    *,
+    use_cache: bool = True,
+    minimum_length: int = 32,
+) -> str:
+    if (
+        not isinstance(secret_arn, str)
+        or not secret_arn.startswith("arn:")
+        or not isinstance(minimum_length, int)
+        or not 1 <= minimum_length <= 65_536
+    ):
         raise HandoffError("secret_configuration_invalid", 500)
     current = time.monotonic() if now is None else float(now)
-    with _SECRET_LOCK:
-        cached = _SECRET_CACHE.get(secret_arn)
-    if cached is not None and current - cached[1] < SECRET_CACHE_TTL_SECONDS:
-        return cached[0]
+    if use_cache:
+        with _SECRET_LOCK:
+            cached = _SECRET_CACHE.get(secret_arn)
+        if (
+            cached is not None
+            and current - cached[1] < SECRET_CACHE_TTL_SECONDS
+            and len(cached[0]) >= minimum_length
+        ):
+            return cached[0]
     client = client or _boto3_client("secretsmanager")
     response = client.get_secret_value(SecretId=secret_arn)
     value = response.get("SecretString")
-    if not isinstance(value, str) or len(value) < 32:
+    if not isinstance(value, str) or len(value) < minimum_length:
         raise HandoffError("secret_configuration_invalid", 500)
-    with _SECRET_LOCK:
-        _SECRET_CACHE[secret_arn] = (value, current)
+    if use_cache:
+        with _SECRET_LOCK:
+            _SECRET_CACHE[secret_arn] = (value, current)
     return value
 
 
@@ -469,6 +533,8 @@ class BridgefuRouteClient:
                 raw = response.read(16_385)
         except HandoffError:
             raise
+        except urllib.error.HTTPError as error:
+            raise _bridgefu_http_error("reservation", error.code) from None
         except (urllib.error.URLError, TimeoutError, OSError):
             raise HandoffError("bridgefu_reservation_unavailable", 503) from None
         if len(raw) > 16_384:
@@ -506,13 +572,17 @@ class BridgefuRouteClient:
         route_id: str,
         idempotency_key: str,
     ) -> None:
-        identifiers = (call_id, leg_id, route_id, idempotency_key)
+        identifiers = (route_id, idempotency_key)
         if (
             any(
                 not isinstance(value, str)
                 or not value.replace("-", "").replace("_", "").isalnum()
                 for value in identifiers
             )
+            or not isinstance(call_id, str)
+            or UUID.fullmatch(call_id) is None
+            or not isinstance(leg_id, str)
+            or UUID.fullmatch(leg_id) is None
             or route_id != self._route_id
         ):
             raise HandoffError("bridgefu_replacement_invalid", 500)
@@ -540,6 +610,8 @@ class BridgefuRouteClient:
                 raw = response.read(16_385)
         except HandoffError:
             raise
+        except urllib.error.HTTPError as error:
+            raise _bridgefu_http_error("replacement", error.code) from None
         except (urllib.error.URLError, TimeoutError, OSError):
             raise HandoffError("bridgefu_replacement_unavailable", 503) from None
         if len(raw) > 16_384:

@@ -509,7 +509,8 @@ class HandoffContractTests(unittest.TestCase):
             "assistant_id": "assistant_test_001",
         }
         verify_vapi_binding(prepare_event(), binding)
-        verify_vapi_binding(prepare_event(), {"status": "unbound"})
+        with self.assertRaisesRegex(HandoffError, "vapi_identity_binding_invalid"):
+            verify_vapi_binding(prepare_event(), {"status": "unbound"})
         wrong_org = prepare_event()
         wrong_org["message"]["call"]["orgId"] = "org_attacker"
         wrong_assistant = prepare_event()
@@ -885,8 +886,21 @@ class DirectBrowserHandoffContractTests(unittest.TestCase):
         self.assertEqual(store.steps, ["stored", "marked"])
         self.assertEqual(store.values, {"customer_name": "Bridgefu Synthetic Caller"})
         self.assertEqual(response["results"][0]["toolCallId"], "tool_call_001")
-        self.assertNotIn("call_bridgefu_001", json.dumps(response))
-        self.assertNotIn("leg_vapi_001", json.dumps(response))
+        self.assertEqual(
+            json.loads(response["results"][0]["result"]),
+            {"accepted": True, "spoken": ""},
+        )
+        serialized = json.dumps(response)
+        for private_identifier in (
+            "call_bridgefu_001",
+            "leg_vapi_001",
+            "amazon-connect",
+            "direct_replace_001",
+            "session_001",
+            "token_001",
+            "bf1_",
+        ):
+            self.assertNotIn(private_identifier, serialized)
 
     def test_tampered_token_or_identity_never_stores_or_replaces(self):
         token = issue_handoff_token(

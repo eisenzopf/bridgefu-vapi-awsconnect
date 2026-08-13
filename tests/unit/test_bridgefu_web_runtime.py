@@ -179,6 +179,18 @@ class BridgefuWebRuntimeTests(unittest.TestCase):
             install,
         )
         self.assertEqual(install.count("printf '%s\\n' '{\"schema_version\":1"), 1)
+        self.assertEqual(cleanup.count("systemctl restart bridgefu.service"), 1)
+        self.assertIn(
+            'value.get("dependencies", {}).get("call_runtime") == "lease_lost"',
+            cleanup,
+        )
+        self.assertIn("if ! wait_bridgefu_ready 90; then", cleanup)
+        self.assertLess(
+            cleanup.index("bridgefu_lease_lost\n  systemctl restart"),
+            cleanup.index("prove_bridgefu_renewal_stable\nrm -f"),
+        )
+        self.assertIn("for _ in $(seq 1 3); do\n    sleep 5", cleanup)
+        self.assertNotIn("cat /", cleanup)
 
         reachability_python = reachability.split("python3 - <<'PY'\n", 1)[1].split(
             "\nPY", 1
@@ -230,6 +242,65 @@ class BridgefuWebRuntimeTests(unittest.TestCase):
             RUNTIME.validate_vapi_tls_reachability(
                 dict(reachability, tcp=False, tls=False, category="timeout")
             )
+
+    def test_cleanup_restarts_once_only_for_the_latched_lease_lost_state(self):
+        cleanup = RUNTIME.cleanup_script(execution_id="bfq-runtime-test")
+        functions = "bridgefu_ready()" + cleanup.split("bridgefu_ready()", 1)[1].split(
+            '[ "$(id -u)" -eq 0 ]', 1
+        )[0]
+        harness = functions + r'''
+restart_count=0
+probe_state="${PROBE_STATE:?}"
+systemctl() {
+  if [ "$1" = "is-active" ]; then
+    return 0
+  fi
+  if [ "$1" = "restart" ]; then
+    restart_count=$((restart_count + 1))
+    probe_state=healthy
+    return 0
+  fi
+  return 64
+}
+curl() {
+  if [ "$probe_state" = "healthy" ]; then
+    printf '%s\n' '{"ok":true,"dependencies":{"call_runtime":"healthy"}}'
+  elif [ "$probe_state" = "lease_lost" ]; then
+    printf '%s\n' '{"ok":false,"dependencies":{"call_runtime":"lease_lost"}}'
+  else
+    printf '%s\n' '{"ok":false,"dependencies":{"call_runtime":"degraded"}}'
+  fi
+}
+sleep() { :; }
+status=0
+if ! wait_bridgefu_ready 1; then
+  if systemctl is-active --quiet bridgefu.service && bridgefu_lease_lost; then
+    systemctl restart bridgefu.service
+    wait_bridgefu_ready 1 || status=$?
+  else
+    status=1
+  fi
+fi
+if [ "$status" -eq 0 ]; then
+  prove_bridgefu_renewal_stable || status=$?
+fi
+printf 'status=%s restarts=%s\n' "$status" "$restart_count"
+'''
+        for state, expected in (
+            ("healthy", "status=0 restarts=0"),
+            ("lease_lost", "status=0 restarts=1"),
+            ("degraded", "status=1 restarts=0"),
+        ):
+            result = subprocess.run(
+                ["bash"],
+                input=harness,
+                text=True,
+                capture_output=True,
+                env={**os.environ, "PROBE_STATE": state},
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), expected)
 
     def test_vapi_tls_preflight_runs_before_temporary_resource_creation(self):
         source = (ROOT / "qualification" / "controller.py").read_text()

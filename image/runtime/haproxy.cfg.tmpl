@@ -17,9 +17,12 @@ frontend bridgefu_private_control
     bind __CONTROL_BIND__
     acl exact_reservation path -m str /v1/routes/support/calls
     acl exact_reservation_method method POST
+    acl exact_leg_replacement path_reg ^/v1/calls/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}/legs/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}/replace$
+    acl exact_leg_replacement_method method POST
     acl health_path path -m str /livez /readyz
-    http-request deny deny_status 404 unless health_path or exact_reservation
+    http-request deny deny_status 404 unless health_path or exact_reservation or exact_leg_replacement
     http-request deny deny_status 405 if exact_reservation !exact_reservation_method
+    http-request deny deny_status 405 if exact_leg_replacement !exact_leg_replacement_method
     default_backend bridgefu_loopback
 
 backend bridgefu_loopback

@@ -538,6 +538,33 @@ run=/var/lib/bridgefu/qualification/$execution-web-runtime
 config=/etc/bridgefu/bridgefu.yaml
 dropin=/etc/systemd/system/bridgefu.service.d/qualification-web-runtime.conf
 wrapper=$run/bridgefu-qualification-web-run
+bridgefu_ready() {{
+  curl --silent --show-error --max-time 2 http://127.0.0.1:9090/readyz 2>/dev/null |
+    python3 -c 'import json,sys; value=json.load(sys.stdin); raise SystemExit(0 if value.get("ok") is True and value.get("dependencies", {{}}).get("call_runtime") == "healthy" else 1)' >/dev/null 2>&1
+}}
+bridgefu_lease_lost() {{
+  curl --silent --show-error --max-time 2 http://127.0.0.1:9090/readyz 2>/dev/null |
+    python3 -c 'import json,sys; value=json.load(sys.stdin); raise SystemExit(0 if value.get("ok") is False and value.get("dependencies", {{}}).get("call_runtime") == "lease_lost" else 1)' >/dev/null 2>&1
+}}
+wait_bridgefu_ready() {{
+  attempts="$1"
+  for _ in $(seq 1 "$attempts"); do
+    if systemctl is-active --quiet bridgefu.service && bridgefu_ready; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}}
+prove_bridgefu_renewal_stable() {{
+  # The standalone worker renews its 30-second lease every 10 seconds.
+  # Remaining ready across this window proves at least one renewal after the
+  # restored process registered its new fence.
+  for _ in $(seq 1 3); do
+    sleep 5
+    systemctl is-active --quiet bridgefu.service && bridgefu_ready || return 1
+  done
+}}
 [ "$(id -u)" -eq 0 ]
 systemctl stop bridgefu.service
 [ -f "$run/bridgefu.yaml.original" ] && [ ! -L "$run/bridgefu.yaml.original" ]
@@ -546,11 +573,16 @@ cmp -s "$run/bridgefu.yaml.original" "$config"
 rm -f "$dropin" /run/bridgefu/qualification-vapi.env
 systemctl daemon-reload
 systemctl start bridgefu.service
-for _ in $(seq 1 90); do
-  curl -fsS http://127.0.0.1:9090/readyz >/dev/null 2>&1 && break
-  sleep 1
-done
-curl -fsS http://127.0.0.1:9090/readyz >/dev/null
+if ! wait_bridgefu_ready 90; then
+  # Lease loss is deliberately terminal for one Bridgefu process. Recover
+  # only this exact fail-closed state, once. Any other readiness failure is
+  # preserved as a qualification failure for diagnosis.
+  systemctl is-active --quiet bridgefu.service
+  bridgefu_lease_lost
+  systemctl restart bridgefu.service
+  wait_bridgefu_ready 90
+fi
+prove_bridgefu_renewal_stable
 rm -f "$run/bridgefu.yaml.original" "$run/bridgefu.yaml.candidate" "$wrapper"
 rmdir "$run"
 [ ! -e "$run" ] && [ ! -L "$run" ]

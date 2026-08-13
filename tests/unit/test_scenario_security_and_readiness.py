@@ -172,8 +172,8 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
             "    def cleanup_sip_transients(", 1
         )[0]
         ordered = (
-            "self.provision_temporary_vapi_phone()",
-            "self.install_direct_assistant_overlay()",
+            "self.install_direct_assistant()",
+            "self.provision_temporary_vapi_phone(",
             "self.install_web_runtime(",
             "self.authorize_web_media()",
             "ensure_connect_agent_available",

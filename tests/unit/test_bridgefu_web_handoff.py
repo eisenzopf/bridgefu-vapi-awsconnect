@@ -11,17 +11,17 @@ def route_response() -> dict:
     signaling_token = "bfs1.header.payload.signature"  # noqa: S105 -- synthetic
     expires = "2026-08-13T23:00:00Z"
     return {
-        "call_id": "call_1234",
+        "call_id": "018f9c2a-7b3d-7ef0-bfee-9d5a5c600001",
         "tenant_id": "support",
         "state": "pending",
         "legs": [
             {
-                "leg_id": "source_1234",
+                "leg_id": "018f9c2a-7b3d-7ef0-bfee-9d5a5c600002",
                 "direction": "inbound",
                 "kind": "webrtc",
             },
             {
-                "leg_id": "destination_1234",
+                "leg_id": "018f9c2a-7b3d-7ef0-bfee-9d5a5c600003",
                 "direction": "outbound",
                 "kind": "sip",
             },
@@ -95,12 +95,17 @@ class BridgefuWebHandoffTests(unittest.TestCase):
         binding = HANDOFF.parse_route_response(
             route_response(), "vapi-direct-assistant"
         )
-        self.assertEqual(binding.call_id, "call_1234")
-        self.assertEqual(binding.source_leg_id, "source_1234")
-        self.assertEqual(binding.destination_leg_id, "destination_1234")
+        self.assertEqual(binding.call_id, "018f9c2a-7b3d-7ef0-bfee-9d5a5c600001")
+        self.assertEqual(binding.source_leg_id, "018f9c2a-7b3d-7ef0-bfee-9d5a5c600002")
+        self.assertEqual(
+            binding.destination_leg_id, "018f9c2a-7b3d-7ef0-bfee-9d5a5c600003"
+        )
         browser = binding.browser_input()
-        self.assertEqual(browser["route_binding"]["callId"], "call_1234")
-        self.assertNotIn("destination_1234", str(browser))
+        self.assertEqual(
+            browser["route_binding"]["callId"],
+            "018f9c2a-7b3d-7ef0-bfee-9d5a5c600001",
+        )
+        self.assertNotIn("018f9c2a-7b3d-7ef0-bfee-9d5a5c600003", str(browser))
         self.assertNotIn("vapi-direct-assistant", str(browser))
         self.assertNotEqual(
             browser["route_attachment"]["token"],
@@ -159,35 +164,80 @@ class BridgefuWebHandoffTests(unittest.TestCase):
             )
         )
 
-    def test_overlay_round_trip_preserves_every_unowned_assistant_property(self):
-        assistant = {
-            "id": "assistant_1234",
-            "name": "Bridgefu",
-            "model": {
-                "provider": "openai",
-                "messages": [{"role": "system", "content": "original"}],
-                "toolIds": ["existing_1234"],
-                "temperature": 0.2,
-            },
-            "voice": {"provider": "vapi", "voiceId": "Elliot"},
-            "metadata": {"owner": "customer"},
-            "server": {"url": "https://existing.example.test"},
-        }
-        overlaid, prompt_hash = HANDOFF.apply_assistant_overlay(
-            assistant, "direct_tool_1234"
+    def test_direct_assistant_has_one_exclusive_tool_and_no_server_surface(self):
+        assistant, prompt_hash = HANDOFF.direct_assistant_payload(
+            execution_id="bfq-test1234",
+            tool_id="direct_tool_1234",
+            model_name="gpt-4.1",
+            voice_id="Elliot",
         )
-        self.assertEqual(assistant["model"]["toolIds"], ["existing_1234"])
-        self.assertEqual(
-            overlaid["model"]["toolIds"], ["existing_1234", "direct_tool_1234"]
+        self.assertEqual(assistant["model"]["toolIds"], ["direct_tool_1234"])
+        self.assertEqual(len(assistant["model"]["messages"]), 1)
+        self.assertNotIn("tools", assistant["model"])
+        self.assertNotIn("server", assistant)
+        self.assertNotIn("serverMessages", assistant)
+        self.assertNotIn("credentialIds", assistant)
+        self.assertEqual(assistant["maxDurationSeconds"], 300)
+        self.assertTrue(
+            HANDOFF.direct_assistant_owned(
+                assistant,
+                execution_id="bfq-test1234",
+                tool_id="direct_tool_1234",
+                prompt_sha256=prompt_hash,
+                model_name="gpt-4.1",
+                voice_id="Elliot",
+            )
         )
-        restored = HANDOFF.remove_assistant_overlay(
-            overlaid, "direct_tool_1234", prompt_hash
+        normalized = copy.deepcopy(assistant)
+        normalized["model"]["tools"] = []
+        normalized["server"] = None
+        normalized["serverMessages"] = []
+        normalized["credentialIds"] = None
+        normalized["voice"]["fallbackPlan"] = {}
+        normalized["transcriber"]["smartFormat"] = True
+        normalized["artifactPlan"]["loggingEnabled"] = False
+        self.assertTrue(
+            HANDOFF.direct_assistant_owned(
+                normalized,
+                execution_id="bfq-test1234",
+                tool_id="direct_tool_1234",
+                prompt_sha256=prompt_hash,
+                model_name="gpt-4.1",
+                voice_id="Elliot",
+            )
         )
-        self.assertEqual(restored, assistant)
-        foreign = copy.deepcopy(overlaid)
-        foreign["model"]["messages"][-1]["content"] += " changed"
-        with self.assertRaises(HANDOFF.DirectHandoffContractError):
-            HANDOFF.remove_assistant_overlay(foreign, "direct_tool_1234", prompt_hash)
+        foreign = copy.deepcopy(assistant)
+        foreign["model"]["tools"] = [{"type": "transferCall"}]
+        self.assertFalse(
+            HANDOFF.direct_assistant_owned(
+                foreign,
+                execution_id="bfq-test1234",
+                tool_id="direct_tool_1234",
+                prompt_sha256=prompt_hash,
+                model_name="gpt-4.1",
+                voice_id="Elliot",
+            )
+        )
+        for path, injected in (
+            (("hooks",), [{"type": "customer"}]),
+            (("serverUrl",), "https://foreign.example.test"),
+            (("model", "knowledgeBaseId"), "foreign_knowledge"),
+        ):
+            changed = copy.deepcopy(assistant)
+            target = changed
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = injected
+            self.assertFalse(
+                HANDOFF.direct_assistant_owned(
+                    changed,
+                    execution_id="bfq-test1234",
+                    tool_id="direct_tool_1234",
+                    prompt_sha256=prompt_hash,
+                    model_name="gpt-4.1",
+                    voice_id="Elliot",
+                )
+            )
 
 
 if __name__ == "__main__":

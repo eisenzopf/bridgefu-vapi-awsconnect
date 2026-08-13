@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import sys
 import unittest
+import urllib.error
 from pathlib import Path
+from unittest import mock
 
 COMMON = Path(__file__).resolve().parents[2] / "lambda" / "common"
 sys.path.insert(0, str(COMMON))
@@ -73,10 +75,57 @@ class FakeOpener:
     def open(self, request, timeout):
         self.request = request
         self.timeout = timeout
+        if isinstance(self.response, BaseException):
+            raise self.response
         return self.response
 
 
 class AwsRuntimeTests(unittest.TestCase):
+    def test_fresh_secret_read_bypasses_and_does_not_replace_cache(self):
+        class Secrets:
+            def __init__(self, values):
+                self.values = iter(values)
+                self.calls = 0
+
+            def get_secret_value(self, *, SecretId):
+                self.calls += 1
+                self.secret_id = SecretId
+                return {"SecretString": next(self.values)}
+
+        arn = "arn:aws:secretsmanager:us-west-2:123456789012:secret:test"
+        aws_runtime._SECRET_CACHE.clear()
+        client = Secrets(("a" * 32, "b" * 32))
+        self.assertEqual(aws_runtime.load_secret(arn, client, now=1), "a" * 32)
+        self.assertEqual(
+            aws_runtime.load_secret(arn, client, now=2, use_cache=False), "b" * 32
+        )
+        self.assertEqual(aws_runtime.load_secret(arn, client, now=3), "a" * 32)
+        self.assertEqual(client.calls, 2)
+
+    def test_structured_identity_secret_can_use_explicit_short_minimum(self):
+        client = mock.Mock()
+        client.get_secret_value.return_value = {"SecretString": '{"status":"unbound"}'}
+        arn = "arn:aws:secretsmanager:us-west-2:123456789012:secret:identity"
+        with self.assertRaisesRegex(HandoffError, "secret_configuration_invalid"):
+            aws_runtime.load_secret(arn, client, use_cache=False)
+        self.assertEqual(
+            aws_runtime.load_secret(arn, client, use_cache=False, minimum_length=1),
+            '{"status":"unbound"}',
+        )
+
+    def test_short_cached_secret_cannot_bypass_a_stricter_later_minimum(self):
+        client = mock.Mock()
+        client.get_secret_value.return_value = {"SecretString": '{"status":"unbound"}'}
+        arn = "arn:aws:secretsmanager:us-west-2:123456789012:secret:minimum"
+        aws_runtime._SECRET_CACHE.clear()
+        self.assertEqual(
+            aws_runtime.load_secret(arn, client, now=1, minimum_length=1),
+            '{"status":"unbound"}',
+        )
+        with self.assertRaisesRegex(HandoffError, "secret_configuration_invalid"):
+            aws_runtime.load_secret(arn, client, now=2, minimum_length=32)
+        self.assertEqual(client.get_secret_value.call_count, 2)
+
     def test_schema_v2_map_round_trips_and_replays(self):
         client = FakeDynamo()
         store = aws_runtime.DynamoHandoffStore("handoff-table", client=client)
@@ -159,20 +208,82 @@ class AwsRuntimeTests(unittest.TestCase):
         opener = FakeOpener(
             FakeHttpResponse(
                 202,
-                b'{"call_id":"call_001","tenant_id":"support","legs":[]}',
+                b'{"call_id":"018f9c2a-7b3d-7ef0-bfee-9d5a5c600001",'
+                b'"tenant_id":"support","legs":[]}',
             )
         )
         client._opener = opener
-        client.replace("call_001", "leg_001", "amazon-connect", "replace_001")
+        client.replace(
+            "018f9c2a-7b3d-7ef0-bfee-9d5a5c600001",
+            "018f9c2a-7b3d-7ef0-bfee-9d5a5c600002",
+            "amazon-connect",
+            "replace_001",
+        )
         self.assertEqual(
             opener.request.full_url,
-            "https://control.example.test/v1/calls/call_001/legs/leg_001/replace",
+            "https://control.example.test/v1/calls/"
+            "018f9c2a-7b3d-7ef0-bfee-9d5a5c600001/legs/"
+            "018f9c2a-7b3d-7ef0-bfee-9d5a5c600002/replace",
         )
         self.assertEqual(opener.request.get_method(), "POST")
         self.assertEqual(opener.request.data, b'{"route_id":"amazon-connect"}')
         self.assertEqual(opener.request.get_header("Idempotency-key"), "replace_001")
         with self.assertRaisesRegex(HandoffError, "bridgefu_replacement_invalid"):
             client.replace("call_001", "leg_001", "attacker-route", "replace_002")
+
+    def test_bridgefu_http_errors_are_not_mislabeled_as_transport_failures(self):
+        client = aws_runtime.BridgefuRouteClient(
+            "https://control.example.test",
+            "amazon-connect",
+            "b" * 32,
+        )
+        cases = tuple(
+            (operation, status, f"bridgefu_{noun}_http_{status}", response_status)
+            for operation, noun in (
+                ("reserve", "reservation"),
+                ("replace", "replacement"),
+            )
+            for status, response_status in (
+                (400, 502),
+                (401, 502),
+                (403, 502),
+                (404, 502),
+                (408, 503),
+                (409, 502),
+                (422, 502),
+                (425, 503),
+                (429, 503),
+            )
+        ) + (
+            ("reserve", 503, "bridgefu_reservation_http_5xx", 503),
+            ("replace", 599, "bridgefu_replacement_http_5xx", 503),
+            ("reserve", 418, "bridgefu_reservation_failed", 502),
+            ("replace", 302, "bridgefu_replacement_failed", 502),
+        )
+        for operation, status, code, response_status in cases:
+            with self.subTest(operation=operation, status=status):
+                client._opener = FakeOpener(
+                    urllib.error.HTTPError(
+                        "https://control.example.test/closed",
+                        status,
+                        "closed",
+                        {},
+                        None,
+                    )
+                )
+                with self.assertRaises(HandoffError) as raised:
+                    if operation == "reserve":
+                        client.reserve("bf1_" + "a" * 43, "reserve_001")
+                    else:
+                        client.replace(
+                            "018f9c2a-7b3d-7ef0-bfee-9d5a5c600001",
+                            "018f9c2a-7b3d-7ef0-bfee-9d5a5c600002",
+                            "amazon-connect",
+                            "replace_001",
+                        )
+                self.assertEqual(raised.exception.code, code)
+                self.assertEqual(raised.exception.status_code, response_status)
+                self.assertIn(code, aws_runtime.SAFE_RESULTS)
 
 
 if __name__ == "__main__":

@@ -67,7 +67,8 @@ class TransferHandlerTests(unittest.TestCase):
         self.environment.stop()
 
     @staticmethod
-    def secret(arn):
+    def secret(arn, *, use_cache=True, minimum_length=32):
+        del use_cache, minimum_length
         return {
             "arn:webhook": "w" * 32,
             "arn:binding": json.dumps(
@@ -84,7 +85,9 @@ class TransferHandlerTests(unittest.TestCase):
     def test_direct_route_uses_only_direct_contract(self):
         expected = {"results": [{"toolCallId": "tool_001", "result": "accepted"}]}
         with (
-            patch.object(HANDLER, "load_secret", side_effect=self.secret),
+            patch.object(
+                HANDLER, "load_secret", side_effect=self.secret
+            ) as load_secret,
             patch.object(HANDLER, "verify_vapi_binding"),
             patch.object(HANDLER, "_store", return_value=object()),
             patch.object(HANDLER, "_direct_bridgefu") as direct_client,
@@ -110,15 +113,22 @@ class TransferHandlerTests(unittest.TestCase):
         emit.assert_called_once_with(
             "direct_browser_handoff", "direct_started", unittest.mock.ANY
         )
+        self.assertIn(
+            unittest.mock.call("arn:binding", use_cache=False, minimum_length=1),
+            load_secret.call_args_list,
+        )
 
     def test_transfer_route_does_not_load_direct_signing_authority(self):
-        def secret_without_direct(arn):
+        def secret_without_direct(arn, *, use_cache=True, minimum_length=32):
+            del use_cache, minimum_length
             if arn == "arn:signing":
                 self.fail("normal transfer must not read direct signing authority")
             return self.secret(arn)
 
         with (
-            patch.object(HANDLER, "load_secret", side_effect=secret_without_direct),
+            patch.object(
+                HANDLER, "load_secret", side_effect=secret_without_direct
+            ) as load_secret,
             patch.object(HANDLER, "verify_vapi_binding"),
             patch.object(HANDLER, "_store", return_value=object()),
             patch.object(HANDLER, "_bridgefu") as transfer_client,
@@ -135,6 +145,34 @@ class TransferHandlerTests(unittest.TestCase):
         transfer.assert_called_once()
         direct.assert_not_called()
         transfer_client.assert_called_once()
+        self.assertIn(
+            unittest.mock.call("arn:binding", use_cache=True, minimum_length=1),
+            load_secret.call_args_list,
+        )
+
+    def test_direct_route_rejects_unbound_identity_before_handoff(self):
+        def unbound_secret(arn, *, use_cache=True, minimum_length=32):
+            del use_cache, minimum_length
+            if arn == "arn:binding":
+                return json.dumps({"status": "unbound"})
+            return self.secret(arn)
+
+        with (
+            patch.object(HANDLER, "load_secret", side_effect=unbound_secret),
+            patch.object(HANDLER, "verify_vapi_binding") as verify,
+            patch.object(HANDLER, "direct_browser_handoff") as direct,
+            patch.object(HANDLER, "emit_operation"),
+        ):
+            response = HANDLER.lambda_handler(
+                api_event("POST /v1/direct-handoff"), None
+            )
+        self.assertEqual(response["statusCode"], 500)
+        self.assertEqual(
+            json.loads(response["body"])["error"],
+            "vapi_identity_binding_invalid",
+        )
+        verify.assert_not_called()
+        direct.assert_not_called()
 
 
 if __name__ == "__main__":
