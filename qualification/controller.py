@@ -3731,10 +3731,6 @@ class Controller:
     def put_secret_json(self, secret_arn: str, value: Mapping[str, Any]) -> None:
         if not secret_arn.startswith("arn:aws"):
             raise QualificationError("qualification secret identity is invalid")
-        request = {
-            "SecretId": secret_arn,
-            "SecretString": json.dumps(value, separators=(",", ":"), sort_keys=True),
-        }
         self.runner.run(
             [
                 "aws",
@@ -3742,12 +3738,14 @@ class Controller:
                 "put-secret-value",
                 "--region",
                 self.args.region,
-                "--cli-input-json",
+                "--secret-id",
+                secret_arn,
+                "--secret-string",
                 "file:///dev/stdin",
                 "--output",
                 "json",
             ],
-            input_text=json.dumps(request, separators=(",", ":"), sort_keys=True),
+            input_text=json.dumps(value, separators=(",", ":"), sort_keys=True),
             timeout=120,
         )
 

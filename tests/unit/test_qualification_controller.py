@@ -1853,10 +1853,18 @@ class QualificationControllerTests(unittest.TestCase):
             {"password": secret},
         )
         self.assertNotIn(secret, controller.runner.arguments)
-        self.assertEqual(controller.runner.arguments.count("--cli-input-json"), 1)
+        self.assertNotIn("--cli-input-json", controller.runner.arguments)
+        self.assertEqual(controller.runner.arguments.count("--secret-id"), 1)
+        self.assertEqual(controller.runner.arguments.count("--secret-string"), 1)
         self.assertEqual(
-            json.loads(controller.runner.input_text)["SecretString"],
-            json.dumps({"password": secret}, separators=(",", ":"), sort_keys=True),
+            controller.runner.arguments[
+                controller.runner.arguments.index("--secret-string") + 1
+            ],
+            "file:///dev/stdin",
+        )
+        self.assertEqual(
+            json.loads(controller.runner.input_text),
+            {"password": secret},
         )
 
     def test_qualification_tool_schema_uses_the_screen_pop_order(self):
