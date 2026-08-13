@@ -1523,3 +1523,49 @@ and full 226-test Python suite passed.
   a private storage-state file. Neither probe created a Vapi resource or call.
   Exactly one retained STUN-bound Web SDK smoke remains permitted; SIP remains
   blocked until it passes.
+- The retained Web smoke from distribution commit
+  `6a084d8bfafdb37d96f3c119992908fc3712590d` then reached the actual Bridgefu
+  Web SDK with the regional STUN attachment. Its closed failure state was peer
+  `new`, ICE `new`, gathering `gathering`, signaling `stable`, with two
+  IPv4/UDP server-reflexive candidates, four IPv4/UDP host candidates, six
+  IPv6 candidates, and ten TCP candidates. This proves the STUN correction is
+  active in the real SDK path, but the browser still did not select an ICE
+  candidate pair. Vapi was not invoked, so this is not a Vapi, SIP, SDP, TLS,
+  SRTP, handoff-Lambda, or Amazon Connect result.
+- Bridgefu runtime evidence for that same attempt shows the WebRTC offer was
+  accepted and ICE entered checking. rvoip ignored unsupported browser TCP
+  candidates and attempted IPv6 candidates that the IPv4-only EC2 socket could
+  not use. No selected candidate pair was observed. A separate machine-readable
+  Chromium probe proved the gathered IPv4/UDP server-reflexive address equals
+  the exact public address authorized by the qualification security-group rule,
+  without retaining or printing the address. A wrong browser source `/32` is
+  therefore ruled out.
+- Cleanup after this failure is independently proven again: the handoff table
+  contains zero records; the temporary UDP 20000-20399 ingress rule is absent;
+  the deterministic qualification Vapi phone match count is zero; the temporary
+  authentication secret is exactly `{}`; the Web-runtime S3 prefix has zero
+  versions and delete markers; and a closed SSM receipt proves the overlay,
+  systemd drop-in, and temporary auth file absent with Bridgefu active and
+  `/readyz` healthy. The retained Oregon stacks remain deployed intentionally.
+- The next permitted work is diagnostic only: add closed browser evidence for
+  received remote candidates and candidate-pair states, inspect rvoip 0.3.7's
+  WebSocket answer/trickle path, and establish whether Bridgefu supplied a
+  usable IPv4/UDP candidate to the browser. No further retained Web retry is
+  allowed until that exact cause is proven and a regression passes. SIP-source
+  smoke, Virginia qualification, candidate sealing, and publication remain
+  blocked.
+- The diagnostic harness now counts only closed, bounded facts from the actual
+  browser peer: remote candidates passed to `addIceCandidate`, remote ICE
+  completion, browser stats remote-candidate categories, candidate-pair states,
+  and whether a pair was selected. It never emits an address, candidate string,
+  SDP, peer identifier, credential, or customer value. Source contracts require
+  these fields and prohibit reading `remoteDescription.sdp`. All **268** Python
+  unit tests, browser syntax validation, Ruff, formatting, and diff checks pass.
+  Source inspection confirms rvoip 0.3.7 creates the answer in trickle mode,
+  sends that answer first, then starts a route-owned local ICE forwarder which
+  should drain already-buffered candidates and send `ice-candidate` followed by
+  `ice-complete`. The Bridgefu SDK serializes inbound WebSocket messages and
+  applies those candidates only after the matching answer. One instrumentation-
+  only retained diagnostic attempt is now permitted to determine which side of
+  that contract failed; it is not a product smoke retry and cannot advance the
+  Vapi or release gates by itself.

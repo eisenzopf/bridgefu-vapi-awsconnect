@@ -605,6 +605,12 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("QUALIFICATION_STUN_URLS", web)
         self.assertIn("udp4srflx=", web)
         self.assertIn("iceCandidateSummary", web)
+        self.assertIn("remoteIceCandidateSummary", web)
+        self.assertIn("statsRemoteCandidateSummary", web)
+        self.assertIn("candidatePairSummary", web)
+        self.assertIn("remote_added_udp4host=", web)
+        self.assertIn("pairs_selected=", web)
+        self.assertNotIn("remoteDescription.sdp", web)
 
     def test_connect_available_is_selected_before_either_source_starts(self):
         controller = (QUALIFICATION / "controller.py").read_text()

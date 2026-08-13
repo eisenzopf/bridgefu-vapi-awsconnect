@@ -449,6 +449,33 @@ function validateSession(path, bridgefuCallId, hangupOrigin) {
 
 function installProbe() {
   if (globalThis.__bridgefuVapiProbe) return;
+  const newCandidateSummary = () => ({
+    udpIpv4Srflx: 0,
+    udpIpv4Host: 0,
+    udpIpv6: 0,
+    tcp: 0,
+    other: 0,
+  });
+  const classifyCandidate = (candidate, summary) => {
+    const raw = String(candidate?.candidate ?? "");
+    const tokens = raw.trim().split(/\s+/);
+    const typeIndex = tokens.findIndex((token) => token.toLowerCase() === "typ");
+    const protocol = String(candidate?.protocol ?? tokens[2] ?? "").toLowerCase();
+    const type = String(candidate?.type ?? (typeIndex >= 0 ? tokens[typeIndex + 1] : ""))
+      .toLowerCase();
+    const address = String(candidate?.address ?? tokens[4] ?? "");
+    if (protocol === "tcp") summary.tcp += 1;
+    else if (
+      protocol === "udp" && type === "srflx"
+      && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(address)
+    ) summary.udpIpv4Srflx += 1;
+    else if (
+      protocol === "udp" && type === "host"
+      && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(address)
+    ) summary.udpIpv4Host += 1;
+    else if (protocol === "udp" && address.includes(":")) summary.udpIpv6 += 1;
+    else summary.other += 1;
+  };
   const state = {
     captureRequestedAtMs: null,
     captureResolvedAtMs: null,
@@ -459,13 +486,9 @@ function installProbe() {
     dtmfAgentToSourceObserved: false,
     dtmfActive: false,
     remoteAudioTracks: 0,
-    iceCandidateSummary: {
-      udpIpv4Srflx: 0,
-      udpIpv4Host: 0,
-      udpIpv6: 0,
-      tcp: 0,
-      other: 0,
-    },
+    iceCandidateSummary: newCandidateSummary(),
+    remoteIceCandidateSummary: newCandidateSummary(),
+    remoteIceComplete: 0,
   };
   globalThis.__bridgefuVapiProbe = state;
   globalThis.__bridgefuVapiPeers = [];
@@ -541,27 +564,19 @@ function installProbe() {
       construct(Target, argumentsList, NewTarget) {
         const peer = Reflect.construct(Target, argumentsList, NewTarget);
         globalThis.__bridgefuVapiPeers.push(peer);
+        const nativeAddIceCandidate = peer.addIceCandidate.bind(peer);
+        peer.addIceCandidate = async (candidate) => {
+          if (candidate === null) state.remoteIceComplete += 1;
+          else classifyCandidate(candidate, state.remoteIceCandidateSummary);
+          return nativeAddIceCandidate(candidate);
+        };
         peer.addEventListener("track", (event) => {
           if (event.track?.kind === "audio") observeTrack(event.track);
         });
         peer.addEventListener("icecandidate", (event) => {
           const candidate = event.candidate;
           if (!candidate) return;
-          const protocol = String(candidate.protocol ?? "").toLowerCase();
-          const type = String(candidate.type ?? "").toLowerCase();
-          const address = String(candidate.address ?? "");
-          if (protocol === "tcp") state.iceCandidateSummary.tcp += 1;
-          else if (
-            protocol === "udp" && type === "srflx"
-            && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(address)
-          ) state.iceCandidateSummary.udpIpv4Srflx += 1;
-          else if (
-            protocol === "udp" && type === "host"
-            && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(address)
-          ) state.iceCandidateSummary.udpIpv4Host += 1;
-          else if (protocol === "udp" && address.includes(":")) {
-            state.iceCandidateSummary.udpIpv6 += 1;
-          } else state.iceCandidateSummary.other += 1;
+          classifyCandidate(candidate, state.iceCandidateSummary);
         });
         return peer;
       },
@@ -655,12 +670,76 @@ async function applicationSnapshot(page, nonce) {
       const snapshot =
         globalThis.__BRIDGEFU_RECIPE_QUALIFICATION__?.snapshot(qualificationNonce) ?? null;
       if (snapshot === null) return null;
-      return {
+      const candidatePairSummary = {
+        waiting: 0,
+        inProgress: 0,
+        succeeded: 0,
+        failed: 0,
+        frozen: 0,
+        other: 0,
+        selected: 0,
+      };
+      const statsRemoteCandidateSummary = {
+        udpIpv4Srflx: 0,
+        udpIpv4Host: 0,
+        udpIpv6: 0,
+        tcp: 0,
+        other: 0,
+      };
+      const peers = globalThis.__bridgefuVapiPeers ?? [];
+      return Promise.all(peers.map(async (peer) => {
+        try {
+          const report = await peer.getStats();
+          const selectedPairIds = new Set();
+          for (const row of report.values()) {
+            if (row.type === "transport" && typeof row.selectedCandidatePairId === "string") {
+              selectedPairIds.add(row.selectedCandidatePairId);
+            }
+          }
+          for (const row of report.values()) {
+            if (row.type === "candidate-pair") {
+              const state = String(row.state ?? "").toLowerCase();
+              if (state === "waiting") candidatePairSummary.waiting += 1;
+              else if (state === "in-progress") candidatePairSummary.inProgress += 1;
+              else if (state === "succeeded") candidatePairSummary.succeeded += 1;
+              else if (state === "failed") candidatePairSummary.failed += 1;
+              else if (state === "frozen") candidatePairSummary.frozen += 1;
+              else candidatePairSummary.other += 1;
+              if (selectedPairIds.has(row.id)) candidatePairSummary.selected += 1;
+            }
+            if (row.type === "remote-candidate") {
+              const protocol = String(row.protocol ?? "").toLowerCase();
+              const type = String(row.candidateType ?? "").toLowerCase();
+              const address = String(row.address ?? "");
+              if (protocol === "tcp") statsRemoteCandidateSummary.tcp += 1;
+              else if (
+                protocol === "udp" && type === "srflx"
+                && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(address)
+              ) statsRemoteCandidateSummary.udpIpv4Srflx += 1;
+              else if (
+                protocol === "udp" && type === "host"
+                && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(address)
+              ) statsRemoteCandidateSummary.udpIpv4Host += 1;
+              else if (protocol === "udp" && address.includes(":")) {
+                statsRemoteCandidateSummary.udpIpv6 += 1;
+              } else statsRemoteCandidateSummary.other += 1;
+            }
+          }
+        } catch {
+          // Closed peer diagnostics are intentionally excluded.
+        }
+      })).then(() => ({
         ...snapshot,
         iceCandidateSummary: {
           ...(globalThis.__bridgefuVapiProbe?.iceCandidateSummary ?? {}),
         },
-      };
+        remoteIceCandidateSummary: {
+          ...(globalThis.__bridgefuVapiProbe?.remoteIceCandidateSummary ?? {}),
+        },
+        remoteIceComplete: globalThis.__bridgefuVapiProbe?.remoteIceComplete ?? 0,
+        statsRemoteCandidateSummary,
+        candidatePairSummary,
+      }));
     },
     nonce,
   );
@@ -679,6 +758,30 @@ async function applicationSnapshot(page, nonce) {
     || !Object.values(value.iceCandidateSummary).every(
       (count) => Number.isSafeInteger(count) && count >= 0 && count <= 256,
     )
+    || !exactKeys(
+      value.remoteIceCandidateSummary,
+      new Set(["udpIpv4Srflx", "udpIpv4Host", "udpIpv6", "tcp", "other"]),
+    )
+    || !Object.values(value.remoteIceCandidateSummary).every(
+      (count) => Number.isSafeInteger(count) && count >= 0 && count <= 256,
+    )
+    || !Number.isSafeInteger(value.remoteIceComplete)
+    || value.remoteIceComplete < 0
+    || value.remoteIceComplete > 16
+    || !exactKeys(
+      value.statsRemoteCandidateSummary,
+      new Set(["udpIpv4Srflx", "udpIpv4Host", "udpIpv6", "tcp", "other"]),
+    )
+    || !Object.values(value.statsRemoteCandidateSummary).every(
+      (count) => Number.isSafeInteger(count) && count >= 0 && count <= 256,
+    )
+    || !exactKeys(
+      value.candidatePairSummary,
+      new Set(["waiting", "inProgress", "succeeded", "failed", "frozen", "other", "selected"]),
+    )
+    || !Object.values(value.candidatePairSummary).every(
+      (count) => Number.isSafeInteger(count) && count >= 0 && count <= 1024,
+    )
   ) {
     fail("Bridgefu WebRTC application returned invalid diagnostic state");
   }
@@ -695,7 +798,22 @@ function failStartup(value) {
     + `udp4srflx=${value.iceCandidateSummary.udpIpv4Srflx} `
     + `udp4host=${value.iceCandidateSummary.udpIpv4Host} `
     + `udp6=${value.iceCandidateSummary.udpIpv6} `
-    + `tcp=${value.iceCandidateSummary.tcp} other=${value.iceCandidateSummary.other}`,
+    + `tcp=${value.iceCandidateSummary.tcp} other=${value.iceCandidateSummary.other} `
+    + `remote_added_udp4host=${value.remoteIceCandidateSummary.udpIpv4Host} `
+    + `remote_added_udp4srflx=${value.remoteIceCandidateSummary.udpIpv4Srflx} `
+    + `remote_added_udp6=${value.remoteIceCandidateSummary.udpIpv6} `
+    + `remote_added_tcp=${value.remoteIceCandidateSummary.tcp} `
+    + `remote_added_other=${value.remoteIceCandidateSummary.other} `
+    + `remote_complete=${value.remoteIceComplete} `
+    + `stats_remote_udp4host=${value.statsRemoteCandidateSummary.udpIpv4Host} `
+    + `stats_remote_other=${value.statsRemoteCandidateSummary.other} `
+    + `pairs_waiting=${value.candidatePairSummary.waiting} `
+    + `pairs_in_progress=${value.candidatePairSummary.inProgress} `
+    + `pairs_succeeded=${value.candidatePairSummary.succeeded} `
+    + `pairs_failed=${value.candidatePairSummary.failed} `
+    + `pairs_frozen=${value.candidatePairSummary.frozen} `
+    + `pairs_other=${value.candidatePairSummary.other} `
+    + `pairs_selected=${value.candidatePairSummary.selected}`,
   );
 }
 
