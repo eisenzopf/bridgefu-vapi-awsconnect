@@ -926,46 +926,32 @@ function failStartup(value) {
   if (value?.status !== "failed") return;
   const errorType = value.errorType ?? "unknown";
   fail(
-    `Bridgefu WebRTC call failed error=${errorType} peer=${value.peerConnectionState} `
-    + `ice=${value.iceConnectionState} gathering=${value.iceGatheringState} `
-    + `signaling=${value.signalingState} `
-    + `udp4srflx=${value.iceCandidateSummary.udpIpv4Srflx} `
-    + `udp4host=${value.iceCandidateSummary.udpIpv4Host} `
-    + `udp6=${value.iceCandidateSummary.udpIpv6} `
-    + `tcp=${value.iceCandidateSummary.tcp} other=${value.iceCandidateSummary.other} `
-    + `remote_added_udp4host=${value.remoteIceCandidateSummary.udpIpv4Host} `
-    + `remote_added_udp4srflx=${value.remoteIceCandidateSummary.udpIpv4Srflx} `
-    + `remote_added_udp6=${value.remoteIceCandidateSummary.udpIpv6} `
-    + `remote_added_tcp=${value.remoteIceCandidateSummary.tcp} `
-    + `remote_added_other=${value.remoteIceCandidateSummary.other} `
-    + `remote_complete=${value.remoteIceComplete} `
-    + `stats_remote_udp4host=${value.statsRemoteCandidateSummary.udpIpv4Host} `
-    + `stats_remote_other=${value.statsRemoteCandidateSummary.other} `
-    + `pairs_waiting=${value.candidatePairSummary.waiting} `
-    + `pairs_in_progress=${value.candidatePairSummary.inProgress} `
-    + `pairs_succeeded=${value.candidatePairSummary.succeeded} `
-    + `pairs_failed=${value.candidatePairSummary.failed} `
-    + `pairs_frozen=${value.candidatePairSummary.frozen} `
-    + `pairs_other=${value.candidatePairSummary.other} `
-    + `pairs_selected=${value.candidatePairSummary.selected} `
-    + `stats_samples=${value.statsSamples} `
-    + `candidate_mid_empty=${value.remoteCandidateAssociationSummary.sdpMidEmpty} `
-    + `candidate_mid_absent=${value.remoteCandidateAssociationSummary.sdpMidAbsent} `
-    + `candidate_mline_zero=${value.remoteCandidateAssociationSummary.mLineZero} `
-    + `candidate_add_ok=${value.remoteCandidateAssociationSummary.addSucceeded} `
-    + `candidate_add_failed=${value.remoteCandidateAssociationSummary.addFailed} `
-    + `local_audio=${value.localDescriptionSummary.audioMedia} `
-    + `local_app=${value.localDescriptionSummary.applicationMedia} `
-    + `local_candidates=${value.localDescriptionSummary.inlineCandidates} `
-    + `remote_audio=${value.remoteDescriptionSummary.audioMedia} `
-    + `remote_app=${value.remoteDescriptionSummary.applicationMedia} `
-    + `remote_rejected=${value.remoteDescriptionSummary.rejectedMedia} `
-    + `remote_mids=${value.remoteDescriptionSummary.mids} `
-    + `remote_ufrag=${value.remoteDescriptionSummary.iceUfrag} `
-    + `remote_pwd=${value.remoteDescriptionSummary.icePwd} `
-    + `remote_fingerprint=${value.remoteDescriptionSummary.fingerprint} `
-    + `remote_inline_candidates=${value.remoteDescriptionSummary.inlineCandidates} `
-    + `remote_ice_lite=${value.remoteDescriptionSummary.iceLite}`,
+    `Bridgefu WebRTC start failed e=${errorType} p=${value.peerConnectionState} `
+    + `i=${value.iceConnectionState} g=${value.iceGatheringState} s=${value.signalingState} `
+    + `l4s=${value.iceCandidateSummary.udpIpv4Srflx} `
+    + `r4h=${value.remoteIceCandidateSummary.udpIpv4Host} rc=${value.remoteIceComplete} `
+    + `pair=${value.candidatePairSummary.waiting}/${value.candidatePairSummary.inProgress}/`
+    + `${value.candidatePairSummary.succeeded}/${value.candidatePairSummary.failed}/`
+    + `${value.candidatePairSummary.selected} samples=${value.statsSamples} `
+    + `mid=${value.remoteCandidateAssociationSummary.sdpMidEmpty}/`
+    + `${value.remoteCandidateAssociationSummary.sdpMidAbsent}/`
+    + `${value.remoteCandidateAssociationSummary.sdpMidNonempty} `
+    + `ml0=${value.remoteCandidateAssociationSummary.mLineZero} `
+    + `add=${value.remoteCandidateAssociationSummary.addSucceeded}/`
+    + `${value.remoteCandidateAssociationSummary.addFailed} `
+    + `ld=${value.localDescriptionSummary.audioMedia}/`
+    + `${value.localDescriptionSummary.applicationMedia}/`
+    + `${value.localDescriptionSummary.rejectedMedia}/`
+    + `${value.localDescriptionSummary.inlineCandidates} `
+    + `rd=${value.remoteDescriptionSummary.audioMedia}/`
+    + `${value.remoteDescriptionSummary.applicationMedia}/`
+    + `${value.remoteDescriptionSummary.rejectedMedia}/`
+    + `${value.remoteDescriptionSummary.mids}/`
+    + `${value.remoteDescriptionSummary.iceUfrag}/`
+    + `${value.remoteDescriptionSummary.icePwd}/`
+    + `${value.remoteDescriptionSummary.fingerprint}/`
+    + `${value.remoteDescriptionSummary.inlineCandidates}/`
+    + `${value.remoteDescriptionSummary.iceLite}`,
   );
 }
 

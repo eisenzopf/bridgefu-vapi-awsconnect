@@ -1640,3 +1640,12 @@ and full 226-test Python suite passed.
   addresses, and identifiers never leave browser memory. All **268** unit tests,
   browser syntax, Ruff, deterministic release validation, and diff checks pass.
   One paired browser/EC2 direction-only packet diagnostic is permitted next.
+- The paired capture observed browser host UDP `out=1`, `in=1` and EC2 media-
+  range UDP `in=1`, `out=49`; the exact EIP route uses the captured browser-host
+  interface. Thus packets crossed both directions at least once, while the
+  server's repeated checks did not result in a browser candidate pair. The first
+  expanded failure line exceeded the controller's bounded diagnostic length and
+  truncated before its SDP classification. The same closed values are now
+  encoded compactly below that bound, with a source regression. One final
+  classification-only attempt is permitted after cleanup; it must not be
+  interpreted as a product/Vapi retry.
