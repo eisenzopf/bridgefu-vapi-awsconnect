@@ -64,8 +64,8 @@ and fresh regional qualifications pass.
 | Repository | `eisenzopf/bridgefu-vapi-awsconnect` |
 | Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
 | Branch | `codex/staged-vapi-qualification` |
-| Implementation commit | `b41417b44efad39c92dc28ae7f6d15d29a064ec3` |
-| Local delta | Qualification-only Vapi TLS egress, preflight, SIP-over-TLS target correction, tests, and this ledger update; pending commit |
+| Implementation commit | `f9e87120a1c451e143f64336b4a712eec43ce492` |
+| Local delta | Status-ledger update recording the retained add-on and reachability proof; implementation is committed and pushed |
 | Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
 | PR state at last update | Draft, open, not merged |
 
@@ -1415,3 +1415,24 @@ and full 226-test Python suite passed.
   validation including rendered CloudFormation lint passed, Ruff passed, both
   browser Node syntax checks passed, and `git diff --check` passed. No release
   workflow, SIP-source smoke, Virginia run, candidate, or publication ran.
+- The implementation and ledger through the root-cause fix were committed and
+  pushed as distribution commit `f9e87120a1c451e143f64336b4a712eec43ce492`.
+- Three retained add-on change-set creation requests made no AWS change while
+  their contracts were corrected: the first omitted required previous
+  parameter values, the second resolved no gateway security-group output from
+  the compatibility root, and the third omitted the acknowledgement required
+  by the add-on's unchanged named IAM role. A fourth change set included the
+  two intended additions plus 11 unrelated non-replacement changes from
+  resubmitted stack tags; it was rejected and deleted unexecuted.
+- Change set `bfq-vapi-tls-egress-f9e8712-2` was then created without tag
+  changes. CloudFormation reported exactly two actions: add
+  `QualificationVapiTlsEgress1` and `QualificationVapiTlsEgress2`, both
+  `AWS::EC2::SecurityGroupEgress`; there were no modifications, removals, or
+  replacements. It was executed, and retained add-on stack
+  `bridgefu-bfq-d19854f1-1-direct` reached `UPDATE_COMPLETE` with both resources
+  `CREATE_COMPLETE`.
+- The independent EC2-side preflight was rerun from the exact checked-in
+  generator. It passed with `dns=true`, `tcp=true`, `tls=true`,
+  `category=passed`, empty stderr, and no secret or remote-data output. This
+  closes the outbound Vapi TLS prerequisite. Exactly one Bridgefu Web SDK smoke
+  is now permitted; the SIP-source smoke remains blocked until Web passes.
