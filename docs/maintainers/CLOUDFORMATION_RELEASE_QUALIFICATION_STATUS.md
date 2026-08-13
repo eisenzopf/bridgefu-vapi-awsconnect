@@ -1665,3 +1665,57 @@ and full 226-test Python suite passed.
   members, unique (not actual) ICE credential/fingerprint values, DTLS setup
   roles, and transceiver current-direction categories. The focused browser and
   source-contract tests pass; no raw value is retained.
+- The sealed `74d3a66` classification run proves the offer/answer structure is
+  internally consistent. The browser offer and server answer each contain one
+  active audio section and one active application section, two BUNDLE members,
+  one unique ICE username fragment, one unique ICE password, and one unique
+  fingerprint. The server answer uses `setup:active` for both sections. The
+  browser transceiver progressed from an initially null current direction to
+  `sendrecv`. The normalized server candidate had no MID, retained m-line index
+  zero, and both the candidate and end-of-candidates calls succeeded. Across
+  897 samples Chromium nevertheless remained peer/ICE `new` with zero known,
+  checking, succeeded, failed, selected, or nominated candidate pairs. This
+  rules out rejected media, inconsistent BUNDLE credentials/fingerprints, an
+  invalid DTLS answer role, a disabled transceiver, and the empty-MID defect as
+  the current live cause.
+- The matching Bridgefu runtime evidence is more specific: rvoip transitions
+  its ICE transport to `Checking`, immediately reports that candidate probing
+  has no candidate pairs, ignores TCP-active candidates, and attempts received
+  IPv6 candidates on an IPv4-only WebRTC socket. It does not form a pair from
+  either browser IPv4 server-reflexive candidate, even though the browser-host
+  and EC2 count-only captures prove at least one UDP packet crossed in each
+  direction. No Vapi call was created. The current gate is therefore a
+  Bridgefu/rvoip WebRTC ICE candidate-pair problem before Vapi, SIP transfer,
+  TLS/SRTP destination negotiation, Connect, or screen pop. No further live
+  attempt is allowed until the exact rvoip 0.3.7 remote-candidate/pairing path is
+  explained in source and covered by a local regression.
+- Post-run cleanup is re-proven after that attempt: the handoff table contains
+  zero records; the temporary UDP media ingress rule is absent; zero owned
+  Vapi phones exist; the temporary authentication secret is exactly `{}`; the
+  Web-runtime S3 prefix contains zero object versions and zero delete markers;
+  and an SSM check proves the runtime overlay directory, systemd drop-in, and
+  temporary authentication file are absent while Bridgefu is active and
+  `/readyz` is healthy. The retained Oregon root and direct-probe add-on stacks
+  remain `CREATE_COMPLETE` and `UPDATE_COMPLETE`, respectively.
+- The source-level rvoip regression now reproduces the blocker without AWS.
+  On the existing `codex/fix-sips-contact-fallback` worktree, a WebRTC peer was
+  configured with `nat_1to1_ips=["192.0.2.44"]` and host-candidate mapping.
+  The exact test expected the signaled candidate address to be `192.0.2.44`,
+  but rvoip signaled `127.0.0.1`. This is the expected failing-before-fix result
+  and confirms that the rvoip 0.3.7 one-to-one NAT option is not applied to the
+  gathered/signaled ICE candidate. No AWS mutation occurred for this test.
+- The retained-release workaround keeps the exact crates.io rvoip 0.3.7
+  dependency and does not introduce a local rvoip build. The temporary WebRTC
+  runtime overlay now gives both the browser route and Bridgefu's server peer
+  the same regional AWS STUN endpoint and leaves `nat_1to1_ips` empty. This asks
+  the ICE implementation to gather a real server-reflexive EC2 address instead
+  of relying on the ignored address-rewrite option. The focused runtime tests
+  require the exact regional STUN URL and an empty NAT mapping list; all seven
+  pass, as do Ruff check/format and the diff check. A new live call remains
+  blocked until the broader local contract suite is green.
+- The broader local gate is now green: all 268 Python unit/contract tests pass;
+  deterministic release validation (including rendered CloudFormation lint)
+  passes; compile/lint, Ruff format, and diff checks pass. The workaround is
+  therefore eligible for one retained Oregon Web smoke. It is not a release
+  result and does not authorize Virginia, a candidate build, sealing, or
+  publication.

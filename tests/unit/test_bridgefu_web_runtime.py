@@ -70,15 +70,15 @@ class BridgefuWebRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(
             value["api"]["route_attachments"]["webrtc"]["ice_servers"],
-            [
-                {
-                    "urls": [
-                        "stun:stun.kinesisvideo.us-west-2.amazonaws.com:443"
-                    ]
-                }
-            ],
+            [{"urls": ["stun:stun.kinesisvideo.us-west-2.amazonaws.com:443"]}],
         )
-        self.assertEqual(value["generic_bridge"]["webrtc"]["ice_servers"], [])
+        expected_stun = [
+            {"urls": ["stun:stun.kinesisvideo.us-west-2.amazonaws.com:443"]}
+        ]
+        self.assertEqual(
+            value["generic_bridge"]["webrtc"]["ice_servers"], expected_stun
+        )
+        self.assertEqual(value["generic_bridge"]["webrtc"]["nat_1to1_ips"], [])
         self.assertEqual(value["generic_bridge"]["sip_bind"], "127.0.0.1:5070")
         target = "sip:bfq_runtime_test@sip.vapi.ai:5061;transport=tls"
         self.assertEqual(

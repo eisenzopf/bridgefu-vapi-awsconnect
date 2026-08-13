@@ -333,8 +333,16 @@ def build_runtime_config(
                     "port_end": 20399,
                 },
                 "audio_codecs": ["opus"],
-                "ice_servers": [],
-                "nat_1to1_ips": [address],
+                # rvoip-rtc 0.3.7 accepts a one-to-one NAT setting but does
+                # not apply it to the ICE agent's gathered candidate. A
+                # wildcard-bound EC2 peer would therefore signal 0.0.0.0 and
+                # never receive a controlling-browser nomination. Gather a
+                # real server-reflexive candidate through AWS's regional STUN
+                # service instead. The stateful security group permits the
+                # response to this outbound request without broadening media
+                # ingress beyond the browser's temporary public /32.
+                "ice_servers": [{"urls": [browser_stun_url]}],
+                "nat_1to1_ips": [],
                 "nat_1to1_candidate_type": "host",
                 "gather_timeout_secs": 10,
                 "connection_timeout_secs": 30,
