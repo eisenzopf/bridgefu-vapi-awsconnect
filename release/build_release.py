@@ -290,6 +290,7 @@ def main() -> int:
         build_lambdas(root, lambda_output)
         replacements = {
             "RELEASE_VERSION": args.version,
+            "RELEASE_PREFIX": release_prefix,
             "NESTED_TEMPLATE_BASE_URL": (
                 f"{args.public_base_url.rstrip('/')}/{release_prefix}/"
                 f"{args.version}/cloudformation"

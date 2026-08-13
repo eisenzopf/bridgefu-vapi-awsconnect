@@ -171,6 +171,8 @@ class ReleaseContractTests(unittest.TestCase):
                     "1.2.3-test",
                     "--versions-file",
                     str(versions_path),
+                    "--release-prefix",
+                    "diagnostics/build-123",
                     "--output",
                     str(output),
                 ],
@@ -183,6 +185,13 @@ class ReleaseContractTests(unittest.TestCase):
             ).read_text()
             encoded = urllib.parse.quote(version_id, safe="")
             self.assertIn(f'ConfigurationArtifactVersion: "{version_id}"', product)
+            self.assertIn(
+                "ConfigurationArtifactKey: "
+                "diagnostics/build-123/1.2.3-test/artifacts/lambda/configuration.zip",
+                product,
+            )
+            self.assertNotIn("ArtifactKey: releases/", product)
+            self.assertIn("/diagnostics/build-123/1.2.3-test/", product)
             self.assertIn(f"configuration.yaml?versionId={encoded}", product)
             self.assertIn(f"disposable-connect.yaml?versionId={encoded}", qualification)
             self.assertIn(

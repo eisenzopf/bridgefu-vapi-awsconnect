@@ -59,7 +59,7 @@ selects the correct URI contract.
 | Repository | `eisenzopf/bridgefu-vapi-awsconnect` |
 | Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
 | Branch | `codex/staged-vapi-qualification` |
-| Implementation commit | `40c175b` |
+| Implementation commit | `40c175b` (status-only follow-up `97a0e9a`) |
 | Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
 | PR state at last update | Draft, open, not merged |
 
@@ -120,6 +120,15 @@ Still required before Stage 2 is `PASSED`:
 - [ ] Repeat all remote validation against the final source selected after the
   Oregon A/B test.
 
+Stage 2 preflight evidence gathered without writing AWS resources:
+
+- [x] AWS identity reverified as account `225478700523` using the authorized
+  `vapi-admin` profile.
+- [x] The Oregon and Virginia artifact buckets both have S3 versioning enabled.
+- [x] Bucket policy inspection confirms that an untagged unique
+  `diagnostics/...` prefix remains private; public reads are scoped to
+  publication-tagged `releases/...` and `latest/...` objects.
+
 ### Stage 3 — Retained Oregon diagnostic: NOT STARTED
 
 - [ ] Zero-state audit immediately before deployment.
@@ -154,7 +163,7 @@ Blocked on a signed, sealed candidate.
 
 ## Current CI state
 
-Last observed on 2026-08-12 after pushing implementation commit `40c175b`:
+Last observed on 2026-08-12 against status follow-up commit `97a0e9a`:
 
 ### Bridgefu PR #4
 
@@ -166,11 +175,12 @@ Last observed on 2026-08-12 after pushing implementation commit `40c175b`:
 
 ### Distribution PR #26
 
-- `validate`: running.
-- `sdp-diagnostics`: running.
+- `validate`: passed.
+- `sdp-diagnostics`: passed.
 - `qualification-client`: running.
 
-CI run: `31661830627`. All three checks must pass before Stage 1 can pass.
+Authoritative CI run: `31661852590`. All three checks must pass before Stage 1
+can pass.
 
 CI monitors are not running locally. CI completion must be read explicitly
 before updating these states.
@@ -179,8 +189,8 @@ before updating these states.
 
 | Evidence | Location or identity | State |
 |---|---|---|
-| Qualification plan | `docs/maintainers/CLOUDFORMATION_RELEASE_QUALIFICATION_PLAN.md` | Present locally, uncommitted |
-| Status ledger | `docs/maintainers/CLOUDFORMATION_RELEASE_QUALIFICATION_STATUS.md` | Present locally, uncommitted |
+| Qualification plan | `docs/maintainers/CLOUDFORMATION_RELEASE_QUALIFICATION_PLAN.md` | Committed and pushed |
+| Status ledger | `docs/maintainers/CLOUDFORMATION_RELEASE_QUALIFICATION_STATUS.md` | Committed and pushed; this update is local pending the next implementation commit |
 | Bridgefu implementation commit | `2f6cf2f6dec72856479cd74b5f23af702ae1dffa` | Pushed, unmerged |
 | Distribution implementation commit | `1b2c22025949ea7f76a28ef55f296da7a2edab80` | Pushed, unmerged |
 | Local test results | Current task execution logs | Passed as listed above |
@@ -196,20 +206,18 @@ before updating these states.
 1. Stage 3 must determine whether Vapi requires `sips:` or
    `sip:...;transport=tls`; current implementation branches are hypotheses.
 2. Neither implementation PR should be treated as qualified until Stage 3.
-3. The missing exact SSM serialization gate must be completed before deploying
-   the diagnostic environment.
+3. Distribution CI run `31661852590` must finish successfully before Stage 2.
 4. A fresh AWS/Vapi zero-state audit is required immediately before Stage 3.
 
 ## Next actions
 
 The next actions, in order, are:
 
-1. Push the exact SSM gate and plan/status documents and require distribution
-   CI to pass on the new commit.
-2. Run a fresh read-only AWS and Vapi zero-state audit.
-3. Build/upload private diagnostic artifacts without reserving a release
+1. Require distribution CI run `31661852590` to pass.
+2. Build/upload private diagnostic artifacts without reserving a release
    version or publishing `latest`.
-4. Run AWS `ValidateTemplate` against the exact versioned diagnostic URLs.
+3. Run AWS `ValidateTemplate` against the exact versioned diagnostic URLs.
+4. Run the fresh read-only AWS and Vapi zero-state audit.
 5. Deploy the single retained Oregon diagnostic environment.
 6. Run the direct secure control and Vapi URI/SDP A/B test before merging or
    finalizing product behavior.
@@ -236,3 +244,56 @@ The next actions, in order, are:
 - Committed and pushed the exact SSM gate and plan/status documents as
   distribution implementation commit `40c175b`.
 - Distribution CI run `31661830627` started against that commit.
+
+The first encoder bound allowed at most 512 command entries. Focused tests
+immediately rejected the real direct-probe program because it has 539 bounded
+command entries. No AWS call was made. The bound was corrected to 1,024
+entries plus a 60 KiB aggregate limit, after which the focused 65-test suite
+and full 226-test Python suite passed.
+
+### 2026-08-12 — Stage 1 CI and Stage 2 preflight
+
+- A status-only commit `97a0e9a` superseded the first CI run; authoritative
+  distribution CI run `31661852590` started against that exact branch head.
+- `validate` passed, including deterministic packaging, CloudFormation lint,
+  and pinned Packer validation.
+- `sdp-diagnostics` passed.
+- `qualification-client` remains in progress; Stage 1 has not been advanced.
+- AWS identity was reverified as account `225478700523`.
+- Both regional artifact buckets were verified to have versioning enabled.
+- Bucket policies were verified to keep untagged `diagnostics/...` objects
+  private. No object was uploaded and no AWS resource was created.
+
+### 2026-08-12 — Diagnostic-prefix renderer defect found and fixed locally
+
+- A local ignored-output dry run used the non-release prefix
+  `diagnostics/diagnostic-97a0e9a`; no AWS write occurred.
+- The dry run proved nested template URLs honored the diagnostic prefix, but
+  all five Lambda artifact keys were incorrectly hardcoded to `releases/...`.
+  A staged diagnostic deployment would therefore have failed when Lambda tried
+  to load artifacts from keys that were never uploaded.
+- The renderer now applies the validated release-prefix token to both template
+  URLs and Lambda artifact keys.
+- Added a phased-render regression that requires all diagnostic Lambda keys to
+  use `diagnostics/build-123/...` and forbids `ArtifactKey: releases/`.
+- Focused release contract suite: 24 passed. The regenerated local diagnostic
+  root contains five diagnostic-prefix Lambda keys and no release-prefix
+  Lambda key.
+- An initial attempt to address one unittest by dotted module name failed
+  locally because `tests` is not a Python package. This was a test invocation
+  error, not a product failure; the supported discovery invocation then passed
+  all 24 tests.
+- Because source changed after CI run `31661852590` began, that run cannot be
+  the final Stage 1 authority even if it passes. Stage 1 must rerun after this
+  fix is committed.
+- The distribution source lock now pins Bridgefu PR #4 commit
+  `2f6cf2f6dec72856479cd74b5f23af702ae1dffa` while retaining
+  `release_ready=false`. `release/verify_bridgefu.py` accepted the exact clean
+  checkout, Cargo.lock digest, and all 25 crates.io rvoip 0.3.7 packages.
+- Full Python suite: 226 passed. Local release validation and `ruff check .`
+  passed after the renderer and source-lock changes.
+- An additional `ruff format --check .` command failed because 11 pre-existing
+  repository files are not Ruff-formatted. CI and the written Stage 1 contract
+  require `ruff check`, not repository-wide Ruff reformatting. No file was
+  reformatted, and this unrelated baseline formatting debt is not being mixed
+  into the diagnostic fix.

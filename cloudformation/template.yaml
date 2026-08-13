@@ -185,7 +185,7 @@ Resources:
       Parameters:
         DeploymentId: !Ref DeploymentId
         ArtifactBucket: !FindInMap [RegionRelease, !Ref 'AWS::Region', ArtifactBucket]
-        ConfigurationArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/configuration.zip
+        ConfigurationArtifactKey: __RELEASE_PREFIX__/__RELEASE_VERSION__/artifacts/lambda/configuration.zip
         ConfigurationArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', ConfigurationArtifactVersion]
         ConnectInstanceArn: !Ref ConnectInstanceArn
         TargetContactFlowArn: !Ref TargetContactFlowArn
@@ -220,11 +220,11 @@ Resources:
       Parameters:
         DeploymentId: !GetAtt Configuration.Outputs.DeploymentId
         ArtifactBucket: !FindInMap [RegionRelease, !Ref 'AWS::Region', ArtifactBucket]
-        PrepareArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/prepare_handoff.zip
+        PrepareArtifactKey: __RELEASE_PREFIX__/__RELEASE_VERSION__/artifacts/lambda/prepare_handoff.zip
         PrepareArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', HandoffPrepareArtifactVersion]
-        TransferArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/transfer_destination.zip
+        TransferArtifactKey: __RELEASE_PREFIX__/__RELEASE_VERSION__/artifacts/lambda/transfer_destination.zip
         TransferArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', HandoffTransferArtifactVersion]
-        LookupArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/connect_lookup.zip
+        LookupArtifactKey: __RELEASE_PREFIX__/__RELEASE_VERSION__/artifacts/lambda/connect_lookup.zip
         LookupArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', HandoffLookupArtifactVersion]
         BridgefuControlBaseUrl: !Sub
           - 'https://control.${Hostname}'
@@ -306,7 +306,7 @@ Resources:
       Parameters:
         DeploymentId: !GetAtt Configuration.Outputs.DeploymentId
         ArtifactBucket: !FindInMap [RegionRelease, !Ref 'AWS::Region', ArtifactBucket]
-        ProvisionerArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/vapi_provisioner.zip
+        ProvisionerArtifactKey: __RELEASE_PREFIX__/__RELEASE_VERSION__/artifacts/lambda/vapi_provisioner.zip
         ProvisionerArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', VapiProvisionerArtifactVersion]
         VapiApiKeySecretArn: !Ref VapiApiKeySecretArn
         VapiWebhookSecretArn: !GetAtt HandoffService.Outputs.VapiWebhookSecretArn
