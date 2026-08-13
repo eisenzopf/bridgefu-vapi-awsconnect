@@ -66,6 +66,11 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn('join(ROOT, "qualification/package.json")', browser)
         for forbidden in ("VAPI_PUBLIC_KEY", "--assistant-id", "webCall"):
             self.assertNotIn(forbidden, browser)
+        self.assertIn("/^bfs1\\.[A-Za-z0-9_.-]{1,4091}$/", browser)
+        self.assertIn("`token.${attachment.signaling_credential.token}`", browser)
+        self.assertNotIn(
+            "attachment.signaling_credential?.token !== attachment.token", browser
+        )
         self.assertIn('required(options, "--route-attachment")', browser)
         self.assertIn('required(options, "--prompt-pcm")', browser)
         self.assertIn('required(options, "--signaling-hostname")', browser)

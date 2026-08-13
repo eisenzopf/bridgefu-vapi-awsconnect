@@ -204,7 +204,7 @@ def parse_route_response(value: Any, expected_route_id: str) -> DirectRouteBindi
         for leg in legs
         if isinstance(leg, Mapping)
         and leg.get("direction") == "inbound"
-        and leg.get("kind") == "web_rtc"
+        and leg.get("kind") == "webrtc"
     ]
     outbound = [
         leg
@@ -244,6 +244,9 @@ def _validate_attachment(value: Mapping[str, Any]) -> None:
     }
     token = value.get("token")
     credential = value.get("signaling_credential")
+    credential_token = (
+        credential.get("token") if isinstance(credential, Mapping) else None
+    )
     protocols = value.get("subprotocols")
     if (
         set(value) != expected
@@ -253,10 +256,15 @@ def _validate_attachment(value: Mapping[str, Any]) -> None:
         or not isinstance(credential, Mapping)
         or set(credential) != {"usage", "token", "expires_at"}
         or credential.get("usage") != "bridgefu-webrtc-signaling"
-        or credential.get("token") != token
+        or not isinstance(credential_token, str)
+        or not re.fullmatch(r"bfs1\.[A-Za-z0-9_.-]{1,4091}", credential_token)
         or credential.get("expires_at") != value.get("expires_at")
         or protocols
-        != ["rvoip.webrtc.v1", f"token.{token}", f"bridgefu.attach.{token}"]
+        != [
+            "rvoip.webrtc.v1",
+            f"token.{credential_token}",
+            f"bridgefu.attach.{token}",
+        ]
         or not isinstance(value.get("ice_servers"), list)
     ):
         raise DirectHandoffContractError("direct route attachment is invalid")

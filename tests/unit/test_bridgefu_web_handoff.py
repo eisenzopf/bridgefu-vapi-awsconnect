@@ -8,6 +8,7 @@ from qualification import bridgefu_web_handoff as HANDOFF
 
 def route_response() -> dict:
     token = "A" * 43
+    signaling_token = "bfs1.header.payload.signature"  # noqa: S105 -- synthetic
     expires = "2026-08-13T23:00:00Z"
     return {
         "call_id": "call_1234",
@@ -17,7 +18,7 @@ def route_response() -> dict:
             {
                 "leg_id": "source_1234",
                 "direction": "inbound",
-                "kind": "web_rtc",
+                "kind": "webrtc",
             },
             {
                 "leg_id": "destination_1234",
@@ -32,12 +33,12 @@ def route_response() -> dict:
             "token": token,
             "signaling_credential": {
                 "usage": "bridgefu-webrtc-signaling",
-                "token": token,
+                "token": signaling_token,
                 "expires_at": expires,
             },
             "subprotocols": [
                 "rvoip.webrtc.v1",
-                f"token.{token}",
+                f"token.{signaling_token}",
                 f"bridgefu.attach.{token}",
             ],
             "ice_servers": [],
@@ -101,10 +102,17 @@ class BridgefuWebHandoffTests(unittest.TestCase):
         self.assertEqual(browser["route_binding"]["callId"], "call_1234")
         self.assertNotIn("destination_1234", str(browser))
         self.assertNotIn("vapi-direct-assistant", str(browser))
+        self.assertNotEqual(
+            browser["route_attachment"]["token"],
+            browser["route_attachment"]["signaling_credential"]["token"],
+        )
         for mutation in (
             lambda value: value["legs"].append(value["legs"][0]),
             lambda value: value["attachment"].update(type="sip"),
             lambda value: value["attachment"]["subprotocols"].reverse(),
+            lambda value: value["attachment"]["signaling_credential"].update(
+                token=value["attachment"]["token"]
+            ),
             lambda value: value.update(route_id="amazon-connect"),
         ):
             changed = copy.deepcopy(route_response())

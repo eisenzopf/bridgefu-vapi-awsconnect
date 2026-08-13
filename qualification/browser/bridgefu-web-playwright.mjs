@@ -225,11 +225,13 @@ function validateRouteInput(path) {
     || attachment.type !== "webrtc"
     || !/^[A-Za-z0-9_-]{43}$/.test(attachment.token)
     || attachment.signaling_credential?.usage !== "bridgefu-webrtc-signaling"
-    || attachment.signaling_credential?.token !== attachment.token
+    || !/^bfs1\.[A-Za-z0-9_.-]{1,4091}$/.test(
+      attachment.signaling_credential?.token ?? "",
+    )
     || !Array.isArray(attachment.subprotocols)
     || attachment.subprotocols.length !== 3
     || attachment.subprotocols[0] !== "rvoip.webrtc.v1"
-    || attachment.subprotocols[1] !== `token.${attachment.token}`
+    || attachment.subprotocols[1] !== `token.${attachment.signaling_credential.token}`
     || attachment.subprotocols[2] !== `bridgefu.attach.${attachment.token}`
     || !Array.isArray(attachment.ice_servers)
     || ![binding.tenantId, binding.callId, binding.legId].every(
