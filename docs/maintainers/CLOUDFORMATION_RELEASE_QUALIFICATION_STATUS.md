@@ -35,7 +35,7 @@ happened.
 | Vapi SIP/SDP A/B | **PASSED** — optional mode uses `sip:...;transport=tls` over observed TLS with RTP/AVP |
 | Direct mandatory-SRTP control | **PASSED** — SIPS/TLS plus RTP/SAVP/SDES-SRTP |
 | Prior Web smoke | **INVALID / SUPERSEDED** — used stock `@vapi-ai/web`, not Bridgefu's SDK |
-| Next permitted AWS action | Retained Oregon only: compatibility-root review, exact runtime update, then sequential Web/SIP smokes |
+| Next permitted AWS action | Retained Oregon only: corrected Bridgefu Web SDK smoke; SIP-source smoke remains blocked until Web passes |
 
 ## Source under evaluation
 
@@ -64,7 +64,7 @@ and fresh regional qualifications pass.
 | Repository | `eisenzopf/bridgefu-vapi-awsconnect` |
 | Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
 | Branch | `codex/staged-vapi-qualification` |
-| Implementation commit | `99c172bdef9c6ebac8fcbe95fa6756d75c8c82c3` |
+| Implementation commit | `0fc67f71623e88a3474e86d513b92a095df2c34a` |
 | Local delta | Status-ledger updates only; implementation source is committed and pushed |
 | Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
 | PR state at last update | Draft, open, not merged |
@@ -80,7 +80,7 @@ evaluation until Stage 3 proves the live contract.
 
 Completed against the source commits above:
 
-- [x] Distribution Python unit suite: **257 passed**.
+- [x] Distribution Python unit suite: **260 passed**.
 - [x] Bridgefu scheme-aware security-evidence suite: **16 passed**.
 - [x] Bridgefu full local Rust suite completed without failures.
 - [x] Direct secure probe suite: **16 passed**.
@@ -111,8 +111,9 @@ Still required before Stage 1 is `PASSED`:
   job; the authoritative current-commit CI rerun remains required.
 - [x] The complete gate was repeated after the corrected Bridgefu Web SDK
   harness and live Vapi resilience implementation were finalized locally.
-- [ ] Repeat the affected gate once more after the Bridgefu evidence commit is
-  pushed and the distribution lock is repinned to its immutable hash.
+- [x] Repeated the affected gate after the Bridgefu evidence commit was pushed,
+  the distribution lock was repinned, and the retained-harness boundary fixes
+  were added: **260 passed** plus local release validation.
 
 ### Stage 2 — Remote CloudFormation validation: PASSED
 
@@ -1179,3 +1180,26 @@ and full 226-test Python suite passed.
   suite: **260 passed**; Ruff and local release validation passed. The failed
   Web attempt placed no call and its temporary phone/runtime cleanup remained
   proven.
+- The synthetic local-validation correction was committed and pushed as
+  distribution commit `d7b1146d335cc952326b3f21f19451eee7f40d82`.
+- The next retained Web attempt again stopped before placing a call. AWS CLI
+  rejected `--cli-input-json file:///dev/stdin` for the Secrets Manager write,
+  so the failure was command serialization at the harness boundary—not Vapi,
+  Bridgefu, WebRTC, SIP, Connect, or media behavior. A non-mutating probe against
+  a deliberately nonexistent secret proved that this installed AWS CLI accepts
+  the secret body through `--secret-string file:///dev/stdin` while keeping the
+  non-secret secret ARN on argv.
+- `put_secret_json` now uses that verified shape. The stdin document contains
+  only the compact secret value; credentials and secret values remain absent
+  from argv, environment variables, source artifacts, logs, and evidence. The
+  focused regression passed, the complete unit suite passed **260/260**, Ruff
+  passed for the changed files, and local release validation passed. The fix was
+  committed and pushed as
+  `0fc67f71623e88a3474e86d513b92a095df2c34a`.
+- The mandatory post-failure cleanup audit passed before another retry: zero
+  owner-equivalent temporary Vapi phones, zero Bridgefu direct tools, zero
+  marked assistant prompts, zero Web-runtime object versions, no temporary
+  browser-media security-group rule, and no EC2 Web runtime directory,
+  systemd drop-in, or temporary runtime secret file. Bridgefu remains active
+  and ready with unchanged installed binary digest `f6754354…`; both retained
+  CloudFormation stacks remain `CREATE_COMPLETE`.
