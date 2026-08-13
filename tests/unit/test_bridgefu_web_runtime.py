@@ -130,6 +130,25 @@ class BridgefuWebRuntimeTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(all(len(line) <= 8192 for line in script.splitlines()))
 
+        wrapper = install.split(
+            "cat > \"$wrapper\" <<'BRIDGEFU_QUALIFICATION_WRAPPER'\n", 1
+        )[1].split("\nBRIDGEFU_QUALIFICATION_WRAPPER\n", 1)[0]
+        wrapper_result = subprocess.run(
+            ["bash", "-n"],
+            input=wrapper,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(wrapper_result.returncode, 0, wrapper_result.stderr)
+        embedded_python = wrapper.split(
+            "python3 - /run/bridgefu/qualification-vapi.env 3<<<\"$secret\" <<'PY'\n",
+            1,
+        )[1].split("\nPY\n", 1)[0]
+        compile(embedded_python, "bridgefu-qualification-web-runtime", "exec")
+        self.assertIn('rstrip("\\n")', embedded_python)
+        self.assertIn('+ "\\n")', embedded_python)
+
     def test_closed_runtime_results_are_exact(self):
         install = {
             "schema_version": 1,

@@ -379,7 +379,7 @@ import os
 import re
 import sys
 path = sys.argv[1]
-raw = os.read(3, 16385).decode("utf-8").rstrip("\n")
+raw = os.read(3, 16385).decode("utf-8").rstrip("\\n")
 if len(raw.encode("utf-8")) > 16384:
     raise SystemExit(1)
 value = json.loads(raw)
@@ -393,7 +393,7 @@ if not isinstance(value["password"], str) or not 16 <= len(value["password"]) <=
     raise SystemExit(1)
 temporary = path + ".new"
 with open(temporary, "x", encoding="utf-8") as output:
-    output.write("BRIDGEFU_QUALIFICATION_VAPI_SIP_PASSWORD=" + value["password"] + "\n")
+    output.write("BRIDGEFU_QUALIFICATION_VAPI_SIP_PASSWORD=" + value["password"] + "\\n")
 os.chmod(temporary, 0o600)
 os.replace(temporary, path)
 PY
