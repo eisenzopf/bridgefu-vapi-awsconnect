@@ -1719,3 +1719,53 @@ and full 226-test Python suite passed.
   therefore eligible for one retained Oregon Web smoke. It is not a release
   result and does not authorize Virginia, a candidate build, sealing, or
   publication.
+- The single retained Web attempt from distribution commit `b306488` crossed
+  the former ICE boundary. Bridgefu's WebRTC peer reached `connected`, it
+  originated the authenticated TLS SIP call to Vapi, Vapi answered, and the SIP
+  state became active. The later browser error, `Bridgefu browser DTMF was not
+  accepted`, occurred only after that call had already terminated and is not
+  the initiating failure.
+- Same-call Bridgefu evidence identifies the initiating failure at the first
+  browser-audio frame sent toward Vapi: the plain RTP write returned Linux
+  `EINVAL`, `SipMediaStream` stopped, Bridgefu sent BYE, and Vapi recorded the
+  otherwise clean call as `customer-ended-call`. Vapi emitted no SIP, transfer,
+  or media error for this call. This proves the AWS-STUN workaround fixed the
+  ICE blocker and isolates the new boundary to Bridgefu's outbound SIP media
+  socket before DTMF, handoff, or Connect.
+- The exact source defect is in Bridgefu's rvoip projection. Secure and
+  WebRTC-to-SIP recipes intentionally put the unused clear SIP listener on
+  loopback. Bridgefu constructed rvoip from that listener address, which also
+  left `Config::local_ip` on loopback even while advertising a public media
+  address. rvoip allocates RTP sockets from `Config::local_ip`; a loopback-bound
+  UDP socket cannot send to Vapi's public RTP address and Linux returns
+  `EINVAL` for that operation.
+- Bridgefu commit `7c8089096894792b7694a5a1353d086ca551a6c9` fixes the
+  projection without exposing the clear SIP listener: `bind_addr` remains on
+  loopback, while public-media recipes set rvoip's RTP `local_ip` to the
+  matching wildcard address family. Regression assertions cover both the
+  flagship secure SIP recipe and WebRTC-to-SIP recipe. Validation passed all
+  151 Bridgefu binary tests, the full direct browser/Vapi/Connect handoff test,
+  the real SRTP transcoding/DTMF/BYE test, Clippy with warnings denied, format,
+  and diff checks. The distribution source lock now pins this remote commit;
+  the Cargo lock digest is unchanged and still resolves exact crates.io rvoip
+  0.3.7.
+- Cleanup after the failed live attempt is independently re-proven: zero
+  DynamoDB handoff records, zero temporary UDP media ingress rules, zero owned
+  Vapi phones, an exactly empty temporary SIP-auth secret, zero Web-runtime S3
+  versions/delete markers, and an SSM receipt proving the runtime overlay,
+  systemd drop-in, and temporary auth file absent while Bridgefu is active and
+  ready. No retry is authorized until the repinned distribution contracts pass
+  and a new deterministic SDK/demo artifact is sealed.
+- The exact repinned Bridgefu `7c8089096894792b7694a5a1353d086ca551a6c9`
+  source built successfully on the retained ARM instance. The candidate binary
+  SHA-256 is
+  `29db3618fa9d7869c78bfae34f785cf85793b783d7dd73164e3eec66d6f5e6f4`;
+  the build checked the exact Git commit, unchanged Cargo lock digest, mode
+  `0755`, and `root:root` ownership before installation.
+- The guarded installation first verified the running binary digest
+  `f67543541105ff7a2e2b39774e86ba495d11248d09c08c49059b96feccf84bff`,
+  preserved that exact binary in a new root-only rollback directory, installed
+  the new candidate atomically, and restarted Bridgefu once. The installed and
+  backup digests match their expected values, systemd is active, and `/readyz`
+  is healthy. No call has yet been run against this binary; the next and only
+  authorized live action is one retained Oregon Bridgefu Web SDK smoke.
