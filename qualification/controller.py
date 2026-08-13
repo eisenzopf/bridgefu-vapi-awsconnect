@@ -4199,11 +4199,6 @@ class Controller:
             schema_hash=self.outputs["ScreenPopSchemaHash"],
             now=now,
         )
-        request = {
-            "TableName": self.outputs["HandoffTableName"],
-            "Item": item,
-            "ConditionExpression": "attribute_not_exists(correlation_id)",
-        }
         self.runner.run(
             [
                 "aws",
@@ -4211,12 +4206,16 @@ class Controller:
                 "put-item",
                 "--region",
                 self.args.region,
-                "--cli-input-json",
+                "--table-name",
+                self.outputs["HandoffTableName"],
+                "--item",
                 "file:///dev/stdin",
+                "--condition-expression",
+                "attribute_not_exists(correlation_id)",
                 "--output",
                 "json",
             ],
-            input_text=json.dumps(request, separators=(",", ":"), sort_keys=True),
+            input_text=json.dumps(item, separators=(",", ":"), sort_keys=True),
             timeout=120,
         )
 

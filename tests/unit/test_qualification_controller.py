@@ -1858,15 +1858,18 @@ class QualificationControllerTests(unittest.TestCase):
             now=1_786_000_000,
         )
         arguments = controller.runner.arguments
-        self.assertEqual(arguments.count("--cli-input-json"), 1)
+        self.assertNotIn("--cli-input-json", arguments)
+        self.assertEqual(arguments.count("--item"), 1)
+        self.assertEqual(arguments[arguments.index("--item") + 1], "file:///dev/stdin")
         self.assertEqual(
-            arguments[arguments.index("--cli-input-json") + 1], "file:///dev/stdin"
+            arguments[arguments.index("--condition-expression") + 1],
+            "attribute_not_exists(correlation_id)",
         )
         self.assertNotIn(correlation, arguments)
         self.assertNotIn(token, arguments)
-        request = json.loads(controller.runner.input_text)
-        self.assertEqual(request["Item"]["correlation_id"], {"S": correlation})
-        self.assertEqual(request["Item"]["direct_token_id"], {"S": token})
+        item = json.loads(controller.runner.input_text)
+        self.assertEqual(item["correlation_id"], {"S": correlation})
+        self.assertEqual(item["direct_token_id"], {"S": token})
 
     def test_secret_write_uses_stdin_and_never_places_secret_on_argv(self):
         class Runner:
