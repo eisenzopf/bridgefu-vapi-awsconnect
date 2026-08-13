@@ -67,6 +67,7 @@ class BridgefuWebRuntimeTests(unittest.TestCase):
             value["api"]["route_attachments"]["webrtc"]["signaling_uri"],
             "wss://bfq-runtime-test.vapi-internal.com:18443/webrtc",
         )
+        self.assertIs(value["generic_bridge"]["webrtc"]["trickle_ice"], False)
 
     @unittest.skipUnless(BRIDGEFU.is_file(), "pinned Bridgefu binary is unavailable")
     def test_exact_pinned_bridgefu_accepts_the_generated_overlay(self):

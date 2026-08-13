@@ -4272,7 +4272,7 @@ class Controller:
                 input_text=key,
                 timeout=120,
             )
-            value = json.loads(raw)
+            value = json.loads(raw) if raw.strip() else {}
             if not isinstance(value, Mapping) or "Item" in value:
                 raise QualificationError(
                     "Bridgefu direct context deletion was not verified"

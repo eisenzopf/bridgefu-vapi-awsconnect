@@ -1879,7 +1879,7 @@ class QualificationControllerTests(unittest.TestCase):
 
             def run(self, arguments, *, input_text=None, timeout=60, **_kwargs):
                 self.calls.append((arguments, input_text, timeout))
-                return "{}"
+                return ""
 
         controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
         controller.args = SimpleNamespace(region="us-west-2")

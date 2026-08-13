@@ -252,7 +252,12 @@ def build_runtime_config(
                 "nat_1to1_candidate_type": "host",
                 "gather_timeout_secs": 10,
                 "connection_timeout_secs": 30,
-                "trickle_ice": True,
+                # The retained live trace proved that rvoip 0.3.7 can consume
+                # the browser's trickled candidates but its WSS answerer does
+                # not reliably deliver its own gathered candidate back to the
+                # browser. Full gathering embeds the stack's public candidate
+                # in the SDP answer and removes that signaling race.
+                "trickle_ice": False,
             },
         },
         "persistence": {
