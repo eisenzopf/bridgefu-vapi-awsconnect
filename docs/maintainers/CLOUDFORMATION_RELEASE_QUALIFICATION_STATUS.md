@@ -1,0 +1,236 @@
+# CloudFormation Release Qualification Status
+
+This is the living execution ledger for
+[CLOUDFORMATION_RELEASE_QUALIFICATION_PLAN.md](CLOUDFORMATION_RELEASE_QUALIFICATION_PLAN.md).
+The plan defines the required process. This file records what has actually
+happened.
+
+## Status rules
+
+- Update this file after every material implementation, test, failure, root
+  cause, deployment, cleanup, gate transition, commit, and pull-request change.
+- Record only evidence-backed results.
+- `PASSED` means every exit condition for that stage has passed against the
+  exact identified source and artifacts.
+- `PARTIAL` means useful checks passed but the stage exit condition has not.
+- `BLOCKED` means a named condition prevents progress.
+- `NOT STARTED` means no qualifying execution has begun.
+- A result from speculative or superseded source does not qualify final release
+  source.
+- Never silently erase a failure. Append it to the execution history with its
+  root cause and disposition.
+
+## Current summary
+
+| Item | Current state |
+|---|---|
+| Active stage | **Stage 1 — Local contract gate** |
+| Overall qualification | **IN PROGRESS** |
+| New Oregon diagnostic environment | **NOT STARTED** |
+| New Virginia qualification | **NOT STARTED** |
+| Release candidate | **NOT CREATED** |
+| Reserved release version | **NONE** |
+| Customer-visible `latest` pointer | **NOT CREATED** |
+| Publication | **NOT STARTED** |
+| Next permitted live deployment | One retained Oregon diagnostic environment for Stage 3 |
+
+## Source under evaluation
+
+### Bridgefu runtime
+
+| Field | Value |
+|---|---|
+| Repository | `eisenzopf/bridgefu` |
+| Local worktree | `/Users/jonathan/Developer/bridgefu-main-clean` |
+| Branch | `codex/vapi-tls-rtp-evidence` |
+| Commit | `2f6cf2f6dec72856479cd74b5f23af702ae1dffa` |
+| Pull request | [bridgefu#4](https://github.com/eisenzopf/bridgefu/pull/4) |
+| PR state at last update | Open, not merged |
+| Dependency posture | Exact crates.io `rvoip = 0.3.7`; no local rvoip dependency |
+
+The Bridgefu change is an implementation candidate for scheme-aware security
+evidence. It is not qualified product behavior until the Oregon Vapi A/B test
+selects the correct URI contract.
+
+### AWS distribution
+
+| Field | Value |
+|---|---|
+| Repository | `eisenzopf/bridgefu-vapi-awsconnect` |
+| Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
+| Branch | `codex/staged-vapi-qualification` |
+| Commit | `1b2c22025949ea7f76a28ef55f296da7a2edab80` plus the pending SSM gate/documentation commit |
+| Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
+| PR state at last update | Draft, open, not merged |
+
+The distribution branch contains the candidate optional-mode URI behavior,
+scheme-aware qualification checks, Vapi retry/reconciliation diagnostics, and
+sequential Oregon-then-Virginia workflow structure. These changes remain under
+evaluation until Stage 3 proves the live contract.
+
+## Stage status
+
+### Stage 1 — Local contract gate: PARTIAL
+
+Completed against the source commits above:
+
+- [x] Distribution Python unit suite: **226 passed**.
+- [x] Bridgefu scheme-aware security-evidence suite: **13 passed**.
+- [x] Bridgefu full local Rust suite completed without failures.
+- [x] Direct secure probe suite: **16 passed**.
+- [x] Qualification SIP-client suite: **4 passed**.
+- [x] Rust formatting and Clippy passed for the changed Bridgefu code.
+- [x] Ruff and Python compilation checks passed.
+- [x] Browser driver JavaScript syntax checks passed.
+- [x] Deterministic Lambda packaging passed.
+- [x] `cfn-lint` passed for rendered product, nested, qualification, and
+  publisher templates.
+- [x] Candidate workflow changed from parallel regional qualification to
+  sequential Oregon then Virginia.
+- [x] Vapi API tests cover bounded GET retry, bounded `Retry-After`, ambiguous
+  POST reconciliation, PATCH reread, DELETE absence verification, collision
+  failure, exact HTTP status categories, and response-body redaction.
+
+Still required before Stage 1 is `PASSED`:
+
+- [x] Every controller SSM dispatch uses one bounded JSON command-array encoder.
+- [x] Exact decoded command arrays pass `bash -n`; probe, cleanup, SDP capture,
+  runtime readiness, and SIP-source programs have focused coverage.
+- [x] Complete all GitHub checks for Bridgefu PR #4: infrastructure, full test,
+  ARM64 image, AMD64 image, and Trivy passed.
+- [ ] Complete all GitHub checks for distribution PR #26.
+- [ ] Run pinned Packer validation in an environment where Packer is installed.
+- [ ] Rerun the complete Stage 1 gate after Stage 3 selects the URI contract and
+  the implementation is finalized.
+
+### Stage 2 — Remote CloudFormation validation: PARTIAL
+
+Completed against distribution commit
+`1b2c22025949ea7f76a28ef55f296da7a2edab80`:
+
+- [x] Rendered product, nested, qualification, and publisher templates.
+- [x] AWS `ValidateTemplate` accepted every rendered template in `us-west-2`.
+- [x] AWS `ValidateTemplate` accepted every rendered template in `us-east-1`.
+- [x] No CloudFormation stack was created by this validation.
+
+Still required before Stage 2 is `PASSED`:
+
+- [ ] Upload private immutable diagnostic artifacts with exact S3 VersionIds.
+- [ ] Validate exact S3 template URLs, not only local template bodies.
+- [ ] Repeat all remote validation against the final source selected after the
+  Oregon A/B test.
+
+### Stage 3 — Retained Oregon diagnostic: NOT STARTED
+
+- [ ] Zero-state audit immediately before deployment.
+- [ ] Deploy one retained `TestDelete` Oregon diagnostic environment.
+- [ ] Run direct Bridgefu secure control.
+- [ ] Run Vapi `sips:` versus `sip:...;transport=tls` A/B trace.
+- [ ] Select the URI and media contract from observed evidence.
+- [ ] Run rvoip SIP-source end-to-end smoke.
+- [ ] Run Bridgefu Web SDK end-to-end smoke.
+- [ ] Run Vapi create/delete/recreate resilience cycle.
+- [ ] Tear down and produce zero-resource evidence.
+
+### Stage 4 — Finalize product behavior: NOT STARTED
+
+Blocked on Stage 3 A/B evidence.
+
+### Stage 5 — Fresh Oregon release qualification: NOT STARTED
+
+Blocked on Stages 3 and 4.
+
+### Stage 6 — Fresh Virginia release qualification: NOT STARTED
+
+Blocked on a passing fresh Oregon release qualification.
+
+### Stage 7 — Seal candidate: NOT STARTED
+
+Blocked on passing qualifications in both regions.
+
+### Stage 8 — Publish customer release: NOT STARTED
+
+Blocked on a signed, sealed candidate.
+
+## Current CI state
+
+Last observed on 2026-08-12:
+
+### Bridgefu PR #4
+
+- `infrastructure`: passed.
+- `image (arm64)`: passed.
+- `image (amd64)`: passed.
+- `test`: passed.
+- `Trivy`: passed.
+
+### Distribution PR #26
+
+- `validate`: passed.
+- `sdp-diagnostics`: passed.
+- `qualification-client`: running at last observation.
+
+The distribution branch is being updated with the exact SSM gate and these
+documents. Its CI must rerun before Stage 1 can pass.
+
+CI monitors are not running locally. CI completion must be read explicitly
+before updating these states.
+
+## Evidence inventory
+
+| Evidence | Location or identity | State |
+|---|---|---|
+| Qualification plan | `docs/maintainers/CLOUDFORMATION_RELEASE_QUALIFICATION_PLAN.md` | Present locally, uncommitted |
+| Status ledger | `docs/maintainers/CLOUDFORMATION_RELEASE_QUALIFICATION_STATUS.md` | Present locally, uncommitted |
+| Bridgefu implementation commit | `2f6cf2f6dec72856479cd74b5f23af702ae1dffa` | Pushed, unmerged |
+| Distribution implementation commit | `1b2c22025949ea7f76a28ef55f296da7a2edab80` | Pushed, unmerged |
+| Local test results | Current task execution logs | Passed as listed above |
+| Remote template-body validation | AWS account `225478700523`, both supported regions | Passed against current branch render |
+| Oregon A/B SIP/SDP traces | — | Not created |
+| Oregon end-to-end smoke evidence | — | Not created |
+| Oregon zero-resource receipt | — | Not created |
+| Virginia qualification evidence | — | Not created |
+| Signed candidate receipt | — | Not created |
+
+## Blockers and decisions required
+
+1. Stage 3 must determine whether Vapi requires `sips:` or
+   `sip:...;transport=tls`; current implementation branches are hypotheses.
+2. Neither implementation PR should be treated as qualified until Stage 3.
+3. The missing exact SSM serialization gate must be completed before deploying
+   the diagnostic environment.
+4. A fresh AWS/Vapi zero-state audit is required immediately before Stage 3.
+
+## Next actions
+
+The next actions, in order, are:
+
+1. Push the exact SSM gate and plan/status documents and require distribution
+   CI to pass on the new commit.
+2. Run a fresh read-only AWS and Vapi zero-state audit.
+3. Build/upload private diagnostic artifacts without reserving a release
+   version or publishing `latest`.
+4. Run AWS `ValidateTemplate` against the exact versioned diagnostic URLs.
+5. Deploy the single retained Oregon diagnostic environment.
+6. Run the direct secure control and Vapi URI/SDP A/B test before merging or
+   finalizing product behavior.
+
+## Execution history
+
+### 2026-08-12 — Status ledger created
+
+- Qualification plan written.
+- Status ledger created as a separate living document.
+- Active stage recorded as Stage 1.
+- No diagnostic stack or release candidate created.
+- Existing implementation branches and partial validation evidence recorded.
+
+### 2026-08-12 — Exact SSM serialization gate completed
+
+- Routed all three controller `AWS-RunShellScript` dispatch sites through one
+  bounded JSON command-array encoder.
+- Added exact decode and `bash -n` regression coverage.
+- Focused SSM/diagnostic/controller suite: 65 passed.
+- Full distribution Python suite: 226 passed.
+- Deterministic packaging and local release validation passed.
+- Read final Bridgefu PR #4 checks: all passed.

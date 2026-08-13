@@ -460,6 +460,56 @@ class SecurePreflightGateTests(unittest.TestCase):
         self.assertNotIn('"commands=" +', source)
         self.assertNotIn("'commands=[", source)
 
+    def test_every_controller_ssm_program_uses_one_exact_validated_encoder(self):
+        source = (ROOT / "qualification" / "controller.py").read_text(encoding="utf-8")
+        self.assertEqual(source.count('"ssm",\n                "send-command"'), 3)
+        self.assertEqual(source.count("encode_ssm_shell_parameters("), 4)
+
+        programs = (
+            [
+                "systemctl is-active bridgefu.service",
+                "curl --fail --silent --show-error --max-time 5 "
+                "http://127.0.0.1:9090/readyz",
+            ],
+            [
+                "set -euo pipefail",
+                "value='safe (value)'",
+                "printf '%s\\n' \"$value\"",
+            ],
+            [
+                "set -euo pipefail",
+                "install -d -m 0700 /var/lib/bridgefu/qualification/bfq-test1234",
+                "true",
+            ],
+        )
+        for commands in programs:
+            with self.subTest(commands=commands):
+                encoded = CONTROLLER.encode_ssm_shell_parameters(commands)
+                decoded = json.loads(encoded)
+                self.assertEqual(decoded, {"commands": commands})
+                checked = subprocess.run(
+                    ["bash", "-n"],
+                    input="\n".join(decoded["commands"]) + "\n",
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    timeout=10,
+                )
+                self.assertEqual(checked.returncode, 0, checked.stderr)
+
+        for commands in (
+            [],
+            [""],
+            ["true\nfalse"],
+            ["true\r"],
+            ["x" * 8193],
+            ["true"] * 1025,
+            ["x" * 8192] * 8,
+        ):
+            with self.subTest(invalid_commands=len(commands)):
+                with self.assertRaises(CONTROLLER.QualificationError):
+                    CONTROLLER.encode_ssm_shell_parameters(commands)
+
     def test_browser_mode_has_private_readiness_and_no_session_contract(self):
         browser = ROOT / "qualification" / "browser" / "agent-workspace-playwright.mjs"
         text = browser.read_text(encoding="utf-8")

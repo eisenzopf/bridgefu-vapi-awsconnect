@@ -2350,6 +2350,26 @@ def wait_for_ssm_command(
         time.sleep(min(poll_seconds, remaining))
 
 
+def encode_ssm_shell_parameters(commands: list[str]) -> str:
+    """Encode the exact AWS-RunShellScript command-array contract."""
+    if (
+        not isinstance(commands, list)
+        or not commands
+        or len(commands) > 1024
+        or sum(len(command.encode("utf-8")) + 1 for command in commands) > 60 * 1024
+        or any(
+            not isinstance(command, str)
+            or not command
+            or "\n" in command
+            or "\r" in command
+            or len(command.encode("utf-8")) > 8192
+            for command in commands
+        )
+    ):
+        raise QualificationError("qualification SSM program is invalid")
+    return json.dumps({"commands": commands}, separators=(",", ":"))
+
+
 def read_ssm_output(
     aws: Aws, command_id: str, instance_id: str, *, maximum: int = 16 * 1024
 ) -> str:
@@ -2758,15 +2778,12 @@ class Controller:
                 "--document-name",
                 "AWS-RunShellScript",
                 "--parameters",
-                json.dumps(
-                    {
-                        "commands": [
-                            "systemctl is-active bridgefu.service",
-                            "curl --fail --silent --show-error --max-time 5 "
-                            "http://127.0.0.1:9090/readyz",
-                        ]
-                    },
-                    separators=(",", ":"),
+                encode_ssm_shell_parameters(
+                    [
+                        "systemctl is-active bridgefu.service",
+                        "curl --fail --silent --show-error --max-time 5 "
+                        "http://127.0.0.1:9090/readyz",
+                    ]
                 ),
                 "--query",
                 "Command.CommandId",
@@ -2975,11 +2992,7 @@ class Controller:
 
     def send_owned_shell(self, instance_id: str, script: str) -> str:
         commands = [command for command in script.splitlines() if command]
-        if (
-            not commands
-            or any(len(command.encode("utf-8")) > 8192 for command in commands)
-            or "\r" in script
-        ):
+        if "\r" in script:
             raise QualificationError("qualification SSM program is invalid")
         command_id = self.aws.text(
             [
@@ -2990,7 +3003,7 @@ class Controller:
                 "--document-name",
                 "AWS-RunShellScript",
                 "--parameters",
-                json.dumps({"commands": commands}, separators=(",", ":")),
+                encode_ssm_shell_parameters(commands),
                 "--query",
                 "Command.CommandId",
             ]
@@ -3639,7 +3652,7 @@ class Controller:
                 "--document-name",
                 "AWS-RunShellScript",
                 "--parameters",
-                json.dumps({"commands": commands}, separators=(",", ":")),
+                encode_ssm_shell_parameters(commands),
                 "--query",
                 "Command.CommandId",
             ]
