@@ -1249,21 +1249,34 @@ async function observe(options) {
       nonce,
     );
     if (!dtmfSent) fail("Bridgefu browser DTMF was not accepted");
-    await waitUntil(
-      async () => {
-        const probe = await probeSnapshot(page);
-        return (
-          probe?.agentMarkerObservedAtMs.length >= 5 &&
-          probe.agentMarkerFrames >= 5 &&
-          probe.dtmfAgentToSourceObserved &&
-          probe.remoteAudioTracks > 0 &&
-          probe.audioPacketsSent > 5 &&
-          probe.audioBytesSent > 0
-        );
-      },
-      Math.min(timeoutMs, 120_000),
-      "Bridgefu browser media observations did not converge",
-    );
+    try {
+      await waitUntil(
+        async () => {
+          const probe = await probeSnapshot(page);
+          return (
+            probe?.agentMarkerObservedAtMs.length >= 5 &&
+            probe.agentMarkerFrames >= 5 &&
+            probe.dtmfAgentToSourceObserved &&
+            probe.remoteAudioTracks > 0 &&
+            probe.audioPacketsSent > 5 &&
+            probe.audioBytesSent > 0
+          );
+        },
+        Math.min(timeoutMs, 120_000),
+        "Bridgefu browser media observations did not converge",
+      );
+    } catch {
+      const probe = await probeSnapshot(page);
+      fail(
+        "Bridgefu browser media observations did not converge "
+        + `markers=${probe?.agentMarkerObservedAtMs.length ?? 0} `
+        + `frames=${probe?.agentMarkerFrames ?? 0} `
+        + `dtmf=${probe?.dtmfAgentToSourceObserved === true ? 1 : 0} `
+        + `tracks=${probe?.remoteAudioTracks ?? 0} `
+        + `packets=${probe?.audioPacketsSent ?? 0} `
+        + `bytes=${probe?.audioBytesSent ?? 0}`,
+      );
+    }
     let localEndCompleted = false;
     let remoteEndObserved = false;
     if (hangupOrigin === "source") {
