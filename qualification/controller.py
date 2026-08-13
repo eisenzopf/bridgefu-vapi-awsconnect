@@ -3948,6 +3948,7 @@ class Controller:
             self.processes.remove(process)
 
     def run_web_runtime_ssm(self, script: str, label: str) -> Mapping[str, Any]:
+        commands = [line for line in script.splitlines() if line]
         command_id = self.aws.text(
             [
                 "ssm",
@@ -3957,7 +3958,7 @@ class Controller:
                 "--document-name",
                 "AWS-RunShellScript",
                 "--parameters",
-                encode_ssm_shell_parameters(script.splitlines()),
+                encode_ssm_shell_parameters(commands),
                 "--query",
                 "Command.CommandId",
             ]

@@ -1436,3 +1436,17 @@ and full 226-test Python suite passed.
   `category=passed`, empty stderr, and no secret or remote-data output. This
   closes the outbound Vapi TLS prerequisite. Exactly one Bridgefu Web SDK smoke
   is now permitted; the SIP-source smoke remains blocked until Web passes.
+- The first Web-only attempt after opening egress stopped before its SSM
+  command and before any temporary Vapi resource. The generated reachability
+  program contains readable blank lines, but `run_web_runtime_ssm` passed every
+  `splitlines()` entry directly to the hardened encoder, which correctly
+  rejects empty AWS command-array entries. The closed failure was
+  `qualification SSM program is invalid`; this is harness serialization, not a
+  Vapi, SIP, SDP, WebRTC, Connect, or media result.
+- Post-failure zero state passed: handoff table count zero, no WebRTC media
+  security-group rule, zero owned Vapi endpoints, and an empty disposable SIP
+  authentication secret. The SSM runner now strips only empty source lines
+  before encoding; a regression decodes the exact AWS parameter JSON and proves
+  every resulting command is nonempty. The affected focused suites, all **267**
+  unit tests, Ruff, deterministic release validation, and diff checks pass.
+  One Web-only retry is permitted; the SIP source remains blocked.

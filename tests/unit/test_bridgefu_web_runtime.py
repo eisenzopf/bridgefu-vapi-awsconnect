@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from qualification import bridgefu_web_runtime as RUNTIME
+from qualification import controller as CONTROLLER
 
 ROOT = Path(__file__).resolve().parents[2]
 BRIDGEFU = Path("/Users/jonathan/Developer/bridgefu-main-clean/target/debug/bridgefu")
@@ -173,6 +174,10 @@ class BridgefuWebRuntimeTests(unittest.TestCase):
         )[0]
         compile(reachability_python, "bridgefu-vapi-tls-reachability", "exec")
         self.assertNotIn("print(", reachability_python.rsplit("print(", 1)[0])
+        commands = [line for line in reachability.splitlines() if line]
+        encoded = CONTROLLER.encode_ssm_shell_parameters(commands)
+        self.assertEqual(json.loads(encoded), {"commands": commands})
+        self.assertTrue(all(commands))
 
     def test_closed_runtime_results_are_exact(self):
         install = {
