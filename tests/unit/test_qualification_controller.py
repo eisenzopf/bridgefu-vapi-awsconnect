@@ -23,6 +23,36 @@ SPEC.loader.exec_module(CONTROLLER)
 
 
 class QualificationControllerTests(unittest.TestCase):
+    def test_background_processes_start_in_an_owned_session(self):
+        process = mock.Mock()
+        with mock.patch.object(
+            CONTROLLER.subprocess, "Popen", return_value=process
+        ) as popen:
+            self.assertIs(CONTROLLER.CommandRunner().popen(["owned-command"]), process)
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+
+    def test_owned_process_cleanup_terminates_and_then_kills_the_whole_group(self):
+        process = mock.Mock()
+        process.pid = 4242
+        process.poll.return_value = None
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired("owned-command", 1),
+            ("", ""),
+        ]
+        with mock.patch.object(CONTROLLER.os, "killpg") as killpg:
+            self.assertEqual(
+                CONTROLLER.terminate_owned_process(process, timeout=1), ("", "")
+            )
+        self.assertEqual(
+            killpg.call_args_list,
+            [
+                mock.call(4242, CONTROLLER.signal.SIGTERM),
+                mock.call(4242, CONTROLLER.signal.SIGKILL),
+            ],
+        )
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
+
     def test_lost_assistant_response_adapter_commits_once_then_fails_once(self):
         class Delegate:
             def __init__(self):

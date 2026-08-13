@@ -19,6 +19,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -839,6 +840,7 @@ class CommandRunner:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                start_new_session=True,
             )
         except OSError as error:
             raise QualificationError(
@@ -857,6 +859,40 @@ class CommandRunner:
         except (OSError, subprocess.TimeoutExpired) as error:
             raise QualificationError(f"command probe failed: {arguments[0]}") from error
         return result.returncode, result.stdout, result.stderr
+
+
+def terminate_owned_process(
+    process: subprocess.Popen[str], *, timeout: int = 10
+) -> tuple[str, str]:
+    """Boundedly terminate one process and every descendant in its owned session."""
+    pid = getattr(process, "pid", None)
+    if isinstance(pid, int) and pid > 0:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            if process.poll() is None:
+                process.terminate()
+    elif process.poll() is None:
+        process.terminate()
+    try:
+        return process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if isinstance(pid, int) and pid > 0:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                if process.poll() is None:
+                    process.kill()
+        elif process.poll() is None:
+            process.kill()
+        try:
+            return process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            raise QualificationError("owned subprocess cleanup timed out") from error
 
 
 class Aws:
@@ -3316,12 +3352,7 @@ class Controller:
                     + sanitize_diagnostic(stderr, 512)
                 )
             time.sleep(0.25)
-        process.terminate()
-        try:
-            _, stderr = process.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            _, stderr = process.communicate()
+        _, stderr = terminate_owned_process(process)
         if process in self.processes:
             self.processes.remove(process)
         raise QualificationError(
@@ -3415,8 +3446,7 @@ class Controller:
         try:
             _, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            process.kill()
-            process.communicate()
+            terminate_owned_process(process)
             raise QualificationError(f"{label} timed out")
         if process.returncode != 0:
             raise QualificationError(f"{label} failed: {sanitize_diagnostic(stderr)}")
@@ -3894,7 +3924,7 @@ class Controller:
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                _, stderr = process.communicate(timeout=5)
+                _, stderr = terminate_owned_process(process, timeout=5)
                 self.processes.remove(process)
                 raise QualificationError(
                     "SSM local tunnel failed: " + sanitize_diagnostic(stderr, 256)
@@ -3904,19 +3934,12 @@ class Controller:
                 if probe.connect_ex(("127.0.0.1", local_port)) == 0:
                     return process
             time.sleep(0.25)
-        process.terminate()
-        process.communicate(timeout=10)
+        terminate_owned_process(process)
         self.processes.remove(process)
         raise QualificationError("SSM local tunnel did not become ready")
 
     def stop_local_process(self, process: subprocess.Popen[str]) -> None:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.communicate(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.communicate()
+        terminate_owned_process(process)
         if process in self.processes:
             self.processes.remove(process)
 
@@ -4837,13 +4860,10 @@ class Controller:
     def stop_active_work(self) -> list[str]:
         errors: list[str] = []
         for process in self.processes:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.communicate(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.communicate()
+            try:
+                terminate_owned_process(process)
+            except QualificationError:
+                errors.append("qualification subprocess cleanup failed")
         self.processes.clear()
         for command_id in self.ssm_commands:
             try:
