@@ -496,7 +496,7 @@ class SecurePreflightGateTests(unittest.TestCase):
             "vapi_transfer_invoked": True,
             "handoff_context_stored": True,
             "bridgefu_received_correlation_header": True,
-            "vapi_destination_sips_signaling": True,
+            "vapi_destination_uri_scheme_allowed": True,
             "vapi_destination_tls_transport": True,
             "vapi_destination_media_profile_allowed": True,
             "vapi_destination_media_posture_consistent": True,

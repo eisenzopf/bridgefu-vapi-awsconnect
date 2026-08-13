@@ -397,7 +397,7 @@ def transfer_destination(
     correlation_key: bytes,
     deployment_id: str,
     reserve: Callable[[str, str], SipReservation],
-    expected_scheme: str,
+    sip_security: str,
     now: int | None = None,
 ) -> dict[str, Any]:
     message = _message(event, "transfer-destination-request")
@@ -418,12 +418,24 @@ def transfer_destination(
         + hashlib.sha256(correlation_id.encode("ascii")).hexdigest()[:48]
     )
     reservation = reserve(correlation_id, idempotency_key)
-    if expected_scheme not in ("sips", "sip") or not reservation.uri.startswith(
-        f"{expected_scheme}:"
-    ):
+    if sip_security not in ("sips_optional_srtp", "sips_srtp", "sip_rtp"):
         raise HandoffError("bridgefu_destination_invalid", 502)
-    if expected_scheme == "sips" and not reservation.uri.endswith(";transport=tls"):
-        raise HandoffError("bridgefu_destination_invalid", 502)
+    if sip_security in ("sips_optional_srtp", "sips_srtp"):
+        if not reservation.uri.startswith("sips:") or not reservation.uri.endswith(
+            ";transport=tls"
+        ):
+            raise HandoffError("bridgefu_destination_invalid", 502)
+        sip_uri = reservation.uri
+        if sip_security == "sips_optional_srtp":
+            # Vapi currently fails dynamic transfers to a `sips:` destination,
+            # but honors the standard SIP URI transport parameter. Keep the
+            # reserved user/host/port bytes exact while requesting TLS
+            # signaling independently of the media-security offer.
+            sip_uri = "sip:" + reservation.uri[len("sips:") :]
+    else:
+        if not reservation.uri.startswith("sip:"):
+            raise HandoffError("bridgefu_destination_invalid", 502)
+        sip_uri = reservation.uri
     _bounded_identifier(reservation.call_id, "bridgefu_call_id")
     if reservation.expires_at <= now:
         raise HandoffError("bridgefu_destination_expired", 502)
@@ -436,11 +448,7 @@ def transfer_destination(
     return {
         "destination": {
             "type": "sip",
-            # Preserve the exact one-use URI returned by Bridgefu. In the
-            # production posture this is a `sips:` URI with `transport=tls`;
-            # changing its scheme would alter the reserved route's security
-            # contract and is not required by Vapi's SIP destination schema.
-            "sipUri": reservation.uri,
+            "sipUri": sip_uri,
             "sipHeaders": {CORRELATION_HEADER: correlation_id},
             # A SIP-originated Vapi call defaults to REFER, which asks the
             # source carrier/client to originate the destination leg. Bridgefu

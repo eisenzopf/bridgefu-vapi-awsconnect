@@ -36,7 +36,7 @@ def _store():
 def _bridgefu():
     global _BRIDGEFU
     if _BRIDGEFU is None:
-        sip_scheme = os.environ.get("SIP_SECURITY_SCHEME", "sips")
+        sip_security = os.environ.get("SIP_SECURITY", "sips_optional_srtp")
         deployment_id = os.environ["DEPLOYMENT_ID"]
         _BRIDGEFU = BridgefuRouteClient(
             os.environ["BRIDGEFU_CONTROL_BASE_URL"],
@@ -44,7 +44,7 @@ def _bridgefu():
             load_secret(os.environ["BRIDGEFU_API_BEARER_SECRET_ARN"]),
             private_http_hostname=(
                 f"control.{deployment_id}.bridgefu.internal"
-                if sip_scheme == "sip"
+                if sip_security == "sip_rtp"
                 else None
             ),
         )
@@ -80,7 +80,7 @@ def lambda_handler(event, _context):
             load_secret(os.environ["CORRELATION_KEY_SECRET_ARN"]).encode("utf-8"),
             os.environ["DEPLOYMENT_ID"],
             _bridgefu().reserve,
-            os.environ.get("SIP_SECURITY_SCHEME", "sips"),
+            os.environ.get("SIP_SECURITY", "sips_optional_srtp"),
         )
         result = "reserved"
         output = response if internal is not None else http_response(200, response)

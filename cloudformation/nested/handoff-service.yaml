@@ -112,7 +112,6 @@ Parameters:
 Conditions:
   RetainData: !Equals [!Ref DataRetentionMode, ProductionRetain]
   DeleteData: !Equals [!Ref DataRetentionMode, TestDelete]
-  SecureSip: !Not [!Equals [!Ref SipSecurity, sip_rtp]]
   UseReservedConcurrency: !Not [!Equals [!Ref LambdaReservedConcurrencyPerFunction, 0]]
   UseTransferVpc: !And
     - !Not [!Equals [!Ref TransferSubnetIds, '']]
@@ -430,7 +429,7 @@ Resources:
           BRIDGEFU_CONTROL_BASE_URL: !Ref BridgefuControlBaseUrl
           BRIDGEFU_ROUTE_ID: !Ref BridgefuRouteId
           DEPLOYMENT_ID: !Ref DeploymentId
-          SIP_SECURITY_SCHEME: !If [SecureSip, sips, sip]
+          SIP_SECURITY: !Ref SipSecurity
       VpcConfig: !If
         - UseTransferVpc
         - SecurityGroupIds: !Split [',', !Ref TransferSecurityGroupIds]

@@ -101,13 +101,13 @@
           "checks": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["vapi_call_connected", "vapi_transfer_invoked", "handoff_context_stored", "bridgefu_received_correlation_header", "vapi_destination_sips_signaling", "vapi_destination_tls_transport", "vapi_destination_media_profile_allowed", "vapi_destination_media_posture_consistent", "vapi_destination_answered", "amazon_connect_contact_connected", "configured_screen_pop_visible", "audio_source_to_agent", "audio_agent_to_source", "dtmf_source_to_agent", "source_call_ended"],
+            "required": ["vapi_call_connected", "vapi_transfer_invoked", "handoff_context_stored", "bridgefu_received_correlation_header", "vapi_destination_uri_scheme_allowed", "vapi_destination_tls_transport", "vapi_destination_media_profile_allowed", "vapi_destination_media_posture_consistent", "vapi_destination_answered", "amazon_connect_contact_connected", "configured_screen_pop_visible", "audio_source_to_agent", "audio_agent_to_source", "dtmf_source_to_agent", "source_call_ended"],
             "properties": {
               "vapi_call_connected": {"const": true},
               "vapi_transfer_invoked": {"const": true},
               "handoff_context_stored": {"const": true},
               "bridgefu_received_correlation_header": {"const": true},
-              "vapi_destination_sips_signaling": {"const": true},
+              "vapi_destination_uri_scheme_allowed": {"const": true},
               "vapi_destination_tls_transport": {"const": true},
               "vapi_destination_media_profile_allowed": {"const": true},
               "vapi_destination_media_posture_consistent": {"const": true},

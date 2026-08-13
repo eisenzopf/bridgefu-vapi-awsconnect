@@ -255,7 +255,7 @@ class HandoffContractTests(unittest.TestCase):
             KEY,
             DEPLOYMENT,
             reserve,
-            "sips",
+            "sips_optional_srtp",
             now=NOW,
         )
         self.assertEqual(observed["correlation_id"], prepared.correlation_id)
@@ -264,7 +264,7 @@ class HandoffContractTests(unittest.TestCase):
         self.assertEqual(destination["type"], "sip")
         self.assertEqual(
             destination["sipUri"],
-            "sips:one-use-token@sip.example.test:5061;transport=tls",
+            "sip:one-use-token@sip.example.test:5061;transport=tls",
         )
         self.assertEqual(
             destination["sipHeaders"],
@@ -284,7 +284,7 @@ class HandoffContractTests(unittest.TestCase):
                 KEY,
                 DEPLOYMENT,
                 lambda *_: None,
-                "sips",
+                "sips_srtp",
                 now=NOW,
             )
         store = FakeStore()
@@ -298,7 +298,7 @@ class HandoffContractTests(unittest.TestCase):
                 KEY,
                 DEPLOYMENT,
                 lambda *_: None,
-                "sips",
+                "sips_srtp",
                 now=NOW + 301,
             )
         store.records[prepared.correlation_id]["expires_at"] = NOW + 600
@@ -310,7 +310,7 @@ class HandoffContractTests(unittest.TestCase):
                 KEY,
                 DEPLOYMENT,
                 lambda *_: None,
-                "sips",
+                "sips_srtp",
                 now=NOW,
             )
         store.records[prepared.correlation_id]["vapi_call_fingerprint"] = next(
@@ -327,7 +327,7 @@ class HandoffContractTests(unittest.TestCase):
                     "018f4d41-0000-7000-8000-000000000001",
                     NOW + 120,
                 ),
-                "sips",
+                "sips_srtp",
                 now=NOW,
             )
         with self.assertRaisesRegex(HandoffError, "bridgefu_destination_invalid"):
@@ -341,7 +341,62 @@ class HandoffContractTests(unittest.TestCase):
                     "018f4d41-0000-7000-8000-000000000001",
                     NOW + 120,
                 ),
-                "sips",
+                "sips_srtp",
+                now=NOW,
+            )
+
+    def test_transfer_uri_scheme_is_selected_by_security_policy(self):
+        cases = (
+            (
+                "sips_optional_srtp",
+                "sips:token@sip.example.test:5061;transport=tls",
+                "sip:token@sip.example.test:5061;transport=tls",
+            ),
+            (
+                "sips_srtp",
+                "sips:token@sip.example.test:5061;transport=tls",
+                "sips:token@sip.example.test:5061;transport=tls",
+            ),
+            (
+                "sip_rtp",
+                "sip:token@sip.example.test:5060",
+                "sip:token@sip.example.test:5060",
+            ),
+        )
+        for security, reserved_uri, expected_uri in cases:
+            with self.subTest(security=security):
+                store = FakeStore()
+                prepare_handoff(prepare_event(), store, KEY, DEPLOYMENT, 300, now=NOW)
+                response = transfer_destination(
+                    transfer_event(),
+                    store,
+                    KEY,
+                    DEPLOYMENT,
+                    lambda *_: SipReservation(
+                        reserved_uri,
+                        "018f4d41-0000-7000-8000-000000000001",
+                        NOW + 120,
+                    ),
+                    security,
+                    now=NOW,
+                )
+                self.assertEqual(response["destination"]["sipUri"], expected_uri)
+
+    def test_optional_tls_mode_rejects_an_unsecured_reserved_uri(self):
+        store = FakeStore()
+        prepare_handoff(prepare_event(), store, KEY, DEPLOYMENT, 300, now=NOW)
+        with self.assertRaisesRegex(HandoffError, "bridgefu_destination_invalid"):
+            transfer_destination(
+                transfer_event(),
+                store,
+                KEY,
+                DEPLOYMENT,
+                lambda *_: SipReservation(
+                    "sip:token@sip.example.test:5061;transport=tls",
+                    "018f4d41-0000-7000-8000-000000000001",
+                    NOW + 120,
+                ),
+                "sips_optional_srtp",
                 now=NOW,
             )
 

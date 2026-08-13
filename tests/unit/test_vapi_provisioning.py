@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import copy
+import io
+import json
 import sys
 import unittest
 import urllib.error
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -14,6 +17,7 @@ sys.path.insert(0, str(COMMON))
 from vapi_provisioning import (  # noqa: E402
     PENDING_PHYSICAL_ID,
     ProvisioningConfig,
+    VapiAmbiguousWriteError,
     VapiHttpClient,
     VapiProvisioningError,
     parse_physical_id,
@@ -87,7 +91,10 @@ def config(**overrides):
 class VapiProvisioningTests(unittest.TestCase):
     def test_http_client_retries_only_bounded_reads_with_fresh_timeouts(self):
         timeout = mock.Mock(side_effect=[3.0, 2.0])
-        client = VapiHttpClient("v" * 32, request_timeout=timeout)
+        sleep = mock.Mock()
+        client = VapiHttpClient(
+            "v" * 32, request_timeout=timeout, read_retries=1, sleep=sleep
+        )
         response = mock.MagicMock()
         response.__enter__.return_value = response
         response.status = 200
@@ -105,6 +112,7 @@ class VapiProvisioningTests(unittest.TestCase):
             .full_url.endswith("/assistant?limit=1000")
         )
         self.assertEqual(timeout.call_count, 2)
+        sleep.assert_called_once_with(1)
         self.assertEqual(
             [call.kwargs["timeout"] for call in client._opener.open.call_args_list],
             [3.0, 2.0],
@@ -116,7 +124,7 @@ class VapiProvisioningTests(unittest.TestCase):
         client._opener = mock.Mock()
         client._opener.open.side_effect = urllib.error.URLError("transient")
 
-        with self.assertRaisesRegex(VapiProvisioningError, "vapi_unavailable"):
+        with self.assertRaisesRegex(VapiAmbiguousWriteError, "vapi_write_ambiguous"):
             client.create("assistant", {"name": "bounded-write"})
 
         self.assertEqual(client._opener.open.call_count, 1)
@@ -128,13 +136,55 @@ class VapiProvisioningTests(unittest.TestCase):
         ):
             VapiHttpClient("v" * 32, request_timeout=lambda: 16)._timeout_seconds()
         with self.assertRaisesRegex(VapiProvisioningError, "vapi_retry_budget_invalid"):
-            VapiHttpClient("v" * 32, read_retries=2)
-        self.assertEqual(
-            VapiHttpClient("v" * 32, "https://api.eu.vapi.ai")._base_url,
-            "https://api.eu.vapi.ai",
-        )
+            VapiHttpClient("v" * 32, read_retries=4)
+        with self.assertRaisesRegex(VapiProvisioningError, "vapi_base_url_invalid"):
+            VapiHttpClient("v" * 32, "https://api.eu.vapi.ai")
         with self.assertRaisesRegex(VapiProvisioningError, "vapi_base_url_invalid"):
             VapiHttpClient("v" * 32, "https://customer.example.com")
+
+    def test_http_client_honors_bounded_retry_after_and_reports_exact_status(self):
+        client = VapiHttpClient(
+            "v" * 32, read_retries=1, request_timeout=lambda: 3.0, sleep=mock.Mock()
+        )
+        throttled = urllib.error.HTTPError(
+            "https://api.vapi.ai/assistant?limit=1000",
+            429,
+            "body-must-not-be-logged",
+            {"Retry-After": "999"},
+            None,
+        )
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = b"[]"
+        client._opener = mock.Mock()
+        client._opener.open.side_effect = [throttled, response]
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(client.list("assistant"), [])
+        client._sleep.assert_called_once_with(5.0)
+        self.assertIn('"http_status":429', output.getvalue())
+        self.assertNotIn("body-must-not-be-logged", output.getvalue())
+
+    def test_http_client_non_retriable_status_is_exact_and_body_is_redacted(self):
+        client = VapiHttpClient("v" * 32, request_timeout=lambda: 3.0)
+        client._opener = mock.Mock()
+        client._opener.open.side_effect = urllib.error.HTTPError(
+            "https://api.vapi.ai/assistant",
+            422,
+            "sensitive response body",
+            {},
+            None,
+        )
+        output = io.StringIO()
+        with (
+            redirect_stdout(output),
+            self.assertRaisesRegex(VapiProvisioningError, "vapi_http_422"),
+        ):
+            client.create("assistant", {"name": "safe"})
+        self.assertIn('"http_status":422', output.getvalue())
+        self.assertNotIn("sensitive response body", output.getvalue())
 
     def test_create_retry_is_idempotent_and_server_owned(self):
         client = FakeVapi()
@@ -188,6 +238,81 @@ class VapiProvisioningTests(unittest.TestCase):
             "verification status",
         ):
             self.assertNotIn(legacy_field, prompt)
+
+    def test_ambiguous_assistant_create_adopts_exact_owner_equivalent(self):
+        class LostResponseVapi(FakeVapi):
+            def __init__(self):
+                super().__init__()
+                self.lost = True
+
+            def create(self, resource, payload):
+                result = super().create(resource, payload)
+                if resource == "assistant" and self.lost:
+                    self.lost = False
+                    raise VapiAmbiguousWriteError("POST", resource, None)
+                return result
+
+        client = LostResponseVapi()
+        with mock.patch("vapi_provisioning.time.sleep"):
+            created = provision_create(client, config())
+        self.assertEqual(created.assistant_id, "assistant_1")
+        self.assertEqual(client.create_count["assistant"], 1)
+
+    def test_ambiguous_create_fails_closed_on_multiple_owner_matches(self):
+        class DuplicateCommitVapi(FakeVapi):
+            def create(self, resource, payload):
+                if resource != "assistant":
+                    return super().create(resource, payload)
+                super().create(resource, payload)
+                super().create(resource, payload)
+                raise VapiAmbiguousWriteError("POST", resource, 503)
+
+        with (
+            mock.patch("vapi_provisioning.time.sleep"),
+            self.assertRaisesRegex(VapiProvisioningError, "vapi_assistant_ambiguous"),
+        ):
+            provision_create(DuplicateCommitVapi(), config())
+
+    def test_ambiguous_patch_re_reads_and_accepts_applied_owned_state(self):
+        client = VapiHttpClient(
+            "v" * 32, request_timeout=lambda: 3.0, sleep=mock.Mock()
+        )
+        current = {
+            "id": "assistant_1",
+            "name": "desired",
+            "metadata": {"bridgefu_owner": "owner"},
+        }
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = json.dumps(current).encode()
+        client._opener = mock.Mock()
+        client._opener.open.side_effect = [
+            urllib.error.URLError("lost patch response"),
+            response,
+        ]
+        result = client.update(
+            "assistant",
+            "assistant_1",
+            {"name": "desired", "metadata": {"bridgefu_owner": "owner"}},
+        )
+        self.assertEqual(result, current)
+        self.assertEqual(client._opener.open.call_count, 2)
+
+    def test_ambiguous_delete_re_reads_absence_without_second_delete(self):
+        client = VapiHttpClient(
+            "v" * 32, request_timeout=lambda: 3.0, sleep=mock.Mock()
+        )
+        missing = urllib.error.HTTPError(
+            "https://api.vapi.ai/tool/tool_1", 404, "missing", {}, None
+        )
+        client._opener = mock.Mock()
+        client._opener.open.side_effect = [
+            urllib.error.URLError("lost delete response"),
+            missing,
+        ]
+        client.delete("tool", "tool_1")
+        self.assertEqual(client._opener.open.call_count, 2)
 
     def test_update_preserves_ids_and_never_rewrites_the_assistant(self):
         client = FakeVapi()

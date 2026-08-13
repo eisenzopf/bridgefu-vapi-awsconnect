@@ -1032,7 +1032,7 @@ class QualificationControllerTests(unittest.TestCase):
             {
                 "bridgefu_received_correlation_header": True,
                 "connect_lookup_available": True,
-                "vapi_destination_sips_signaling": True,
+                "vapi_destination_uri_scheme_allowed": True,
                 "vapi_destination_tls_transport": True,
                 "vapi_destination_media_profile_allowed": True,
                 "vapi_destination_media_posture_consistent": True,
@@ -1051,7 +1051,7 @@ class QualificationControllerTests(unittest.TestCase):
             {
                 "bridgefu_received_correlation_header": True,
                 "connect_lookup_available": True,
-                "vapi_destination_sips_signaling": True,
+                "vapi_destination_uri_scheme_allowed": True,
                 "vapi_destination_tls_transport": True,
                 "vapi_destination_media_profile_allowed": True,
                 "vapi_destination_media_posture_consistent": True,
@@ -1461,7 +1461,7 @@ class QualificationControllerTests(unittest.TestCase):
                             "event": "bridgefu_vapi_destination_security_evidence",
                             "correlation_fingerprint": fingerprint,
                             "leg": "vapi-to-bridgefu",
-                            "uri_scheme": "sips",
+                            "uri_scheme": "sip",
                             "signaling_transport": "tls",
                             "media_profile": "RTP/SAVP",
                             "media_keying": "SDES-SRTP",
@@ -1490,12 +1490,16 @@ class QualificationControllerTests(unittest.TestCase):
                 }
             ]
         }
-        CONTROLLER.verify_log_evidence(runtime, lookup, fingerprint)
+        CONTROLLER.verify_log_evidence(
+            runtime, lookup, fingerprint, "sips_optional_srtp"
+        )
         runtime["events"][0]["message"] = runtime["events"][0]["message"].replace(
             '"header_count": 1', '"header_count": 2'
         )
         with self.assertRaises(CONTROLLER.QualificationError):
-            CONTROLLER.verify_log_evidence(runtime, lookup, fingerprint)
+            CONTROLLER.verify_log_evidence(
+                runtime, lookup, fingerprint, "sips_optional_srtp"
+            )
 
     def test_vapi_call_requires_prepare_tool_and_transfer_activity(self):
         self.assertTrue(

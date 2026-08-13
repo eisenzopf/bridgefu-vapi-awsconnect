@@ -7,6 +7,7 @@ import json
 import math
 import re
 import ssl
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,13 +23,84 @@ PENDING_PHYSICAL_ID = "bridgefu-vapi-pending"
 ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 VALUE_PATTERN = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
 MAX_REQUEST_TIMEOUT_SECONDS = 15.0
-MAX_READ_RETRIES = 1
-VAPI_API_BASE_URLS = frozenset({"https://api.vapi.ai", "https://api.eu.vapi.ai"})
+MAX_READ_RETRIES = 3
+MAX_RECONCILIATION_READS = 3
+MAX_RETRY_AFTER_SECONDS = 5.0
+RECONCILIATION_DELAYS_SECONDS = (0.25, 0.5, 1.0)
+VAPI_API_BASE_URLS = frozenset({"https://api.vapi.ai"})
 RETRIABLE_HTTP_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+NON_RETRIABLE_HTTP_STATUS_CODES = frozenset({400, 401, 403, 404, 409, 422})
 
 
 class VapiProvisioningError(Exception):
     """Safe error whose message contains no credentials or payloads."""
+
+
+class VapiAmbiguousWriteError(VapiProvisioningError):
+    """A write may have committed, so callers must reconcile before retrying."""
+
+    def __init__(self, operation: str, resource: str, status: int | None) -> None:
+        super().__init__("vapi_write_ambiguous")
+        self.operation = operation
+        self.resource = resource
+        self.status = status
+
+
+def _emit_request_diagnostic(
+    operation: str,
+    resource: str,
+    *,
+    status: int | None,
+    attempt: int,
+    result: str,
+) -> None:
+    """Emit a closed-vocabulary record without IDs, paths, bodies, or secrets."""
+    if operation not in {"GET", "POST", "PATCH", "DELETE"}:
+        operation = "UNKNOWN"
+    if resource not in {"assistant", "credential", "tool"}:
+        resource = "unknown"
+    if result not in {
+        "success",
+        "retrying",
+        "ambiguous",
+        "rejected",
+        "missing",
+    }:
+        result = "rejected"
+    print(
+        json.dumps(
+            {
+                "event": "vapi_api_request",
+                "operation": operation,
+                "resource": resource,
+                "http_status": status,
+                "attempt": attempt,
+                "result": result,
+                "redacted": True,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    )
+
+
+def _emit_reconciliation_diagnostic(resource: str, attempt: int, count: int) -> None:
+    category = "zero" if count == 0 else "one" if count == 1 else "multiple"
+    print(
+        json.dumps(
+            {
+                "event": "vapi_api_reconciliation",
+                "resource": resource
+                if resource in {"assistant", "credential", "tool"}
+                else "unknown",
+                "attempt": attempt,
+                "owner_equivalent_matches": category,
+                "redacted": True,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    )
 
 
 class VapiApi(Protocol):
@@ -62,6 +134,7 @@ class VapiHttpClient:
         *,
         request_timeout=None,
         read_retries: int = MAX_READ_RETRIES,
+        sleep=time.sleep,
     ) -> None:
         if not isinstance(api_key, str) or len(api_key) < 24:
             raise VapiProvisioningError("vapi_api_key_invalid")
@@ -91,6 +164,20 @@ class VapiHttpClient:
             raise VapiProvisioningError("vapi_retry_budget_invalid")
         self._request_timeout = request_timeout
         self._read_retries = read_retries
+        self._sleep = sleep
+
+    @staticmethod
+    def _resource_from_path(path: str) -> str:
+        return path.split("?", 1)[0].strip("/").split("/", 1)[0]
+
+    @staticmethod
+    def _retry_after_seconds(error: urllib.error.HTTPError, attempt: int) -> float:
+        raw = error.headers.get("Retry-After") if error.headers is not None else None
+        try:
+            value = float(raw) if raw is not None else 2 ** max(0, attempt - 1)
+        except (TypeError, ValueError):
+            value = 2 ** max(0, attempt - 1)
+        return min(MAX_RETRY_AFTER_SECONDS, max(0.0, value))
 
     def _timeout_seconds(self) -> float:
         value = (
@@ -134,36 +221,92 @@ class VapiHttpClient:
             headers=headers,
         )
         attempts = 1 + (self._read_retries if method == "GET" else 0)
-        for attempt in range(attempts):
+        resource = self._resource_from_path(path)
+        for attempt_index in range(attempts):
+            attempt = attempt_index + 1
             try:
                 with self._opener.open(
                     request, timeout=self._timeout_seconds()
                 ) as response:
                     raw = response.read(1_048_577)
                     status = response.status
+                _emit_request_diagnostic(
+                    method, resource, status=status, attempt=attempt, result="success"
+                )
                 break
             except urllib.error.HTTPError as error:
                 if allow_missing and error.code == 404:
+                    _emit_request_diagnostic(
+                        method,
+                        resource,
+                        status=404,
+                        attempt=attempt,
+                        result="missing",
+                    )
                     return None
                 if (
                     method == "GET"
                     and error.code in RETRIABLE_HTTP_STATUS_CODES
-                    and attempt + 1 < attempts
+                    and attempt < attempts
                 ):
+                    _emit_request_diagnostic(
+                        method,
+                        resource,
+                        status=error.code,
+                        attempt=attempt,
+                        result="retrying",
+                    )
+                    self._sleep(self._retry_after_seconds(error, attempt))
                     continue
-                if error.code in (401, 403):
-                    raise VapiProvisioningError("vapi_unauthorized") from None
-                if error.code == 404:
-                    raise VapiProvisioningError("vapi_resource_missing") from None
-                if error.code == 409:
-                    raise VapiProvisioningError("vapi_conflict") from None
-                if error.code == 429:
-                    raise VapiProvisioningError("vapi_throttled") from None
-                raise VapiProvisioningError("vapi_request_failed") from None
+                if method != "GET" and error.code in RETRIABLE_HTTP_STATUS_CODES:
+                    _emit_request_diagnostic(
+                        method,
+                        resource,
+                        status=error.code,
+                        attempt=attempt,
+                        result="ambiguous",
+                    )
+                    raise VapiAmbiguousWriteError(
+                        method, resource, error.code
+                    ) from None
+                _emit_request_diagnostic(
+                    method,
+                    resource,
+                    status=error.code,
+                    attempt=attempt,
+                    result="rejected",
+                )
+                if error.code in NON_RETRIABLE_HTTP_STATUS_CODES:
+                    raise VapiProvisioningError(f"vapi_http_{error.code}") from None
+                raise VapiProvisioningError("vapi_http_error") from None
             except (urllib.error.URLError, TimeoutError, OSError):
-                if method == "GET" and attempt + 1 < attempts:
+                if method == "GET" and attempt < attempts:
+                    _emit_request_diagnostic(
+                        method,
+                        resource,
+                        status=None,
+                        attempt=attempt,
+                        result="retrying",
+                    )
+                    self._sleep(min(MAX_RETRY_AFTER_SECONDS, 2 ** (attempt - 1)))
                     continue
-                raise VapiProvisioningError("vapi_unavailable") from None
+                if method != "GET":
+                    _emit_request_diagnostic(
+                        method,
+                        resource,
+                        status=None,
+                        attempt=attempt,
+                        result="ambiguous",
+                    )
+                    raise VapiAmbiguousWriteError(method, resource, None) from None
+                _emit_request_diagnostic(
+                    method,
+                    resource,
+                    status=None,
+                    attempt=attempt,
+                    result="rejected",
+                )
+                raise VapiProvisioningError("vapi_transport_unavailable") from None
         if status < 200 or status >= 300:
             raise VapiProvisioningError("vapi_request_failed")
         if len(raw) > 1_048_576:
@@ -201,21 +344,117 @@ class VapiHttpClient:
     def create(self, resource: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         result = self._request("POST", f"/{resource}", payload)
         if not isinstance(result, Mapping):
-            raise VapiProvisioningError("vapi_response_invalid")
+            _emit_request_diagnostic(
+                "POST", resource, status=200, attempt=1, result="ambiguous"
+            )
+            raise VapiAmbiguousWriteError("POST", resource, 200)
         return result
 
     def update(
         self, resource: str, resource_id: str, payload: Mapping[str, Any]
     ) -> Mapping[str, Any]:
         resource_id = _resource_id(resource_id)
-        result = self._request("PATCH", f"/{resource}/{resource_id}", payload)
+        try:
+            result = self._request("PATCH", f"/{resource}/{resource_id}", payload)
+            if not isinstance(result, Mapping):
+                _emit_request_diagnostic(
+                    "PATCH", resource, status=200, attempt=1, result="ambiguous"
+                )
+                raise VapiAmbiguousWriteError("PATCH", resource, 200)
+        except VapiAmbiguousWriteError:
+            current = self.get(resource, resource_id)
+            if current is not None and _desired_payload_present(current, payload):
+                return current
+            try:
+                result = self._request("PATCH", f"/{resource}/{resource_id}", payload)
+            except VapiAmbiguousWriteError:
+                current = self.get(resource, resource_id)
+                if current is not None and _desired_payload_present(current, payload):
+                    return current
+                raise
         if not isinstance(result, Mapping):
-            raise VapiProvisioningError("vapi_response_invalid")
+            raise VapiAmbiguousWriteError("PATCH", resource, 200)
         return result
 
     def delete(self, resource: str, resource_id: str) -> None:
         resource_id = _resource_id(resource_id)
-        self._request("DELETE", f"/{resource}/{resource_id}", allow_missing=True)
+        try:
+            self._request("DELETE", f"/{resource}/{resource_id}", allow_missing=True)
+        except VapiAmbiguousWriteError:
+            if self.get(resource, resource_id) is None:
+                return
+            try:
+                self._request(
+                    "DELETE", f"/{resource}/{resource_id}", allow_missing=True
+                )
+            except VapiAmbiguousWriteError:
+                if self.get(resource, resource_id) is None:
+                    return
+                raise
+
+
+def _desired_payload_present(
+    actual: Any, desired: Any, path: tuple[str, ...] = ()
+) -> bool:
+    if isinstance(desired, Mapping):
+        if not isinstance(actual, Mapping):
+            return False
+        for key, value in desired.items():
+            next_path = (*path, str(key))
+            if key not in actual:
+                # Vapi deliberately omits write-only credential bearer tokens.
+                if next_path == ("authenticationPlan", "token"):
+                    continue
+                return False
+            if not _desired_payload_present(actual[key], value, next_path):
+                return False
+        return True
+    if isinstance(desired, list):
+        return isinstance(actual, list) and actual == desired
+    return actual == desired
+
+
+def _create_with_reconciliation(
+    client: VapiApi,
+    resource: str,
+    payload: Mapping[str, Any],
+    find_owned,
+) -> Mapping[str, Any]:
+    """Create once, then reconcile uncertain commits before one bounded retry."""
+
+    def reconcile() -> Mapping[str, Any] | None:
+        for attempt, delay in enumerate(RECONCILIATION_DELAYS_SECONDS, start=1):
+            try:
+                found = find_owned()
+            except VapiProvisioningError as error:
+                if str(error).endswith("_ambiguous"):
+                    _emit_reconciliation_diagnostic(resource, attempt, 2)
+                raise
+            _emit_reconciliation_diagnostic(
+                resource, attempt, 0 if found is None else 1
+            )
+            if found is not None:
+                return found
+            if attempt < MAX_RECONCILIATION_READS:
+                time.sleep(delay)
+        return None
+
+    try:
+        return client.create(resource, payload)
+    except VapiAmbiguousWriteError:
+        found = reconcile()
+        if found is not None:
+            return found
+    # Exactly one retry is safe only after exhaustive owner reconciliation
+    # observed zero matches. A second ambiguous result is reconciled, not
+    # blindly repeated.
+    try:
+        return client.create(resource, payload)
+    except VapiAmbiguousWriteError:
+        found = reconcile()
+        if found is not None:
+            return found
+        raise VapiProvisioningError("vapi_create_unresolved") from None
 
 
 @dataclass(frozen=True)
@@ -563,13 +802,23 @@ def provision_create(client: VapiApi, config: ProvisioningConfig) -> Provisioned
     if assistant is None:
         if _credential_name_matches(client, config):
             raise VapiProvisioningError("vapi_credential_ownership_conflict")
-        assistant = client.create("assistant", _preliminary_assistant(config))
+        assistant = _create_with_reconciliation(
+            client,
+            "assistant",
+            _preliminary_assistant(config),
+            lambda: _find_assistant(client, config),
+        )
     if not _owned_assistant(assistant, config):
         raise VapiProvisioningError("vapi_assistant_ownership_conflict")
     assistant_id = _assistant_id(assistant)
     credential = _find_credential(client, config, assistant)
     if credential is None:
-        credential = client.create("credential", _credential_payload(config))
+        credential = _create_with_reconciliation(
+            client,
+            "credential",
+            _credential_payload(config),
+            lambda: _find_credential(client, config, assistant),
+        )
     if not _is_owned_credential_shape(credential, config):
         raise VapiProvisioningError("vapi_credential_ownership_conflict")
     credential_id = _credential_id(credential)
@@ -585,7 +834,12 @@ def provision_create(client: VapiApi, config: ProvisioningConfig) -> Provisioned
     tool = _find_prepare_tool(client, config, credential_id)
     desired_tool = _prepare_tool(config, credential_id)
     if tool is None:
-        tool = client.create("tool", desired_tool)
+        tool = _create_with_reconciliation(
+            client,
+            "tool",
+            desired_tool,
+            lambda: _find_prepare_tool(client, config, credential_id),
+        )
     prepare_tool_id = _tool_id(tool)
     client.update("tool", prepare_tool_id, desired_tool)
     client.update(

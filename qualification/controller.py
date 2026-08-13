@@ -82,7 +82,6 @@ VAPI_DESTINATION_SECURITY_FIELDS = {
 VAPI_DESTINATION_SECURITY_EXPECTED = {
     "event": VAPI_DESTINATION_SECURITY_EVENT,
     "leg": "vapi-to-bridgefu",
-    "uri_scheme": "sips",
     "signaling_transport": "tls",
     "answered": True,
     "redacted": True,
@@ -1860,9 +1859,17 @@ def json_objects_from_logs(
                         yield fields
 
 
-def verify_log_evidence(runtime: Any, lookup: Any, fingerprint: str) -> dict[str, Any]:
+def verify_log_evidence(
+    runtime: Any, lookup: Any, fingerprint: str, sip_security: str
+) -> dict[str, Any]:
     if not re.fullmatch(r"[0-9a-f]{12}", fingerprint):
         raise QualificationError("correlation fingerprint is invalid")
+    expected_uri_scheme = {
+        "sips_optional_srtp": "sip",
+        "sips_srtp": "sips",
+    }.get(sip_security)
+    if expected_uri_scheme is None:
+        raise QualificationError("Vapi destination security policy is invalid")
     runtime_events = runtime.get("events", []) if isinstance(runtime, Mapping) else []
     lookup_events = lookup.get("events", []) if isinstance(lookup, Mapping) else []
     runtime_values = list(json_objects_from_logs(runtime_events))
@@ -1899,6 +1906,7 @@ def verify_log_evidence(runtime: Any, lookup: Any, fingerprint: str) -> dict[str
     expected_security = {
         **VAPI_DESTINATION_SECURITY_EXPECTED,
         "correlation_fingerprint": fingerprint,
+        "uri_scheme": expected_uri_scheme,
     }
     media_profile = security_event.get("media_profile")
     media_keying = security_event.get("media_keying")
@@ -1933,7 +1941,9 @@ def verify_log_evidence(runtime: Any, lookup: Any, fingerprint: str) -> dict[str
     return {
         "bridgefu_received_correlation_header": header,
         "connect_lookup_available": available,
-        "vapi_destination_sips_signaling": (security_event.get("uri_scheme") == "sips"),
+        "vapi_destination_uri_scheme_allowed": (
+            security_event.get("uri_scheme") == expected_uri_scheme
+        ),
         "vapi_destination_tls_transport": (
             security_event.get("signaling_transport") == "tls"
         ),
@@ -2012,8 +2022,8 @@ def derive_scenario_checks(
         "bridgefu_received_correlation_header": (
             log_proof.get("bridgefu_received_correlation_header") is True
         ),
-        "vapi_destination_sips_signaling": (
-            log_proof.get("vapi_destination_sips_signaling") is True
+        "vapi_destination_uri_scheme_allowed": (
+            log_proof.get("vapi_destination_uri_scheme_allowed") is True
         ),
         "vapi_destination_tls_transport": (
             log_proof.get("vapi_destination_tls_transport") is True
@@ -3745,7 +3755,9 @@ class Controller:
                 ]
             )
             try:
-                log_proof = verify_log_evidence(runtime, lookup, fingerprint)
+                log_proof = verify_log_evidence(
+                    runtime, lookup, fingerprint, str(session["security"])
+                )
                 break
             except QualificationError:
                 if time.monotonic() >= deadline:

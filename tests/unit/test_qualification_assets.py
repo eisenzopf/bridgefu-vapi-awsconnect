@@ -238,9 +238,10 @@ class QualificationAssetTests(unittest.TestCase):
         candidate = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
         publication = (ROOT / ".github" / "workflows" / "release.yml").read_text()
         self.assertIn(
-            "needs: [build-private-candidate, qualify-both-regions]", candidate
+            "needs: [build-private-candidate, qualify-regions-sequentially]", candidate
         )
-        self.assertIn("matrix:\n        region: [us-west-2, us-east-1]", candidate)
+        self.assertIn("for REGION in us-west-2 us-east-1; do", candidate)
+        self.assertNotIn("matrix:\n        region: [us-west-2, us-east-1]", candidate)
         self.assertIn("qualification/controller.py run", candidate)
         self.assertIn("bridgefu-vapi-sip-smoke", candidate)
         self.assertNotIn("--retain-on-failure", candidate)

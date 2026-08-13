@@ -24,7 +24,7 @@ def security_event(fingerprint: str, **updates: object) -> dict[str, object]:
         "event": "bridgefu_vapi_destination_security_evidence",
         "correlation_fingerprint": fingerprint,
         "leg": "vapi-to-bridgefu",
-        "uri_scheme": "sips",
+        "uri_scheme": "sip",
         "signaling_transport": "tls",
         "media_profile": "RTP/SAVP",
         "media_keying": "SDES-SRTP",
@@ -174,9 +174,10 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
             runtime_logs(fingerprint, security_event(fingerprint)),
             lookup_logs(fingerprint),
             fingerprint,
+            "sips_optional_srtp",
         )
         for name in (
-            "vapi_destination_sips_signaling",
+            "vapi_destination_uri_scheme_allowed",
             "vapi_destination_tls_transport",
             "vapi_destination_media_profile_allowed",
             "vapi_destination_media_posture_consistent",
@@ -207,6 +208,7 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
             ),
             lookup_logs(fingerprint),
             fingerprint,
+            "sips_optional_srtp",
         )
         self.assertEqual(plain["vapi_destination_media_profile"], "RTP/AVP")
         self.assertEqual(plain["vapi_destination_media_keying"], "none")
@@ -226,7 +228,7 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
             ),
             runtime_logs(
                 fingerprint,
-                security_event(fingerprint, uri_scheme="sip"),
+                security_event(fingerprint, uri_scheme="sips"),
             ),
             runtime_logs(
                 fingerprint,
@@ -256,7 +258,10 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
         for runtime in failures:
             with self.assertRaises(CONTROLLER.QualificationError):
                 CONTROLLER.verify_log_evidence(
-                    runtime, lookup_logs(fingerprint), fingerprint
+                    runtime,
+                    lookup_logs(fingerprint),
+                    fingerprint,
+                    "sips_optional_srtp",
                 )
         wrong_message = runtime_logs(fingerprint, security_event(fingerprint))
         wrong_message["events"][1]["message"] = wrong_message["events"][1][
@@ -264,7 +269,10 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
         ].replace("accepted Vapi destination leg", "unexpected tracing message")
         with self.assertRaises(CONTROLLER.QualificationError):
             CONTROLLER.verify_log_evidence(
-                wrong_message, lookup_logs(fingerprint), fingerprint
+                wrong_message,
+                lookup_logs(fingerprint),
+                fingerprint,
+                "sips_optional_srtp",
             )
 
     def test_direct_preflight_event_cannot_substitute_for_scenario_security(
@@ -286,7 +294,10 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
         )
         with self.assertRaises(CONTROLLER.QualificationError):
             CONTROLLER.verify_log_evidence(
-                runtime, lookup_logs(fingerprint), fingerprint
+                runtime,
+                lookup_logs(fingerprint),
+                fingerprint,
+                "sips_optional_srtp",
             )
 
     def test_zero_state_contract_does_not_overclaim_unobserved_resources(self) -> None:

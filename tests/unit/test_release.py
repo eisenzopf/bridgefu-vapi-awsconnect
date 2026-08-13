@@ -284,8 +284,10 @@ class ReleaseContractTests(unittest.TestCase):
             self.assertIn(
                 "AllowedValues: [sips_optional_srtp, sips_srtp, sip_rtp]", text
             )
+        for name in ("runtime.yaml", "observability.yaml"):
             self.assertIn(
-                "SecureSip: !Not [!Equals [!Ref SipSecurity, sip_rtp]]", text
+                "SecureSip: !Not [!Equals [!Ref SipSecurity, sip_rtp]]",
+                nested[name],
             )
 
     def test_release_contains_versioned_quick_create_links_and_no_secrets(self):
@@ -440,7 +442,8 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", candidate)
         self.assertIn("packer build", candidate)
         self.assertIn("candidates/qualified/$VERSION/$GITHUB_SHA", candidate)
-        self.assertIn("matrix:\n        region: [us-west-2, us-east-1]", candidate)
+        self.assertIn("for REGION in us-west-2 us-east-1; do", candidate)
+        self.assertNotIn("matrix:\n        region: [us-west-2, us-east-1]", candidate)
         self.assertIn("qualification/controller.py run", candidate)
         self.assertIn("release_objects", candidate)
         self.assertNotIn(
