@@ -64,7 +64,7 @@ and fresh regional qualifications pass.
 | Repository | `eisenzopf/bridgefu-vapi-awsconnect` |
 | Local worktree | `/Users/jonathan/Developer/bridgefu-vapi-awsconnect` |
 | Branch | `codex/staged-vapi-qualification` |
-| Implementation commit | `6ba97cdb2996607911fe999950e56ac640f85336` |
+| Implementation commit | `e88a21524b9eb0329b7e1cb5da2d3d3b7e5cb772` |
 | Local delta | Status-ledger updates only; implementation source is committed and pushed |
 | Pull request | [bridgefu-vapi-awsconnect#26](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/pull/26) |
 | PR state at last update | Draft, open, not merged |
@@ -1259,3 +1259,22 @@ and full 226-test Python suite passed.
   empty disposable auth secret, zero Web-runtime versions, no media rule, no
   runtime overlay/drop-in/temp-secret file, and active/ready Bridgefu on the
   unchanged `f6754354…` digest.
+- The first attempt with the Session Manager plugin crossed runtime install and
+  both tunnel starts, but did not terminate within the call/cleanup deadline.
+  Process inspection proved an AWS `start-session` child and an orphaned
+  `session-manager-plugin` descendant retained the controller's stdout/stderr
+  pipes. The controller terminated only the immediate process, then blocked in
+  an unbounded second `communicate()`. This was local process-tree cleanup, not
+  an AWS session, Vapi, Bridgefu, Connect, SIP, or media result.
+- The single attempt was interrupted only after that exact state was proven.
+  A bounded Vapi query found **zero calls** for the stack assistant during the
+  attempt. Post-interrupt cleanup proved zero owned phone/tool/prompt, an empty
+  disposable auth secret, zero Web-runtime S3 versions, no media rule, no EC2
+  overlay/drop-in/temp-secret, and active/ready Bridgefu on `f6754354…`.
+- Every harness subprocess now starts in its own OS session. All cleanup paths
+  send bounded TERM then KILL to that entire owned process group, so an orphaned
+  plugin cannot retain a pipe indefinitely. Regressions prove session isolation
+  and group escalation without falling back to a single-process kill. The full
+  unit suite passed **263/263** and local release validation passed. The fix was
+  committed and pushed as
+  `e88a21524b9eb0329b7e1cb5da2d3d3b7e5cb772`.
