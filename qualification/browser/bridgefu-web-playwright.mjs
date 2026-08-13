@@ -465,6 +465,55 @@ function installProbe() {
     other: 0,
     selected: 0,
   });
+  const newDescriptionSummary = () => ({
+    present: 0,
+    audioMedia: 0,
+    applicationMedia: 0,
+    rejectedMedia: 0,
+    mids: 0,
+    iceUfrag: 0,
+    icePwd: 0,
+    fingerprint: 0,
+    inlineCandidates: 0,
+    endOfCandidates: 0,
+    iceLite: 0,
+    setupActive: 0,
+    setupPassive: 0,
+    setupActpass: 0,
+  });
+  const classifyDescription = (description) => {
+    const summary = newDescriptionSummary();
+    const sdp = String(description?.sdp ?? "");
+    if (!sdp || sdp.length > 1024 * 1024) return summary;
+    summary.present = 1;
+    for (const line of sdp.split(/\r?\n/).slice(0, 4096)) {
+      if (line.startsWith("m=audio ")) summary.audioMedia += 1;
+      if (line.startsWith("m=application ")) summary.applicationMedia += 1;
+      if (/^m=[^ ]+ 0(?: |$)/.test(line)) summary.rejectedMedia += 1;
+      if (line.startsWith("a=mid:")) summary.mids += 1;
+      if (line.startsWith("a=ice-ufrag:")) summary.iceUfrag += 1;
+      if (line.startsWith("a=ice-pwd:")) summary.icePwd += 1;
+      if (line.startsWith("a=fingerprint:")) summary.fingerprint += 1;
+      if (line.startsWith("a=candidate:")) summary.inlineCandidates += 1;
+      if (line === "a=end-of-candidates") summary.endOfCandidates += 1;
+      if (line === "a=ice-lite") summary.iceLite += 1;
+      if (line === "a=setup:active") summary.setupActive += 1;
+      if (line === "a=setup:passive") summary.setupPassive += 1;
+      if (line === "a=setup:actpass") summary.setupActpass += 1;
+    }
+    return summary;
+  };
+  const newCandidateAssociationSummary = () => ({
+    sdpMidEmpty: 0,
+    sdpMidAbsent: 0,
+    sdpMidNonempty: 0,
+    mLineZero: 0,
+    mLineOther: 0,
+    mLineAbsent: 0,
+    usernameFragmentPresent: 0,
+    addSucceeded: 0,
+    addFailed: 0,
+  });
   const mergeMaximums = (destination, source) => {
     for (const [key, value] of Object.entries(source)) {
       destination[key] = Math.max(destination[key], value);
@@ -505,6 +554,9 @@ function installProbe() {
     remoteIceComplete: 0,
     statsRemoteCandidateSummary: newCandidateSummary(),
     candidatePairSummary: newCandidatePairSummary(),
+    localDescriptionSummary: newDescriptionSummary(),
+    remoteDescriptionSummary: newDescriptionSummary(),
+    remoteCandidateAssociationSummary: newCandidateAssociationSummary(),
     statsSamples: 0,
   };
   globalThis.__bridgefuVapiProbe = state;
@@ -584,8 +636,31 @@ function installProbe() {
         const nativeAddIceCandidate = peer.addIceCandidate.bind(peer);
         peer.addIceCandidate = async (candidate) => {
           if (candidate === null) state.remoteIceComplete += 1;
-          else classifyCandidate(candidate, state.remoteIceCandidateSummary);
-          return nativeAddIceCandidate(candidate);
+          else {
+            classifyCandidate(candidate, state.remoteIceCandidateSummary);
+            if (candidate.sdpMid === "") {
+              state.remoteCandidateAssociationSummary.sdpMidEmpty += 1;
+            } else if (candidate.sdpMid === null || candidate.sdpMid === undefined) {
+              state.remoteCandidateAssociationSummary.sdpMidAbsent += 1;
+            } else state.remoteCandidateAssociationSummary.sdpMidNonempty += 1;
+            if (candidate.sdpMLineIndex === 0) {
+              state.remoteCandidateAssociationSummary.mLineZero += 1;
+            } else if (
+              candidate.sdpMLineIndex === null || candidate.sdpMLineIndex === undefined
+            ) state.remoteCandidateAssociationSummary.mLineAbsent += 1;
+            else state.remoteCandidateAssociationSummary.mLineOther += 1;
+            if (typeof candidate.usernameFragment === "string" && candidate.usernameFragment) {
+              state.remoteCandidateAssociationSummary.usernameFragmentPresent += 1;
+            }
+          }
+          try {
+            const result = await nativeAddIceCandidate(candidate);
+            state.remoteCandidateAssociationSummary.addSucceeded += 1;
+            return result;
+          } catch (error) {
+            state.remoteCandidateAssociationSummary.addFailed += 1;
+            throw error;
+          }
         };
         const sampleStats = async () => {
           try {
@@ -620,6 +695,14 @@ function installProbe() {
             }
             mergeMaximums(state.statsRemoteCandidateSummary, remoteCandidates);
             mergeMaximums(state.candidatePairSummary, candidatePairs);
+            mergeMaximums(
+              state.localDescriptionSummary,
+              classifyDescription(peer.localDescription),
+            );
+            mergeMaximums(
+              state.remoteDescriptionSummary,
+              classifyDescription(peer.remoteDescription),
+            );
             state.statsSamples = Math.min(4096, state.statsSamples + 1);
           } catch {
             // Closed peer diagnostics are intentionally excluded.
@@ -745,6 +828,15 @@ async function applicationSnapshot(page, nonce) {
         candidatePairSummary: {
           ...(globalThis.__bridgefuVapiProbe?.candidatePairSummary ?? {}),
         },
+        localDescriptionSummary: {
+          ...(globalThis.__bridgefuVapiProbe?.localDescriptionSummary ?? {}),
+        },
+        remoteDescriptionSummary: {
+          ...(globalThis.__bridgefuVapiProbe?.remoteDescriptionSummary ?? {}),
+        },
+        remoteCandidateAssociationSummary: {
+          ...(globalThis.__bridgefuVapiProbe?.remoteCandidateAssociationSummary ?? {}),
+        },
         statsSamples: globalThis.__bridgefuVapiProbe?.statsSamples ?? 0,
       };
     },
@@ -789,6 +881,38 @@ async function applicationSnapshot(page, nonce) {
     || !Object.values(value.candidatePairSummary).every(
       (count) => Number.isSafeInteger(count) && count >= 0 && count <= 1024,
     )
+    || !exactKeys(
+      value.localDescriptionSummary,
+      new Set([
+        "present", "audioMedia", "applicationMedia", "rejectedMedia", "mids",
+        "iceUfrag", "icePwd", "fingerprint", "inlineCandidates", "endOfCandidates",
+        "iceLite", "setupActive", "setupPassive", "setupActpass",
+      ]),
+    )
+    || !Object.values(value.localDescriptionSummary).every(
+      (count) => Number.isSafeInteger(count) && count >= 0 && count <= 4096,
+    )
+    || !exactKeys(
+      value.remoteDescriptionSummary,
+      new Set([
+        "present", "audioMedia", "applicationMedia", "rejectedMedia", "mids",
+        "iceUfrag", "icePwd", "fingerprint", "inlineCandidates", "endOfCandidates",
+        "iceLite", "setupActive", "setupPassive", "setupActpass",
+      ]),
+    )
+    || !Object.values(value.remoteDescriptionSummary).every(
+      (count) => Number.isSafeInteger(count) && count >= 0 && count <= 4096,
+    )
+    || !exactKeys(
+      value.remoteCandidateAssociationSummary,
+      new Set([
+        "sdpMidEmpty", "sdpMidAbsent", "sdpMidNonempty", "mLineZero", "mLineOther",
+        "mLineAbsent", "usernameFragmentPresent", "addSucceeded", "addFailed",
+      ]),
+    )
+    || !Object.values(value.remoteCandidateAssociationSummary).every(
+      (count) => Number.isSafeInteger(count) && count >= 0 && count <= 256,
+    )
     || !Number.isSafeInteger(value.statsSamples)
     || value.statsSamples < 0
     || value.statsSamples > 4096
@@ -824,7 +948,24 @@ function failStartup(value) {
     + `pairs_frozen=${value.candidatePairSummary.frozen} `
     + `pairs_other=${value.candidatePairSummary.other} `
     + `pairs_selected=${value.candidatePairSummary.selected} `
-    + `stats_samples=${value.statsSamples}`,
+    + `stats_samples=${value.statsSamples} `
+    + `candidate_mid_empty=${value.remoteCandidateAssociationSummary.sdpMidEmpty} `
+    + `candidate_mid_absent=${value.remoteCandidateAssociationSummary.sdpMidAbsent} `
+    + `candidate_mline_zero=${value.remoteCandidateAssociationSummary.mLineZero} `
+    + `candidate_add_ok=${value.remoteCandidateAssociationSummary.addSucceeded} `
+    + `candidate_add_failed=${value.remoteCandidateAssociationSummary.addFailed} `
+    + `local_audio=${value.localDescriptionSummary.audioMedia} `
+    + `local_app=${value.localDescriptionSummary.applicationMedia} `
+    + `local_candidates=${value.localDescriptionSummary.inlineCandidates} `
+    + `remote_audio=${value.remoteDescriptionSummary.audioMedia} `
+    + `remote_app=${value.remoteDescriptionSummary.applicationMedia} `
+    + `remote_rejected=${value.remoteDescriptionSummary.rejectedMedia} `
+    + `remote_mids=${value.remoteDescriptionSummary.mids} `
+    + `remote_ufrag=${value.remoteDescriptionSummary.iceUfrag} `
+    + `remote_pwd=${value.remoteDescriptionSummary.icePwd} `
+    + `remote_fingerprint=${value.remoteDescriptionSummary.fingerprint} `
+    + `remote_inline_candidates=${value.remoteDescriptionSummary.inlineCandidates} `
+    + `remote_ice_lite=${value.remoteDescriptionSummary.iceLite}`,
   );
 }
 

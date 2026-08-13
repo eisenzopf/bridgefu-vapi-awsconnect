@@ -610,9 +610,14 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("candidatePairSummary", web)
         self.assertIn("statsSamples", web)
         self.assertIn("setInterval(() => void sampleStats(), 100)", web)
+        self.assertIn("remoteCandidateAssociationSummary", web)
+        self.assertIn("localDescriptionSummary", web)
+        self.assertIn("remoteDescriptionSummary", web)
+        self.assertIn("candidate_mid_absent=", web)
+        self.assertIn("remote_inline_candidates=", web)
         self.assertIn("remote_added_udp4host=", web)
         self.assertIn("pairs_selected=", web)
-        self.assertNotIn("remoteDescription.sdp", web)
+        self.assertNotIn("sdp:", web.split("function failStartup", 1)[1])
 
     def test_connect_available_is_selected_before_either_source_starts(self):
         controller = (QUALIFICATION / "controller.py").read_text()

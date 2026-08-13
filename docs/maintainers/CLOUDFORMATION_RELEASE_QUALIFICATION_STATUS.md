@@ -1611,3 +1611,32 @@ and full 226-test Python suite passed.
   The next permitted action is one retained Web smoke using exactly that sealed
   site. It tests the proven SDK correction at the current gate only; SIP-source
   smoke remains blocked until Web passes.
+- That exact sealed-site run repeated the prior failure unchanged: one server
+  IPv4/UDP candidate and ICE completion reached `addIceCandidate`, but Chromium
+  remained peer/ICE `new` and reported no candidate pair across 898 samples.
+  The minified deployed bundle was inspected and does contain the empty-MID
+  normalization. Therefore the empty rvoip MID is a real interoperability defect
+  and the SDK workaround is locally correct, but it is **not the live root
+  cause** of this Oregon failure. The earlier status conclusion is superseded;
+  no Vapi or release gate advanced.
+- Cleanup is required and must be proven again before more live work. The next
+  investigation must classify the offer/answer media and ICE attributes without
+  retaining SDP, verify the server candidate's media-section association after
+  normalization, and determine whether the 49 server-originated UDP packets are
+  visible at the browser host. No additional Web retry is authorized until that
+  diagnostic is implemented and locally tested.
+- Cleanup after the disproving run is now proven: zero handoff records, no
+  temporary media ingress, no owned Vapi phone, an exactly empty temporary auth
+  secret, and no Web-runtime S3 versions or delete markers. The local Mac allows
+  non-privileged count-only packet capture on its active interface, so the next
+  diagnostic can compare browser-host and EC2 packet directions without
+  retaining endpoints or payloads. The retained stacks remain otherwise
+  unchanged and healthy.
+- The next browser diagnostic is implemented and locally green. It samples only
+  bounded counts for local/remote SDP media sections, rejected sections, MID,
+  ICE credential, fingerprint, setup, inline-candidate and ICE-lite attributes;
+  it also counts the normalized candidate's MID/index/username-fragment shape
+  and whether `addIceCandidate` succeeded. Raw SDP, candidates, ICE credentials,
+  addresses, and identifiers never leave browser memory. All **268** unit tests,
+  browser syntax, Ruff, deterministic release validation, and diff checks pass.
+  One paired browser/EC2 direction-only packet diagnostic is permitted next.
