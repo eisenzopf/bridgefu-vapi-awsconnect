@@ -34,7 +34,7 @@ Parameters:
     AllowedPattern: '^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$'
   InstanceType:
     Type: String
-    Default: t4g.large
+    Default: c7g.2xlarge
     AllowedValues: [t4g.medium, t4g.large, t4g.xlarge, t4g.2xlarge, c7g.large, c7g.xlarge, c7g.2xlarge, m7g.large, m7g.xlarge, m7g.2xlarge]
   SipSecurity:
     Type: String

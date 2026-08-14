@@ -6283,7 +6283,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--direct-secure-probe", required=True, type=Path)
     value.add_argument("--demo-site-archive", required=True, type=Path)
     value.add_argument("--demo-site-sha256", required=True)
-    value.add_argument("--instance-type", default="t4g.large")
+    value.add_argument("--instance-type", default="c7g.2xlarge")
     value.add_argument(
         "--retain-on-failure",
         action="store_true",

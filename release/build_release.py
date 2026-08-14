@@ -391,7 +391,7 @@ def main() -> int:
                 "templateURL": template_url,
                 "stackName": "bridgefu-vapi-connect",
                 "param_DeploymentId": "support",
-                "param_InstanceType": "t4g.large",
+                "param_InstanceType": "c7g.2xlarge",
             }
         )
         quick_create = {

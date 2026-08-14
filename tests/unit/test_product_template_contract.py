@@ -151,7 +151,7 @@ class ProductTemplateContractTests(unittest.TestCase):
         query = urllib.parse.parse_qs(query_text)
         self.assertEqual(query["stackName"], ["bridgefu-vapi-connect"])
         self.assertEqual(query["param_DeploymentId"], ["support"])
-        self.assertEqual(query["param_InstanceType"], ["t4g.large"])
+        self.assertEqual(query["param_InstanceType"], ["c7g.2xlarge"])
         self.assertEqual(
             query["templateURL"],
             [

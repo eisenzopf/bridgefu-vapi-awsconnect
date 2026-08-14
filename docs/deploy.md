@@ -54,7 +54,7 @@ can read the key, and no stack output or log contains it.
 The public release link is updated only after a signed release passes live
 qualification in both supported AWS regions:
 
-- **[Launch Bridgefu with CloudFormation](https://console.aws.amazon.com/cloudformation/home#/stacks/create/review?templateURL=https%3A%2F%2Fbridgefu-vapi-awsconnect-225478700523-us-east-1.s3.us-east-1.amazonaws.com%2Flatest%2Fcloudformation%2Ftemplate.yaml&stackName=bridgefu-vapi-connect&param_DeploymentId=support&param_InstanceType=t4g.large)**
+- **[Launch Bridgefu with CloudFormation](https://console.aws.amazon.com/cloudformation/home#/stacks/create/review?templateURL=https%3A%2F%2Fbridgefu-vapi-awsconnect-225478700523-us-east-1.s3.us-east-1.amazonaws.com%2Flatest%2Fcloudformation%2Ftemplate.yaml&stackName=bridgefu-vapi-connect&param_DeploymentId=support&param_InstanceType=c7g.2xlarge)**
 
 Use the normal AWS region selector to choose the region containing your Connect
 instance before creating the stack. The template reads that selection through
@@ -67,7 +67,7 @@ Enter:
 - The Connect instance and destination-flow ARNs.
 - The Route53 hosted-zone ID and SIP hostname.
 - The Vapi secret ARN.
-- The Bridgefu EC2 size. `t4g.large` is the default.
+- The Bridgefu EC2 size. CPU-optimized `c7g.2xlarge` is the default.
 
 Leave the field and routing JSON at their defaults for the first deployment.
 Review the IAM capabilities, create the stack, and wait for `CREATE_COMPLETE`.
@@ -87,7 +87,7 @@ used with production retention.
 | Group | Required choices | Defaults you can usually keep |
 |---|---|---|
 | AWS console | Region containing your Connect instance | Oregon preferred for a new Vapi US deployment |
-| Deployment | Deployment name | `t4g.large` EC2 |
+| Deployment | Deployment name | `c7g.2xlarge` EC2 |
 | Amazon Connect | Instance ARN, published flow ARN | — |
 | Public SIP DNS | Hosted-zone ID, new hostname | — |
 | Vapi | Private-key secret ARN | Model `gpt-4.1-mini`, voice `Elliot` |

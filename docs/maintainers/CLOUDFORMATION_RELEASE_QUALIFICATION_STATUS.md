@@ -2245,5 +2245,6 @@ and full 226-test Python suite passed.
   templates now admit the eight-vCPU `t4g.2xlarge`, `c7g.2xlarge`, and
   `m7g.2xlarge` sizes. The next call qualification will use `c7g.2xlarge`
   (eight vCPUs, 16 GiB RAM) unless the retained-stack update cannot preserve
-  the exact customer-template topology; `t4g.large` remains the documented
-  starter default until measured call evidence supports changing it.
+  the exact customer-template topology. `c7g.2xlarge` is now the documented
+  product, Quick Create, and qualification default; smaller Graviton choices
+  remain available only when a customer deliberately selects them.

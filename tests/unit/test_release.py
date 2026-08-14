@@ -359,7 +359,7 @@ class ReleaseContractTests(unittest.TestCase):
             self.assertNotIn("region", urllib.parse.parse_qs(parsed.query))
             query = urllib.parse.parse_qs(parsed.fragment.split("?", 1)[1])
             self.assertEqual(query["stackName"], ["bridgefu-vapi-connect"])
-            self.assertEqual(query["param_InstanceType"], ["t4g.large"])
+            self.assertEqual(query["param_InstanceType"], ["c7g.2xlarge"])
             self.assertIn("/releases/1.2.3-test/", query["templateURL"][0])
 
     def test_deployment_region_uses_aws_console_for_both_us_connect_regions(self):
