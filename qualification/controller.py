@@ -4451,7 +4451,6 @@ class Controller:
         )
         self.temp_sip_auth_object = f"s3://{bucket}/{prefix}/sip-auth.json"
         client_object = f"s3://{bucket}/{prefix}/sip-client"
-        output_object = f"s3://{bucket}/{prefix}/observation.json"
         self.runner.run(
             [
                 "aws",
@@ -4503,7 +4502,11 @@ class Controller:
                 f"--execution-id {self.args.execution_id} --output {remote_output} "
                 "--timeout-seconds 90"
             ),
-            f"aws s3 cp {remote_output} {output_object} --only-show-errors",
+            # The gateway role is intentionally read-only for qualification
+            # objects. The probe artifact is a strict, closed-vocabulary,
+            # redacted JSON object, so return it through the authenticated SSM
+            # command result instead of granting the instance S3 PutObject.
+            f"cat {remote_output}",
             f"rm -f {remote_client} {remote_output}",
             f"rmdir {remote_directory}",
         ]
@@ -4529,9 +4532,12 @@ class Controller:
                 self.ssm_commands.remove(command_id)
             raise
         self.ssm_commands.remove(command_id)
-        local_output = self.work / f"vapi-auth-probe-{phone_fingerprint}.json"
-        self.aws.text(["s3", "cp", output_object, os.fspath(local_output)])
-        result = read_json(local_output)
+        try:
+            result = json.loads(read_ssm_output(self.aws, command_id, instance))
+        except json.JSONDecodeError as error:
+            raise QualificationError(
+                "temporary Vapi SIP probe result is invalid"
+            ) from error
         expected = {
             "schema_version": 1,
             "producer": "bridgefu-vapi-sip-smoke@1",

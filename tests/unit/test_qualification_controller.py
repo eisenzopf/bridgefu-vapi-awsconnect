@@ -570,7 +570,34 @@ class QualificationControllerTests(unittest.TestCase):
             "username": "bfq_0123456789abcdef",
             "password": "not-retained-password-value",
         }
-        with mock.patch.object(CONTROLLER, "wait_for_ssm_command"):
+        observation = {
+            "schema_version": 1,
+            "producer": "bridgefu-vapi-sip-smoke@1",
+            "producer_revision_sha256": "a" * 64,
+            "mode": "authenticated-readiness",
+            "ready": True,
+            "final_status": 200,
+            "signaling": {
+                "digest_challenge_received": True,
+                "authenticated_invite_count": 2,
+                "answered": True,
+                "transport": "udp",
+            },
+            "media": {"opened": True, "silence_frames_sent": 50},
+            "hangup": {
+                "local_bye_completed": True,
+                "cleanup_observed": True,
+            },
+            "redacted": True,
+        }
+        with (
+            mock.patch.object(CONTROLLER, "wait_for_ssm_command"),
+            mock.patch.object(
+                CONTROLLER,
+                "read_ssm_output",
+                return_value=json.dumps(observation, separators=(",", ":")),
+            ),
+        ):
             controller.prove_temporary_vapi_phone_authentication(
                 authentication,
                 "phone_1234",
@@ -583,6 +610,8 @@ class QualificationControllerTests(unittest.TestCase):
         self.assertIn("--authentication-probe", encoded)
         self.assertNotIn(authentication["password"], encoded)
         self.assertNotIn("phone_1234", encoded)
+        self.assertIn("cat /var/lib/bridgefu/qualification/", encoded)
+        self.assertNotIn("observation.json s3://", encoded)
         self.assertEqual(controller.ssm_commands, [])
 
     def test_vapi_generic_deletion_targets_and_verifies_one_exact_id(self):
