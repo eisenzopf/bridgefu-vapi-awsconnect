@@ -43,6 +43,18 @@ class RuntimeObservabilityTests(unittest.TestCase):
                 }
             ],
         )
+        self.assertEqual(
+            config["metrics"]["metrics_collected"]["cpu"][
+                "metrics_collection_interval"
+            ],
+            10,
+        )
+        self.assertEqual(
+            config["metrics"]["metrics_collected"]["mem"][
+                "metrics_collection_interval"
+            ],
+            10,
+        )
 
     def test_systemd_captures_stdout_and_stderr_in_private_runtime_log(self):
         service = (RUNTIME / "bridgefu.service").read_text()
