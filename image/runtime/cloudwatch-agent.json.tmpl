@@ -29,7 +29,14 @@
       "netstat": {
         "measurement": ["tcp_established", "tcp_time_wait"],
         "metrics_collection_interval": 60
-      }
+      },
+      "procstat": [
+        {
+          "exe": "bridgefu",
+          "measurement": ["cpu_usage", "memory_rss"],
+          "metrics_collection_interval": 10
+        }
+      ]
     }
   },
   "logs": {
