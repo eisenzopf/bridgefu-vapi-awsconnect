@@ -681,6 +681,15 @@ jobs:
                .release == $version and .region == $region and
                .bridgefu_commit == $bridgefu_commit and .redacted == true and
                .secure_preflight.passed == true and
+               ((.database_resets | keys | sort) == ["bridgefu-web-sdk-handoff","direct-secure-preflight","vapi-sip-transfer"]) and
+               ([.database_resets[] |
+                 (.schema_version == 1 and
+                  .producer == "bridgefu-qualification-database-reset@1" and
+                  .test_delete_verified == true and
+                  .prior_calls_terminal == true and
+                  .fresh_database == true and
+                  .bridgefu_ready == true and
+                  .redacted == true)] | all(. == true)) and
                (.secure_preflight.checks | exact_true_checks([
                  "sips_signaling",
                  "tls_transport",
@@ -890,8 +899,8 @@ jobs:
             --argjson east_evidence_schema_version "$(jq .schema_version target/qualification/us-east-1/evidence.json)" \
             --argjson west_secure_preflight_passed "$(jq .secure_preflight.passed target/qualification/us-west-2/evidence.json)" \
             --argjson east_secure_preflight_passed "$(jq .secure_preflight.passed target/qualification/us-east-1/evidence.json)" \
-            --argjson west_required_checks_passed "$(jq '[.secure_preflight.checks[], .vapi_provisioning_resilience.ambiguous_create_reconciled, .vapi_provisioning_resilience.first_cycle_deleted, .vapi_provisioning_resilience.second_cycle_recreated, .vapi_provisioning_resilience.exact_owner_resources_present, .vapi_provisioning_resilience.passed, .scenarios[].passed, .scenarios[].checks[], .teardown[]] | all(. == true)' target/qualification/us-west-2/evidence.json)" \
-            --argjson east_required_checks_passed "$(jq '[.secure_preflight.checks[], .vapi_provisioning_resilience.ambiguous_create_reconciled, .vapi_provisioning_resilience.first_cycle_deleted, .vapi_provisioning_resilience.second_cycle_recreated, .vapi_provisioning_resilience.exact_owner_resources_present, .vapi_provisioning_resilience.passed, .scenarios[].passed, .scenarios[].checks[], .teardown[]] | all(. == true)' target/qualification/us-east-1/evidence.json)" \
+            --argjson west_required_checks_passed "$(jq '[.secure_preflight.checks[], .database_resets[].test_delete_verified, .database_resets[].prior_calls_terminal, .database_resets[].fresh_database, .database_resets[].bridgefu_ready, .vapi_provisioning_resilience.ambiguous_create_reconciled, .vapi_provisioning_resilience.first_cycle_deleted, .vapi_provisioning_resilience.second_cycle_recreated, .vapi_provisioning_resilience.exact_owner_resources_present, .vapi_provisioning_resilience.passed, .scenarios[].passed, .scenarios[].checks[], .teardown[]] | all(. == true)' target/qualification/us-west-2/evidence.json)" \
+            --argjson east_required_checks_passed "$(jq '[.secure_preflight.checks[], .database_resets[].test_delete_verified, .database_resets[].prior_calls_terminal, .database_resets[].fresh_database, .database_resets[].bridgefu_ready, .vapi_provisioning_resilience.ambiguous_create_reconciled, .vapi_provisioning_resilience.first_cycle_deleted, .vapi_provisioning_resilience.second_cycle_recreated, .vapi_provisioning_resilience.exact_owner_resources_present, .vapi_provisioning_resilience.passed, .scenarios[].passed, .scenarios[].checks[], .teardown[]] | all(. == true)' target/qualification/us-east-1/evidence.json)" \
             --argjson west_scenario_ids "$(jq -c '[.scenarios[].id] | sort' target/qualification/us-west-2/evidence.json)" \
             --argjson east_scenario_ids "$(jq -c '[.scenarios[].id] | sort' target/qualification/us-east-1/evidence.json)" \
             '{schema: $schema, candidate_id: $candidate_id, version: $version,

@@ -4,7 +4,7 @@
   "title": "Bridgefu secure preflight and Vapi to Amazon Connect release evidence",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "release", "execution_id", "region", "started_at", "ended_at", "bridgefu_commit", "secure_preflight", "vapi_provisioning_resilience", "scenarios", "teardown", "redacted"],
+  "required": ["schema_version", "release", "execution_id", "region", "started_at", "ended_at", "bridgefu_commit", "secure_preflight", "database_resets", "vapi_provisioning_resilience", "scenarios", "teardown", "redacted"],
   "properties": {
     "schema_version": {"const": 2},
     "release": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$"},
@@ -79,6 +79,16 @@
           }
         },
         "passed": {"const": true}
+      }
+    },
+    "database_resets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["direct-secure-preflight", "bridgefu-web-sdk-handoff", "vapi-sip-transfer"],
+      "properties": {
+        "direct-secure-preflight": {"allOf": [{"$ref": "#/$defs/databaseReset"}, {"properties": {"stage": {"const": "direct-secure-preflight"}}}]},
+        "bridgefu-web-sdk-handoff": {"allOf": [{"$ref": "#/$defs/databaseReset"}, {"properties": {"stage": {"const": "bridgefu-web-sdk-handoff"}}}]},
+        "vapi-sip-transfer": {"allOf": [{"$ref": "#/$defs/databaseReset"}, {"properties": {"stage": {"const": "vapi-sip-transfer"}}}]}
       }
     },
     "vapi_provisioning_resilience": {
@@ -177,5 +187,22 @@
       }
     },
     "redacted": {"const": true}
+  },
+  "$defs": {
+    "databaseReset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "producer", "stage", "test_delete_verified", "prior_calls_terminal", "fresh_database", "bridgefu_ready", "redacted"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "producer": {"const": "bridgefu-qualification-database-reset@1"},
+        "stage": {"enum": ["direct-secure-preflight", "bridgefu-web-sdk-handoff", "vapi-sip-transfer"]},
+        "test_delete_verified": {"const": true},
+        "prior_calls_terminal": {"const": true},
+        "fresh_database": {"const": true},
+        "bridgefu_ready": {"const": true},
+        "redacted": {"const": true}
+      }
+    }
   }
 }

@@ -473,6 +473,7 @@ class QualificationControllerTests(unittest.TestCase):
             "assistant_1234",
             timeout=1,
             poll_seconds=0,
+            stable_seconds=0,
         )
         self.assertEqual(active["status"], "active")
         self.assertEqual(client.observed, ("phone-number", "phone_1234"))
@@ -485,6 +486,20 @@ class QualificationControllerTests(unittest.TestCase):
                 "assistant_1234",
                 timeout=1,
                 poll_seconds=0,
+                stable_seconds=0,
+            )
+
+        with self.assertRaisesRegex(
+            CONTROLLER.QualificationError, "stability bound"
+        ):
+            CONTROLLER.wait_for_vapi_phone_active(
+                FakeVapi(["active"]),
+                "phone_1234",
+                "sip:bfq_0123456789abcdef@sip.vapi.ai",
+                "assistant_1234",
+                timeout=1,
+                poll_seconds=0,
+                stable_seconds=1,
             )
 
     def test_vapi_generic_deletion_targets_and_verifies_one_exact_id(self):
@@ -2281,9 +2296,12 @@ class QualificationControllerTests(unittest.TestCase):
                 "preflight",
                 "cloudformation_deploy",
                 "connect_authentication",
+                "direct_secure_database_reset",
                 "direct_secure_preflight",
                 "credential_initialization",
+                "vapi_web_database_reset",
                 "vapi_web_transfer",
+                "vapi_sip_database_reset",
                 "vapi_sip_transfer",
                 "vapi_provisioning_resilience",
             ):

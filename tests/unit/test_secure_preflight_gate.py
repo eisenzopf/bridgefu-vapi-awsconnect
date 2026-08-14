@@ -359,11 +359,13 @@ class SecurePreflightGateTests(unittest.TestCase):
         run_controller.secure_preflight_cleanup_required = False
         run_controller.secure_preflight_restoration_passed = False
         run_controller.secure_preflight_cleanup_passed = False
+        run_controller.database_reset_evidence = {}
         run_controller.validate_inputs = mock.Mock()
         run_controller.preflight = mock.Mock()
         run_controller.deploy = mock.Mock()
         run_controller.build_site = mock.Mock(return_value=(Path("site"), "digest"))
         run_controller.authenticate_agent = mock.Mock(return_value=Path("storage"))
+        run_controller.reset_test_database = mock.Mock()
 
         def fail_direct(_storage):
             run_controller.secure_preflight_cleanup_required = True
@@ -415,6 +417,10 @@ class SecurePreflightGateTests(unittest.TestCase):
     def test_run_orders_restoration_before_credentials_and_both_sources(self):
         source = inspect.getsource(CONTROLLER.Controller.run)
         self.assertLess(
+            source.index('self.reset_test_database("direct-secure-preflight")'),
+            source.index("self.direct_secure_preflight(storage)"),
+        )
+        self.assertLess(
             source.index("self.direct_secure_preflight(storage)"),
             source.index("self.initialize_vapi()"),
         )
@@ -425,6 +431,14 @@ class SecurePreflightGateTests(unittest.TestCase):
         self.assertLess(
             source.index("self.direct_secure_preflight(storage)"),
             source.index("self.web_smoke("),
+        )
+        self.assertLess(
+            source.index("self.reset_test_database(WEB_SCENARIO)"),
+            source.index("self.web_smoke("),
+        )
+        self.assertLess(
+            source.index('self.reset_test_database("vapi-sip-transfer")'),
+            source.index("self.sip_smoke("),
         )
         self.assertLess(
             source.index("self.direct_secure_preflight(storage)"),
@@ -624,6 +638,23 @@ class SecurePreflightGateTests(unittest.TestCase):
                 "cleanup_receipt_sha256": "d" * 64,
                 "checks": secure_checks,
                 "passed": True,
+            },
+            "database_resets": {
+                stage: {
+                    "schema_version": 1,
+                    "producer": "bridgefu-qualification-database-reset@1",
+                    "stage": stage,
+                    "test_delete_verified": True,
+                    "prior_calls_terminal": True,
+                    "fresh_database": True,
+                    "bridgefu_ready": True,
+                    "redacted": True,
+                }
+                for stage in (
+                    "direct-secure-preflight",
+                    "bridgefu-web-sdk-handoff",
+                    "vapi-sip-transfer",
+                )
             },
             "vapi_provisioning_resilience": {
                 "schema_version": 1,

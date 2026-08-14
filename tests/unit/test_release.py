@@ -596,6 +596,23 @@ class ReleaseContractTests(unittest.TestCase):
                 "passed": True,
                 "checks": {name: True for name in secure_required},
             },
+            "database_resets": {
+                stage: {
+                    "schema_version": 1,
+                    "producer": "bridgefu-qualification-database-reset@1",
+                    "stage": stage,
+                    "test_delete_verified": True,
+                    "prior_calls_terminal": True,
+                    "fresh_database": True,
+                    "bridgefu_ready": True,
+                    "redacted": True,
+                }
+                for stage in (
+                    "direct-secure-preflight",
+                    "bridgefu-web-sdk-handoff",
+                    "vapi-sip-transfer",
+                )
+            },
             "vapi_provisioning_resilience": {
                 "schema_version": 1,
                 "producer": "bridgefu-vapi-provisioning-resilience@1",
@@ -954,9 +971,7 @@ class ReleaseContractTests(unittest.TestCase):
         )[1].split("- Sid:", 1)[0]
         self.assertIn("Action: secretsmanager:PutSecretValue", statement)
         self.assertIn("secret:bridgefu/bfq-*", statement)
-        self.assertIn(
-            "aws:ResourceTag/ManagedBy: bridgefu-qualification", statement
-        )
+        self.assertIn("aws:ResourceTag/ManagedBy: bridgefu-qualification", statement)
         self.assertNotIn("VapiApiKeySecretArn", statement)
         self.assertNotIn("Resource: '*'", statement)
 

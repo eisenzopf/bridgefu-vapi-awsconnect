@@ -2333,3 +2333,49 @@ and full 226-test Python suite passed.
   as fallback, rather than inferring transmission from WAV timing.
 - The next permitted action remains one bounded retained Web SDK retry after
   the exact browser contracts and complete local suite pass.
+
+### 2026-08-13 — Per-scenario database isolation and Vapi SIP propagation gate
+
+- The five-second source and agent media markers are now committed. The short
+  browser speech prompt remains exactly `Transfer me please.` after five
+  seconds of silence, and the browser proves WebRTC/ICE plus outbound RTP before
+  it can publish source readiness.
+- Live Vapi evidence proved the speech path: Vapi transcribed the request and
+  invoked the dedicated direct tool. The next failure was not missing speech.
+  Eight replacement attempts first returned HTTP 409; after the bounded
+  Bridgefu version-conflict retry was installed, two attempts reached HTTP 504.
+- The 504 boundary was SQLite history amplification. The retained 29.8 MiB
+  database contained only 13 calls but thousands of durable commands, outbox
+  records, reconciliation results, and deadlines. Replacement mutations spent
+  7.9 to 30.0 seconds rebuilding retained state. This remains a production
+  retention/scalability defect to fix; qualification isolation must not be used
+  as evidence that accumulated production history is healthy.
+- The disposable retained database was reset once after proving every call was
+  terminal. Bridgefu created a fresh migrated database and remained healthy.
+  The following call stopped earlier because Vapi returned HTTP 403 to the SIP
+  INVITE even though its API already reported the transient endpoint `active`.
+  The endpoint readiness guard now requires 90 continuous seconds of the exact
+  active identity before the Web call begins.
+- The live `c7g.2xlarge` active window remained within the required capacity:
+  host CPU peak 44.994%, Bridgefu-normalized CPU peak 43.634%, host memory peak
+  6.536%, and Bridgefu RSS peak 3.209%. The instance has eight vCPUs and 16 GiB;
+  automatic systemd restart count remained zero. Compiler load is excluded.
+- Qualification now resets SQLite before each of the three independent tests:
+  direct secure preflight, Bridgefu Web SDK handoff, and Vapi SIP transfer. Each
+  reset requires the CloudFormation `TestDelete` marker, proves all prior calls
+  terminal before and after stopping the service, stages the prior database for
+  rollback, starts a newly migrated database, proves zero call rows, and stays
+  healthy across the lease-renewal interval. A separate idempotent cleanup
+  command restores the prior database if reset or cancellation fails.
+- All three reset receipts are required in evidence-v2 and independently gated
+  when the candidate receipt is sealed. This prevents cross-test history from
+  making one smoke affect another while preserving the accumulated-history
+  defect as a separate product blocker.
+- Local validation is green: 298 unit tests, Ruff, workflow syntax, deterministic
+  packaging, release policy checks, and local CloudFormation lint. AWS
+  `ValidateTemplate` passed for all ten rendered root/nested templates in both
+  `us-west-2` and `us-east-1`; validation created no resources.
+- The next permitted AWS action is one retained Oregon Web SDK smoke. It must
+  invoke the qualification database reset first, wait through the Vapi endpoint
+  stability window, then run with continuous CPU/memory/restart monitoring. No
+  GitHub candidate or release workflow is permitted.

@@ -34,9 +34,12 @@
         "cloudformation_deploy",
         "web_site_build",
         "connect_authentication",
+        "direct_secure_database_reset",
         "direct_secure_preflight",
         "credential_initialization",
+        "vapi_web_database_reset",
         "vapi_web_transfer",
+        "vapi_sip_database_reset",
         "vapi_sip_transfer",
         "vapi_provisioning_resilience"
       ]

@@ -338,6 +338,9 @@ Outputs:
     Value: !GetAtt DisposableConnect.Outputs.AgentCredentialSecretArn
   BridgefuInstanceId:
     Value: !GetAtt Candidate.Outputs.BridgefuInstanceId
+  QualificationDataRetentionMode:
+    Description: Fail-closed marker authorizing per-scenario database resets.
+    Value: TestDelete
   QualificationSipPrivateHostedZoneId:
     Value: !Ref QualificationSipPrivateHostedZone
   ArtifactBucket:

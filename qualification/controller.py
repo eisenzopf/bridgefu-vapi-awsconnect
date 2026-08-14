@@ -38,8 +38,9 @@ import jsonschema
 
 try:
     import direct_secure_preflight
+    import test_database_reset
 except ModuleNotFoundError:  # Imported as a repository module by unit tests.
-    from qualification import direct_secure_preflight
+    from qualification import direct_secure_preflight, test_database_reset
 
 try:
     import bridgefu_web_handoff
@@ -2537,6 +2538,7 @@ def stack_outputs(value: Any) -> dict[str, str]:
         "AgentUsername",
         "AgentCredentialSecretArn",
         "BridgefuInstanceId",
+        "QualificationDataRetentionMode",
         "ArtifactBucket",
         "VapiAssistantId",
         "VapiProvisioningStackId",
@@ -3316,16 +3318,26 @@ def wait_for_vapi_phone_active(
     sip_uri: str,
     assistant_id: str,
     *,
-    timeout: int = 60,
+    timeout: int = 180,
     poll_seconds: float = 0.5,
+    stable_seconds: float = 90,
 ) -> Mapping[str, Any]:
-    """Poll the exact transient endpoint instead of assuming propagation time."""
+    """Require exact API identity plus a bounded continuous active interval.
+
+    Vapi can report a BYO SIP endpoint as ``active`` before its SIP edge has
+    propagated the new digest credential. The continuous interval is a
+    qualification-only readiness guard; it never changes the product stack.
+    """
     if not all(
         isinstance(value, str) and RESOURCE_ID.fullmatch(value)
         for value in (phone_id, assistant_id)
     ):
         raise QualificationError("temporary Vapi SIP endpoint identity is invalid")
+    if stable_seconds < 0 or stable_seconds >= timeout:
+        raise QualificationError("temporary Vapi SIP stability bound is invalid")
     deadline = time.monotonic() + timeout
+    active_since: float | None = None
+    active_phone: Mapping[str, Any] | None = None
     while True:
         phone = vapi.get("phone-number", phone_id)
         if phone is not None:
@@ -3339,12 +3351,21 @@ def wait_for_vapi_phone_active(
                 )
             status = phone.get("status")
             if status == "active":
-                return phone
+                now = time.monotonic()
+                if active_since is None:
+                    active_since = now
+                active_phone = phone
+                if now - active_since >= stable_seconds:
+                    return active_phone
             if status not in {"pending", "provisioning", "creating"}:
-                raise QualificationError(
-                    "temporary Vapi SIP endpoint entered terminal status: "
-                    + sanitize_diagnostic(status, 128)
-                )
+                if status != "active":
+                    raise QualificationError(
+                        "temporary Vapi SIP endpoint entered terminal status: "
+                        + sanitize_diagnostic(status, 128)
+                    )
+            elif active_since is not None:
+                active_since = None
+                active_phone = None
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise QualificationError("temporary Vapi SIP endpoint activation timed out")
@@ -3413,6 +3434,7 @@ class Controller:
         self.secure_preflight_cleanup_required = False
         self.secure_preflight_restoration_passed = False
         self.secure_preflight_cleanup_passed = False
+        self.database_reset_evidence: dict[str, dict[str, Any]] = {}
         self.bridgefu_lock = read_json(ROOT / "bridgefu.lock.json")
 
     def validate_inputs(self) -> None:
@@ -3998,6 +4020,87 @@ class Controller:
             raise QualificationError("qualification SSM command ID is invalid")
         self.ssm_commands.append(command_id)
         return command_id
+
+    def reset_test_database(self, stage: str) -> None:
+        """Give each disposable qualification scenario an isolated SQLite state."""
+        instance = self.outputs.get("BridgefuInstanceId")
+        if self.outputs.get("QualificationDataRetentionMode") != "TestDelete":
+            raise QualificationError(
+                "qualification database reset requires DataRetentionMode=TestDelete"
+            )
+        if not isinstance(instance, str) or RESOURCE_ID.fullmatch(instance) is None:
+            raise QualificationError("qualification database reset target is invalid")
+        if self.processes:
+            raise QualificationError(
+                "qualification database reset requires no active local process"
+            )
+        try:
+            reset_program = test_database_reset.reset_script(
+                self.args.execution_id, stage
+            )
+            cleanup_program = test_database_reset.cleanup_script(
+                self.args.execution_id, stage
+            )
+        except test_database_reset.TestDatabaseResetError as error:
+            raise QualificationError(
+                "qualification database reset contract is invalid"
+            ) from error
+
+        reset_result: Mapping[str, Any] | None = None
+        reset_command_id: str | None = None
+        primary_error: BaseException | None = None
+        try:
+            reset_command_id = self.send_owned_shell(instance, reset_program)
+            wait_for_ssm_command(self.aws, reset_command_id, instance, timeout=240)
+            reset_result = test_database_reset.parse_reset_result(
+                read_ssm_output(self.aws, reset_command_id, instance), stage
+            )
+        except BaseException as error:
+            primary_error = error
+        finally:
+            if reset_command_id is not None:
+                terminal = cancel_and_wait_ssm_terminal(
+                    self.aws, reset_command_id, instance
+                )
+                if terminal and reset_command_id in self.ssm_commands:
+                    self.ssm_commands.remove(reset_command_id)
+                if not terminal and primary_error is None:
+                    primary_error = QualificationError(
+                        "qualification database reset command is not terminal"
+                    )
+
+        cleanup_error: BaseException | None = None
+        cleanup_command_id: str | None = None
+        try:
+            cleanup_command_id = self.send_owned_shell(instance, cleanup_program)
+            wait_for_ssm_command(self.aws, cleanup_command_id, instance, timeout=180)
+            test_database_reset.parse_cleanup_result(
+                read_ssm_output(self.aws, cleanup_command_id, instance), stage
+            )
+        except BaseException as error:
+            cleanup_error = error
+        finally:
+            if cleanup_command_id is not None:
+                terminal = cancel_and_wait_ssm_terminal(
+                    self.aws, cleanup_command_id, instance
+                )
+                if terminal and cleanup_command_id in self.ssm_commands:
+                    self.ssm_commands.remove(cleanup_command_id)
+                if not terminal and cleanup_error is None:
+                    cleanup_error = QualificationError(
+                        "qualification database reset cleanup is not terminal"
+                    )
+
+        if primary_error is not None or cleanup_error is not None:
+            details = []
+            if primary_error is not None:
+                details.append("database reset failed")
+            if cleanup_error is not None:
+                details.append("database reset rollback proof failed")
+            raise QualificationError("; ".join(details))
+        if reset_result is None:
+            raise QualificationError("qualification database reset evidence is absent")
+        self.database_reset_evidence[stage] = dict(reset_result)
 
     def direct_secure_preflight(self, storage: Path) -> None:
         """Gate both release smokes on a restored direct SIPS/SDES-SRTP call."""
@@ -6138,13 +6241,19 @@ class Controller:
             self.deploy()
             self.phase = "connect_authentication"
             storage = self.authenticate_agent()
+            self.phase = "direct_secure_database_reset"
+            self.reset_test_database("direct-secure-preflight")
             self.phase = "direct_secure_preflight"
             self.direct_secure_preflight(storage)
             self.phase = "credential_initialization"
             self.initialize_vapi()
             correlation_key = self.aws.secret(self.outputs["CorrelationKeySecretArn"])
+            self.phase = "vapi_web_database_reset"
+            self.reset_test_database(WEB_SCENARIO)
             self.phase = "vapi_web_transfer"
             self.web_smoke(site, site_digest, storage, correlation_key)
+            self.phase = "vapi_sip_database_reset"
+            self.reset_test_database("vapi-sip-transfer")
             self.phase = "vapi_sip_transfer"
             self.sip_smoke(storage, correlation_key)
             self.phase = "vapi_provisioning_resilience"
@@ -6223,6 +6332,7 @@ class Controller:
             zero is None
             or self.secure_preflight_evidence is None
             or self.vapi_provisioning_resilience_evidence is None
+            or set(self.database_reset_evidence) != test_database_reset.STAGES
             or {item["id"] for item in self.scenario_evidence} != set(SCENARIOS)
             or len(self.scenario_evidence) != len(SCENARIOS)
         ):
@@ -6238,6 +6348,10 @@ class Controller:
             "ended_at": utc_now(),
             "bridgefu_commit": self.bridgefu_lock["commit"],
             "secure_preflight": self.secure_preflight_evidence,
+            "database_resets": {
+                stage: self.database_reset_evidence[stage]
+                for stage in sorted(test_database_reset.STAGES)
+            },
             "vapi_provisioning_resilience": (
                 self.vapi_provisioning_resilience_evidence
             ),
