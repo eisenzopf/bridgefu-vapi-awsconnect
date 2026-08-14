@@ -2556,3 +2556,53 @@ and full 226-test Python suite passed.
   `000e157` client. It must identify the exact observer mismatch before the Web
   smoke may continue. No candidate workflow, fresh stack, SIP-source smoke, or
   release version is permitted first.
+
+### 2026-08-14 — Retained Oregon Web SDK smoke passed with CloudWatch evidence
+
+- The readiness mismatch was in the qualification observer, not Vapi. rvoip's
+  safe SIP trace deliberately redacts the Request-URI, so the client could not
+  rediscover `sip.vapi.ai` from the trace. Commit `d3a62fd` validates the exact
+  US Vapi SIP URI before dialing and uses the redacted trace only for Digest,
+  retry count, final response, and dialog facts. Commit `3d533ed` also fixes the
+  SSM boundary so the observer returns one JSON document instead of a path line
+  followed by JSON. The retained readiness call then passed: exact US target,
+  Digest challenge, two INVITEs, SIP 200, media open, 50 silent frames, BYE,
+  and cleanup.
+- The subsequent Web SDK call reached Vapi, invoked the dedicated direct-only
+  handoff tool, replaced the Vapi leg, reached Amazon Connect, populated all
+  four configured screen-pop rows in order, and completed source-originated
+  hangup. The source and Connect agent each proved the five-second audio marker
+  in the opposite direction and both DTMF directions. The Connect agent was
+  explicitly made Available before the browser trigger.
+- The first CloudWatch classification correctly emitted only an incomplete
+  source-leg event even though every other call boundary passed. The Bridgefu
+  tracker marked outbound UAC calls answered only on `CallEstablished`, an UAS
+  lifecycle event. rvoip publishes outbound `CallAnswered` only after the 2xx
+  path successfully writes ACK. Bridgefu now marks the UAC leg answered on that
+  typed event. The focused security suite passed 18/18 and the patched ARM64
+  diagnostic binary SHA-256 is
+  `3a8b4b677d16ffe9151f1f3e308278ae8aae46dda024ca37fe6a06d52b5f08a1`.
+- The repeated retained call passed the authoritative CloudWatch event gate:
+  `bridgefu_vapi_source_security_evidence`, leg `bridgefu-to-vapi`, URI scheme
+  `sip`, signaling transport `tls`, media profile `RTP/SAVP`, keying
+  `SDES-SRTP`, suite `AES_CM_128_HMAC_SHA1_80`, both SRTP contexts installed,
+  answered true, and redacted true. This proves Vapi negotiates TLS/SDES-SRTP
+  on its inbound assistant leg when Bridgefu is the caller.
+- Capacity for the exact 18.83-second active-call window came only from
+  CloudWatch Logs and Metrics. On the eight-vCPU, 16-GiB `c7g.2xlarge`, host
+  CPU peaked at 3.646%, host memory at 3.015%, Bridgefu-normalized CPU at
+  3.725%, and Bridgefu RSS at 0.854%. There were zero Bridgefu startup events
+  during the call. Compiler activity was outside the window and excluded.
+- Cleanup exact-deleted the temporary Vapi phone, direct assistant, and direct
+  tool; restored the Web runtime; and left the direct identity binding unbound.
+  The retained stack remains intentionally available for the next isolated
+  SIP-source smoke.
+- The retained wrapper then misreported the passing call because it read the
+  session/source/agent files from `args.output`; the controller intentionally
+  stores them in its private `controller.work` directory. The wrapper now reads
+  that private directory after the scenario gate passes and persists redacted
+  copies. This finalizer-only defect did not affect the call or the controller's
+  passing scenario evidence.
+- The next permitted gate is the retained Oregon rvoip SIP-source smoke against
+  this same environment, sequentially and with the database reset first. No
+  GitHub candidate or release workflow is permitted before it passes.
