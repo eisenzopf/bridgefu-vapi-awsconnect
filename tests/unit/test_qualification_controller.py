@@ -2543,6 +2543,11 @@ class QualificationControllerTests(unittest.TestCase):
         schema = CONTROLLER.qualification_field_schema()
         self.assertEqual(schema["required"], list(CONTROLLER.SCREEN_POP_KEYS))
         self.assertEqual(list(schema["properties"]), list(CONTROLLER.SCREEN_POP_KEYS))
+        expected = CONTROLLER.synthetic_context(CONTROLLER.WEB_SCENARIO)
+        self.assertEqual(
+            {key: value["enum"] for key, value in schema["properties"].items()},
+            {key: [expected[key]] for key in CONTROLLER.SCREEN_POP_KEYS},
+        )
 
     def test_dynamo_v2_values_must_match_exact_synthetic_context(self):
         session = {

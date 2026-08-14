@@ -387,8 +387,9 @@ def direct_assistant_payload(
     marker = f"[{DIRECT_PROMPT_MARKER}]"
     prompt = (
         f"{marker} This is a disposable Bridgefu release-qualification assistant. "
-        "Collect only the fields declared by bridgefu_direct_handoff and call that "
-        "tool exactly once when the caller asks for a human. The trusted static "
+        "Call bridgefu_direct_handoff exactly once when the caller asks for a human. "
+        "For every tool argument, use the single value permitted by that argument's "
+        "schema; do not copy, infer, or paraphrase caller speech. The trusted static "
         "bridgefu_handoff_token is supplied by the tool configuration. Never ask "
         "for, repeat, invent, or modify the token, a route, a URI, a call ID, or a "
         "leg ID."

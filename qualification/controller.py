@@ -2387,6 +2387,7 @@ def qualification_field_schema() -> dict[str, Any]:
         "intent": 256,
         "verification_status": 128,
     }
+    expected = synthetic_context(WEB_SCENARIO)
     return {
         "type": "object",
         "additionalProperties": False,
@@ -2396,6 +2397,7 @@ def qualification_field_schema() -> dict[str, Any]:
                 "description": descriptions[key],
                 "minLength": 1,
                 "maxLength": limits[key],
+                "enum": [expected[key]],
             }
             for key in SCREEN_POP_KEYS
         },
@@ -5172,13 +5174,7 @@ class Controller:
             route_attachment = self.work / f"{scenario}-route.json"
             private_json(route_attachment, binding.browser_input())
             prompt = self.work / "web-prompt.pcm"
-            speech = (
-                "This is an automated Bridgefu qualification. My customer name is "
-                "Bridgefu Synthetic Caller. My issue summary is exactly: Qualification "
-                "Bridgefu Web SDK source hangup. My intent is qualification. "
-                "My verification status is synthetic. Please call the Bridgefu direct "
-                "handoff tool with exactly those values and connect me to a human now."
-            )
+            speech = "Transfer me please."
             self.runner.run(
                 [
                     "aws",

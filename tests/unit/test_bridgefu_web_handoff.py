@@ -173,6 +173,10 @@ class BridgefuWebHandoffTests(unittest.TestCase):
         )
         self.assertEqual(assistant["model"]["toolIds"], ["direct_tool_1234"])
         self.assertEqual(len(assistant["model"]["messages"]), 1)
+        self.assertIn(
+            "use the single value permitted by that argument's schema",
+            assistant["model"]["messages"][0]["content"],
+        )
         self.assertNotIn("tools", assistant["model"])
         self.assertNotIn("server", assistant)
         self.assertNotIn("serverMessages", assistant)

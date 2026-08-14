@@ -2248,3 +2248,42 @@ and full 226-test Python suite passed.
   the exact customer-template topology. `c7g.2xlarge` is now the documented
   product, Quick Create, and qualification default; smaller Graviton choices
   remain available only when a customer deliberately selects them.
+
+### 2026-08-13 — Recovery gate passed; first c7g.2xlarge Web smoke isolated deterministic-data defect
+
+- The exact ARM64 Bridgefu commit `9617be494bfe60835afc86235b4cba80b355db6b`
+  is installed on the retained Oregon instance. Its binary SHA-256 is
+  `937f1af87f9cdca7adccf90fd4a170b6b0fe75dfb920dfb80e73e60b5634b9a5`.
+  The retained call database was preserved, and five explicit cold recovery
+  restarts completed in 2.28–2.34 seconds with zero automatic restarts and
+  healthy readiness. This closes the durable-recovery gate.
+- The retained instance is now `c7g.2xlarge` (eight vCPUs, 16 GiB). This direct
+  diagnostic resize creates known stack drift; a fresh qualification must use
+  the customer template whose default now selects the same instance type.
+- The first monitored Web SDK smoke on this binary completed Vapi direct
+  handoff and Bridgefu leg replacement. Bridgefu durably recorded the Amazon
+  replacement as connected, Connect created one `WEBRTC_API` VOICE contact,
+  the disposable agent connected, and the lookup Lambda returned `available`
+  for the exact correlation fingerprint. There was no Bridgefu panic or
+  automatic restart.
+- The screen-pop assertion failed because the previous Polly prompt spoke the
+  expected field values and Vapi transcribed/modelled two of them differently:
+  for example, `Bridgefu Synthetic Caller` became `Bridgefood Synthetic Collar`.
+  Connect correctly contained the values Vapi supplied, but an exact release
+  test cannot depend on speech-recognition spelling. The early observer failure
+  also prevented its later deterministic audio-marker and DTMF emissions, so
+  the resulting media failure is downstream of the same screen-pop failure.
+- The qualification-only direct tool schema now permits one exact synthetic
+  value for each screen-pop field. Its single system prompt explicitly requires
+  those schema values and forbids copying or paraphrasing caller speech. Polly
+  now says only `Transfer me please.` Customer assistants and product field
+  schemas are unchanged.
+- The captured call window remained far below the capacity limit: peak host CPU
+  was 11.896%, peak Bridgefu-normalized CPU 1.486%, peak host memory 3.828%, and
+  peak Bridgefu RSS 0.925%. This is provisional until a fully passing smoke
+  captures the complete active-call interval.
+- Post-failure checks prove the product runtime restored healthy with its exact
+  binary, zero automatic restarts, no qualification drop-ins, both temporary
+  Vapi direct resources absent, and the dedicated identity binding unbound.
+  The next permitted live action is one bounded retained Web SDK smoke with the
+  deterministic schema and continuous capacity monitoring.
