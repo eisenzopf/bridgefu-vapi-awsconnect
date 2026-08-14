@@ -2417,3 +2417,43 @@ and full 226-test Python suite passed.
   action is one run of this same retained Web gate after committing the marker
   and sustained-Vapi-deletion fixes. No other smoke and no candidate workflow
   may start first.
+
+### 2026-08-13 — Run 16 reached the call but exposed a stale observation schema
+
+- Retained Oregon run 16 reset SQLite before the Web scenario, reached the
+  live call, and produced the Connect screen-pop screenshot. The browser
+  harness used the corrected sustained-tone gate, but the controller rejected
+  its otherwise valid source artifact because the JSON Schema still required
+  five separate source marker timestamps. The participant schema retained the
+  same stale requirement for five agent-marker timestamps.
+- The source and participant schemas now match the executable media contract:
+  one scheduled five-second marker episode is required, and the receiving
+  browser must prove at least 50 positive 20-ms analyzer frames. The release
+  check derives the same thresholds. The rvoip SIP source retains its separate
+  frame-based receive threshold, while the Connect browser still requires 50
+  analyzer frames for its received source audio.
+- Regression coverage proves that one marker episode plus 50 analyzer frames
+  is accepted and 49 frames is rejected on each browser side. All 299 Python
+  unit tests, both Rust qualification clients, Rust formatting and Clippy,
+  browser syntax, pinned Playwright installation, deterministic packaging,
+  CloudFormation lint, release policy validation, Ruff, and diff checks pass.
+- Before another retained call, run-16 Vapi resources, capacity capture, runtime
+  state, identity binding, and database state must be audited and cleaned. Only
+  then is one bounded Oregon Web retry permitted; no candidate or release
+  workflow is permitted.
+- The run-16 capacity capture contained 589 one-second samples. During the exact
+  Amazon Connect voice-contact window, host CPU peaked at 5.346%,
+  Bridgefu-normalized CPU at 3.688%, host memory at 4.306%, and Bridgefu RSS at
+  0.918%. All 20 active-call samples were ready, with zero PID changes and zero
+  automatic restarts. Four PID changes in the full capture were the expected
+  test-database/runtime setup and restoration operations, not crashes.
+- A delayed audit found that Vapi had again exposed the exact assistant and tool
+  after the prior cleanup observed ten continuous seconds of 404 responses.
+  The official DELETE endpoints document a 200 Deleted response but do not
+  document this observed read-after-delete propagation behavior. Qualification
+  cleanup now requires 90 continuous seconds of exact-ID absence within a
+  bounded 240-second deadline. If the exact owned resource reappears, DELETE is
+  reissued only after ownership is proven again. The run-16 assistant and tool
+  passed this longer absence gate; the direct identity binding is unbound,
+  Bridgefu is healthy with zero restarts, the qualification overlay and pending
+  reset directories are absent, and the database contains one terminal call.

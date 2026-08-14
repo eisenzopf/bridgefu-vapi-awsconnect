@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import importlib.util
+import inspect
 import json
 import shutil
 import subprocess
@@ -639,6 +640,23 @@ class QualificationControllerTests(unittest.TestCase):
                 stable_seconds=1,
             )
         self.assertEqual(client.deletes, 2)
+
+    def test_live_vapi_deletion_defaults_require_the_full_propagation_window(self):
+        expected_timeout = CONTROLLER.VAPI_DELETE_TIMEOUT_SECONDS
+        expected_stable = CONTROLLER.VAPI_DELETE_STABLE_SECONDS
+        self.assertEqual(expected_timeout, 240)
+        self.assertEqual(expected_stable, 90)
+        for method in (
+            CONTROLLER.Vapi.delete,
+            CONTROLLER.Vapi.delete_phone,
+            CONTROLLER.Vapi.delete_direct_tool,
+            CONTROLLER.Vapi.delete_direct_assistant,
+        ):
+            signature = inspect.signature(method)
+            self.assertEqual(signature.parameters["timeout"].default, expected_timeout)
+            self.assertEqual(
+                signature.parameters["stable_seconds"].default, expected_stable
+            )
 
     def test_direct_assistant_ambiguous_create_reconciles_without_second_post(self):
         desired, prompt_hash = CONTROLLER.bridgefu_web_handoff.direct_assistant_payload(
@@ -2002,8 +2020,8 @@ class QualificationControllerTests(unittest.TestCase):
             "bridgefu": {"webrtc_call_started": True},
             "media": {
                 "source_to_agent_marker_frames_sent": 25,
-                "agent_marker_observed_at_ms": [1, 2, 3, 4, 5],
-                "agent_to_source_marker_frames": 5,
+                "agent_marker_observed_at_ms": [1],
+                "agent_to_source_marker_frames": 50,
                 "dtmf_source_to_agent_sent_at_ms": [10],
                 "dtmf_agent_to_source_observed": True,
             },
@@ -2012,8 +2030,8 @@ class QualificationControllerTests(unittest.TestCase):
         agent = {
             "screen_pop": {"visible": True, "visible_fields": fields},
             "media": {
-                "source_to_agent_marker_frames": 5,
-                "source_marker_observed_at_ms": [1, 2, 3],
+                "source_to_agent_marker_frames": 50,
+                "source_marker_observed_at_ms": [1],
                 "agent_to_source_marker_frames_sent": 25,
                 "dtmf_source_to_agent_observed": True,
                 "dtmf_agent_to_source_sent_at_ms": [10],
@@ -2096,11 +2114,11 @@ class QualificationControllerTests(unittest.TestCase):
                 "screenshot_sha256": "c" * 64,
             },
             "media": {
-                "source_to_agent_marker_frames": 5,
-                "source_marker_observed_at_ms": [1, 2, 3],
+                "source_to_agent_marker_frames": 50,
+                "source_marker_observed_at_ms": [1],
                 "dtmf_source_to_agent_observed": True,
-                "agent_marker_sent_at_ms": [1, 2, 3, 4, 5],
-                "agent_to_source_marker_frames_sent": 25,
+                "agent_marker_sent_at_ms": [1],
+                "agent_to_source_marker_frames_sent": 5,
                 "dtmf_agent_to_source_sent_at_ms": [6],
             },
             "hangup": {
@@ -2114,6 +2132,13 @@ class QualificationControllerTests(unittest.TestCase):
         CONTROLLER.validate_schema(
             participant, "participant-observation-v1.schema.json"
         )
+        insufficient_participant_media = json.loads(json.dumps(participant))
+        insufficient_participant_media["media"]["source_to_agent_marker_frames"] = 49
+        with self.assertRaises(CONTROLLER.QualificationError):
+            CONTROLLER.validate_schema(
+                insufficient_participant_media,
+                "participant-observation-v1.schema.json",
+            )
         for field in (
             "dtmf_source_to_agent_observed",
             "dtmf_agent_to_source_sent_at_ms",
@@ -2146,11 +2171,11 @@ class QualificationControllerTests(unittest.TestCase):
             "media": {
                 "codec": "negotiated",
                 "security": "srtp",
-                "source_marker_sent_at_ms": [1, 2, 3, 4, 5],
+                "source_marker_sent_at_ms": [1],
                 "dtmf_source_to_agent_sent_at_ms": [6],
-                "agent_marker_observed_at_ms": [1, 2, 3],
-                "source_to_agent_marker_frames_sent": 25,
-                "agent_to_source_marker_frames": 3,
+                "agent_marker_observed_at_ms": [1],
+                "source_to_agent_marker_frames_sent": 5,
+                "agent_to_source_marker_frames": 50,
                 "dtmf_agent_to_source_observed": True,
             },
             "hangup": {
@@ -2164,6 +2189,13 @@ class QualificationControllerTests(unittest.TestCase):
         CONTROLLER.validate_schema(
             web, "bridgefu-browser-source-observation-v1.schema.json"
         )
+        insufficient_web_media = json.loads(json.dumps(web))
+        insufficient_web_media["media"]["agent_to_source_marker_frames"] = 49
+        with self.assertRaises(CONTROLLER.QualificationError):
+            CONTROLLER.validate_schema(
+                insufficient_web_media,
+                "bridgefu-browser-source-observation-v1.schema.json",
+            )
         for field in (
             "dtmf_source_to_agent_sent_at_ms",
             "dtmf_agent_to_source_observed",

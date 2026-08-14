@@ -63,7 +63,7 @@
         "security": {"const": "srtp"},
         "source_marker_sent_at_ms": {
           "type": "array",
-          "minItems": 5,
+          "minItems": 1,
           "maxItems": 32,
           "items": {"type": "integer", "minimum": 1}
         },
@@ -75,12 +75,12 @@
         },
         "agent_marker_observed_at_ms": {
           "type": "array",
-          "minItems": 3,
+          "minItems": 1,
           "maxItems": 16,
           "items": {"type": "integer", "minimum": 1}
         },
         "source_to_agent_marker_frames_sent": {"type": "integer", "minimum": 5},
-        "agent_to_source_marker_frames": {"type": "integer", "minimum": 3},
+        "agent_to_source_marker_frames": {"type": "integer", "minimum": 50},
         "dtmf_agent_to_source_observed": {"const": true}
       }
     },

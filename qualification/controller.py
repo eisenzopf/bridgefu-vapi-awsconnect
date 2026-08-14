@@ -132,6 +132,13 @@ MAX_OBJECT_VERSION_PAGES = 100
 MAX_OBJECT_VERSIONS = 10_000
 MAX_DELETE_OBJECTS = 1_000
 BROWSER_READINESS_TIMEOUT_SECONDS = 210
+# Vapi has returned 404 for an exact deleted qualification resource and then
+# exposed that same owned ID again more than ten seconds later. A cleanup proof
+# must span the same 90-second propagation window used before activating a
+# transient SIP endpoint; one missing read or a short run of missing reads is
+# not authoritative absence.
+VAPI_DELETE_TIMEOUT_SECONDS = 240
+VAPI_DELETE_STABLE_SECONDS = 90
 VAPI_DESTINATION_SECURITY_EVENT = "bridgefu_vapi_destination_security_evidence"
 VAPI_SOURCE_SECURITY_EVENT = "bridgefu_vapi_source_security_evidence"
 VAPI_DESTINATION_SECURITY_FIELDS = {
@@ -2021,9 +2028,9 @@ class Vapi:
         endpoint_url: str,
         credential_id: str,
         desired: Mapping[str, Any],
-        timeout: int = 60,
+        timeout: int = VAPI_DELETE_TIMEOUT_SECONDS,
         poll_seconds: float = 0.5,
-        stable_seconds: float = 10,
+        stable_seconds: float = VAPI_DELETE_STABLE_SECONDS,
     ) -> None:
         def owned(exact: Mapping[str, Any]) -> bool:
             return bridgefu_web_handoff.direct_tool_owned(
@@ -2175,9 +2182,9 @@ class Vapi:
         prompt_sha256: str,
         model_name: str,
         voice_id: str,
-        timeout: int = 60,
+        timeout: int = VAPI_DELETE_TIMEOUT_SECONDS,
         poll_seconds: float = 0.5,
-        stable_seconds: float = 10,
+        stable_seconds: float = VAPI_DELETE_STABLE_SECONDS,
     ) -> None:
         self._delete_owned_and_prove_stable_absence(
             "assistant",
@@ -2303,9 +2310,9 @@ class Vapi:
         resource_id: str,
         intent: Mapping[str, str],
         *,
-        timeout: int = 30,
+        timeout: int = VAPI_DELETE_TIMEOUT_SECONDS,
         poll_seconds: float = 0.5,
-        stable_seconds: float = 10,
+        stable_seconds: float = VAPI_DELETE_STABLE_SECONDS,
     ) -> None:
         self._delete_owned_and_prove_stable_absence(
             "phone-number",
@@ -2321,9 +2328,9 @@ class Vapi:
         resource: str,
         resource_id: str,
         *,
-        timeout: int = 30,
+        timeout: int = VAPI_DELETE_TIMEOUT_SECONDS,
         poll_seconds: float = 0.5,
-        stable_seconds: float = 10,
+        stable_seconds: float = VAPI_DELETE_STABLE_SECONDS,
     ) -> None:
         if resource == "phone-number":
             raise QualificationError(
@@ -2813,13 +2820,15 @@ def derive_scenario_checks(
     )
     source_to_agent = (
         int(source_media.get("source_to_agent_marker_frames_sent", 0)) >= 5
-        and int(agent_media.get("source_to_agent_marker_frames", 0)) >= 5
-        and len(agent_media.get("source_marker_observed_at_ms", [])) >= 3
+        and int(agent_media.get("source_to_agent_marker_frames", 0)) >= 50
+        and len(agent_media.get("source_marker_observed_at_ms", [])) >= 1
     )
+    source_receive_frames = 50 if scenario == WEB_SCENARIO else 5
     agent_to_source = (
         int(agent_media.get("agent_to_source_marker_frames_sent", 0)) >= 5
-        and int(source_media.get("agent_to_source_marker_frames", 0)) >= 3
-        and len(source_media.get("agent_marker_observed_at_ms", [])) >= 3
+        and int(source_media.get("agent_to_source_marker_frames", 0))
+        >= source_receive_frames
+        and len(source_media.get("agent_marker_observed_at_ms", [])) >= 1
     )
     dtmf_source_to_agent = (
         len(source_media.get("dtmf_source_to_agent_sent_at_ms", [])) >= 1
