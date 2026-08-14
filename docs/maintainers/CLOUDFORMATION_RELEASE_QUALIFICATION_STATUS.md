@@ -2287,3 +2287,26 @@ and full 226-test Python suite passed.
   Vapi direct resources absent, and the dedicated identity binding unbound.
   The next permitted live action is one bounded retained Web SDK smoke with the
   deterministic schema and continuous capacity monitoring.
+
+### 2026-08-13 — Short trigger exposed fake-microphone startup ordering
+
+- The deterministic-schema retry created one exact Vapi inbound call, but the
+  call contained only its system message, invoked no tool, and ended after the
+  exact 30-second `silence-timed-out` boundary. Amazon Connect consequently had
+  no contact or lookup invocation. Bridgefu remained healthy with zero automatic
+  restarts, and cleanup again proved the temporary direct tool/assistant absent
+  and the dedicated identity binding unbound.
+- This is a harness timing defect, not a Vapi prompt or Bridgefu replacement
+  failure. Chromium starts its fixed fake-microphone WAV when Bridgefu requests
+  browser capture. The previous long spoken script overlapped later SIP setup;
+  the new one-second `Transfer me please.` clip started at one second and could
+  finish before Vapi's media leg was consuming browser audio.
+- The browser qualification WAV now begins with exactly five seconds of silence
+  and then says that same short phrase, before Vapi's 30-second silence deadline.
+  Deterministic media markers begin at ten seconds so they cannot overlap the
+  spoken trigger. Before publishing source readiness, the harness now requires
+  the Bridgefu peer connection and ICE connection to be connected plus observed
+  outbound audio RTP packets and bytes. It fails immediately if establishment
+  misses the five-second trigger window. Source contract tests pin the timing
+  and media gate. The next permitted action is one bounded retained retry with
+  a fresh full-window capacity capture.

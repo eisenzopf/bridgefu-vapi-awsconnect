@@ -71,13 +71,16 @@ const SAMPLE_RATE = 48_000;
 const PROBE_SECONDS = 120;
 const SOURCE_MARKER_HZ = 997;
 const AGENT_MARKER_HZ = 880;
-const PROBE_INITIAL_SILENCE_MS = 5_000;
+const PROBE_INITIAL_SILENCE_MS = 10_000;
 const PROBE_CYCLE_MS = 10_000;
 const PROBE_PULSES_PER_CYCLE = 5;
 const PROBE_PULSE_MS = 100;
 const DTMF_START_MS = 6_000;
 const DTMF_DURATION_MS = 350;
-const PROMPT_START_MS = 1_000;
+// The fake microphone starts when Bridgefu opens the browser capture device.
+// Give its spoken trigger an exact five-second silence prefix, while keeping it
+// well inside Vapi's 30-second silence window. Media probes begin afterward.
+const PROMPT_START_MS = 5_000;
 const PROMPT_SAMPLE_RATE = 8_000;
 const STARTUP_ERROR_TYPES = new Set([
   "invalid-attachment",
@@ -1230,11 +1233,24 @@ async function observe(options) {
       async () => {
         const value = await applicationSnapshot(page, nonce);
         failStartup(value);
-        return value?.callStartObserved && typeof value.callId === "string" ? value : false;
+        const media = await probeSnapshot(page);
+        return value?.callStartObserved
+          && value.peerConnectionState === "connected"
+          && ["connected", "completed"].includes(value.iceConnectionState)
+          && typeof value.callId === "string"
+          && Number.isInteger(media?.captureRequestedAtMs)
+          && Number.isInteger(media?.captureResolvedAtMs)
+          && media.audioPacketsSent > 5
+          && media.audioBytesSent > 0
+          ? { ...value, captureRequestedAtMs: media.captureRequestedAtMs }
+          : false;
       },
       Math.min(timeoutMs, 90_000),
-      "Bridgefu WebRTC call did not start",
+      "Bridgefu WebRTC media did not establish",
     );
+    if (Date.now() - initial.captureRequestedAtMs >= PROMPT_START_MS) {
+      fail("Bridgefu WebRTC media missed the spoken-trigger window");
+    }
     const callId = initial.callId;
     if (callId !== routeInput.route_binding.callId) {
       fail("Bridgefu WebRTC call identity changed");
