@@ -97,7 +97,8 @@ used with production retention.
 | Retention | Production or disposable mode | Retain DynamoDB context, the runtime data volume, backups, and Vapi resources on deletion |
 
 The EC2 choices are `t4g.medium`, `t4g.large`, `t4g.xlarge`,
-`c7g.large`, `c7g.xlarge`, `m7g.large`, and `m7g.xlarge`. Use
+`t4g.2xlarge`, `c7g.large`, `c7g.xlarge`, `c7g.2xlarge`, `m7g.large`,
+`m7g.xlarge`, and `m7g.2xlarge`. Use
 `TestDelete` retention only for disposable qualification stacks; it removes the
 Vapi template resources and retained AWS data during cleanup.
 

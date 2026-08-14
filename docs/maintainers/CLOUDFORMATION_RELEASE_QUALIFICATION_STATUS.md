@@ -2235,3 +2235,15 @@ and full 226-test Python suite passed.
   repeated restarts against the existing retained database and require healthy
   readiness without any automatic restart. No Web SDK call may run until that
   gate passes.
+- Capacity is now an explicit live-smoke gate. During the active call window,
+  peak aggregate vCPU utilization and peak memory utilization must each remain
+  below 60 percent; any sustained sample at or above 60 percent fails capacity
+  qualification. Build/compiler load is measured and reported separately and
+  is not call-runtime capacity evidence. The next Web smoke will collect a
+  one-second CPU, memory, load, disk-I/O, readiness, and restart-count series.
+- AWS has no standard six-vCPU Graviton choice in this product family. The
+  templates now admit the eight-vCPU `t4g.2xlarge`, `c7g.2xlarge`, and
+  `m7g.2xlarge` sizes. The next call qualification will use `c7g.2xlarge`
+  (eight vCPUs, 16 GiB RAM) unless the retained-stack update cannot preserve
+  the exact customer-template topology; `t4g.large` remains the documented
+  starter default until measured call evidence supports changing it.
