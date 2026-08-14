@@ -452,6 +452,8 @@ function validateSession(path, bridgefuCallId, hangupOrigin) {
 
 function installProbe() {
   if (globalThis.__bridgefuVapiProbe) return;
+  // Playwright serializes this function into the page without module scope.
+  const agentMarkerHz = 880;
   const newCandidateSummary = () => ({
     udpIpv4Srflx: 0,
     udpIpv4Host: 0,
@@ -659,7 +661,7 @@ function installProbe() {
       const rms = Math.sqrt(energy / samples.length);
       state.remoteAudioMaxRms = Math.max(state.remoteAudioMaxRms, rms);
       if (rms > 0.01) state.remoteAudioActiveFrames += 1;
-      const markerPower = power(samples, context.sampleRate, AGENT_MARKER_HZ);
+      const markerPower = power(samples, context.sampleRate, agentMarkerHz);
       state.agentMarkerMaxPower = Math.max(state.agentMarkerMaxPower, markerPower);
       const marker = rms > 0.01 && markerPower > 0.0001;
       if (marker) {

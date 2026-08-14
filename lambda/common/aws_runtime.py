@@ -108,6 +108,7 @@ SAFE_RESULTS = {
 }
 BRIDGEFU_EXACT_HTTP_STATUSES = frozenset({400, 401, 403, 404, 408, 409, 422, 425, 429})
 BRIDGEFU_RETRYABLE_HTTP_STATUSES = frozenset({408, 425, 429})
+BRIDGEFU_CONFLICT_RETRY_DELAYS_SECONDS = (0.1, 0.25)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -131,6 +132,23 @@ def _bridgefu_http_error(operation: str, status: int) -> HandoffError:
         else 502
     )
     return HandoffError(result, public_status)
+
+
+def _bridgefu_error_code(error: urllib.error.HTTPError) -> str | None:
+    """Read only Bridgefu's closed error code from one bounded response."""
+    try:
+        raw = error.read(4097)
+    except (OSError, ValueError):
+        return None
+    if len(raw) > 4096:
+        return None
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    envelope = payload.get("error") if isinstance(payload, Mapping) else None
+    code = envelope.get("code") if isinstance(envelope, Mapping) else None
+    return code if code in {"call_conflict", "invalid_transition"} else None
 
 
 def _boto3_client(service: str):
@@ -604,17 +622,29 @@ class BridgefuRouteClient:
                 "user-agent": "bridgefu-recipe-direct-handoff/1",
             },
         )
-        try:
-            with self._opener.open(request, timeout=self._timeout_seconds) as response:
-                if response.status != 202:
-                    raise HandoffError("bridgefu_replacement_failed", 502)
-                raw = response.read(16_385)
-        except HandoffError:
-            raise
-        except urllib.error.HTTPError as error:
-            raise _bridgefu_http_error("replacement", error.code) from None
-        except (urllib.error.URLError, TimeoutError, OSError):
-            raise HandoffError("bridgefu_replacement_unavailable", 503) from None
+        for attempt in range(len(BRIDGEFU_CONFLICT_RETRY_DELAYS_SECONDS) + 1):
+            try:
+                with self._opener.open(
+                    request, timeout=self._timeout_seconds
+                ) as response:
+                    if response.status != 202:
+                        raise HandoffError("bridgefu_replacement_failed", 502)
+                    raw = response.read(16_385)
+                break
+            except HandoffError:
+                raise
+            except urllib.error.HTTPError as error:
+                upstream_code = _bridgefu_error_code(error)
+                if (
+                    error.code == 409
+                    and upstream_code == "call_conflict"
+                    and attempt < len(BRIDGEFU_CONFLICT_RETRY_DELAYS_SECONDS)
+                ):
+                    time.sleep(BRIDGEFU_CONFLICT_RETRY_DELAYS_SECONDS[attempt])
+                    continue
+                raise _bridgefu_http_error("replacement", error.code) from None
+            except (urllib.error.URLError, TimeoutError, OSError):
+                raise HandoffError("bridgefu_replacement_unavailable", 503) from None
         if len(raw) > 16_384:
             raise HandoffError("bridgefu_response_invalid", 502)
         try:

@@ -600,6 +600,13 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("agentMarkerMaxPower", web)
         self.assertIn("agentDtmfLowMaxPower", web)
         self.assertIn("agentDtmfHighMaxPower", web)
+        install_probe = web[
+            web.index("function installProbe()") : web.index(
+                "async function probeSnapshot"
+            )
+        ]
+        self.assertIn("const agentMarkerHz = 880;", install_probe)
+        self.assertNotIn("AGENT_MARKER_HZ", install_probe)
         self.assertIn("dtmf_source_to_agent_frames_sent", sip)
         self.assertIn('"dtmf_source_to_agent": {"const": true}', evidence_schema)
 

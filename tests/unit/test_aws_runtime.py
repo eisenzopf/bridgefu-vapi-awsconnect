@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import json
 import sys
 import unittest
 import urllib.error
@@ -78,6 +80,19 @@ class FakeOpener:
         if isinstance(self.response, BaseException):
             raise self.response
         return self.response
+
+
+class SequenceOpener:
+    def __init__(self, responses):
+        self.responses = iter(responses)
+        self.requests = []
+
+    def open(self, request, timeout):
+        self.requests.append((request, timeout))
+        response = next(self.responses)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
 
 class AwsRuntimeTests(unittest.TestCase):
@@ -305,6 +320,64 @@ class AwsRuntimeTests(unittest.TestCase):
                 self.assertEqual(raised.exception.code, code)
                 self.assertEqual(raised.exception.status_code, response_status)
                 self.assertIn(code, aws_runtime.SAFE_RESULTS)
+
+    def test_bridgefu_replace_retries_only_exact_call_conflict_idempotently(self):
+        client = aws_runtime.BridgefuRouteClient(
+            "https://control.example.test",
+            "amazon-connect",
+            "b" * 32,
+        )
+
+        def conflict(code="call_conflict"):
+            return urllib.error.HTTPError(
+                "https://control.example.test/closed",
+                409,
+                "closed",
+                {},
+                io.BytesIO(json.dumps({"error": {"code": code}}).encode("utf-8")),
+            )
+
+        opener = SequenceOpener(
+            [
+                conflict(),
+                conflict(),
+                FakeHttpResponse(
+                    202,
+                    b'{"call_id":"018f9c2a-7b3d-7ef0-bfee-9d5a5c600001"}',
+                ),
+            ]
+        )
+        client._opener = opener
+        with mock.patch.object(aws_runtime.time, "sleep") as sleep:
+            client.replace(
+                "018f9c2a-7b3d-7ef0-bfee-9d5a5c600001",
+                "018f9c2a-7b3d-7ef0-bfee-9d5a5c600002",
+                "amazon-connect",
+                "replace_001",
+            )
+        self.assertEqual(len(opener.requests), 3)
+        self.assertEqual(
+            [request.get_header("Idempotency-key") for request, _ in opener.requests],
+            ["replace_001"] * 3,
+        )
+        self.assertEqual(
+            sleep.call_args_list,
+            [mock.call(0.1), mock.call(0.25)],
+        )
+
+        for code in ("invalid_transition", "unknown"):
+            with self.subTest(code=code):
+                client._opener = SequenceOpener([conflict(code)])
+                with mock.patch.object(aws_runtime.time, "sleep") as sleep:
+                    with self.assertRaises(HandoffError) as raised:
+                        client.replace(
+                            "018f9c2a-7b3d-7ef0-bfee-9d5a5c600001",
+                            "018f9c2a-7b3d-7ef0-bfee-9d5a5c600002",
+                            "amazon-connect",
+                            "replace_001",
+                        )
+                self.assertEqual(raised.exception.code, "bridgefu_replacement_http_409")
+                sleep.assert_not_called()
 
 
 if __name__ == "__main__":
