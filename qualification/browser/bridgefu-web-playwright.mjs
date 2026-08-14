@@ -71,16 +71,17 @@ const SAMPLE_RATE = 48_000;
 const PROBE_SECONDS = 120;
 const SOURCE_MARKER_HZ = 997;
 const AGENT_MARKER_HZ = 880;
-const PROBE_INITIAL_SILENCE_MS = 10_000;
+const PROBE_INITIAL_SILENCE_MS = 15_000;
 const PROBE_CYCLE_MS = 10_000;
 const PROBE_PULSES_PER_CYCLE = 5;
 const PROBE_PULSE_MS = 100;
 const DTMF_START_MS = 6_000;
 const DTMF_DURATION_MS = 350;
-// The fake microphone starts when Bridgefu opens the browser capture device.
-// Give its spoken trigger an exact five-second silence prefix, while keeping it
-// well inside Vapi's 30-second silence window. Media probes begin afterward.
-const PROMPT_START_MS = 5_000;
+// The fake microphone starts before the peer connection is established. Require
+// media to establish within five seconds, then leave at least five more seconds
+// of silence before speech. The marker/DTMF probes start after the speech ends.
+const MEDIA_ESTABLISHMENT_DEADLINE_MS = 5_000;
+const PROMPT_START_MS = 10_000;
 const PROMPT_SAMPLE_RATE = 8_000;
 const STARTUP_ERROR_TYPES = new Set([
   "invalid-attachment",
@@ -599,8 +600,11 @@ function installProbe() {
     remoteAudioActiveFrames: 0,
     remoteAudioMaxRms: 0,
     agentMarkerMaxPower: 0,
+    agentMarkerMaxPurity: 0,
     agentDtmfLowMaxPower: 0,
     agentDtmfHighMaxPower: 0,
+    agentDtmfLowMaxPurity: 0,
+    agentDtmfHighMaxPurity: 0,
     iceCandidateSummary: newCandidateSummary(),
     remoteIceCandidateSummary: newCandidateSummary(),
     remoteIceComplete: 0,
@@ -662,8 +666,14 @@ function installProbe() {
       state.remoteAudioMaxRms = Math.max(state.remoteAudioMaxRms, rms);
       if (rms > 0.01) state.remoteAudioActiveFrames += 1;
       const markerPower = power(samples, context.sampleRate, agentMarkerHz);
+      const meanEnergy = energy / samples.length;
+      const markerPurity = markerPower / Math.max(meanEnergy, 1e-9);
       state.agentMarkerMaxPower = Math.max(state.agentMarkerMaxPower, markerPower);
-      const marker = rms > 0.01 && markerPower > 0.0001;
+      state.agentMarkerMaxPurity = Math.max(
+        state.agentMarkerMaxPurity,
+        markerPurity,
+      );
+      const marker = rms > 0.01 && markerPower > 0.0001 && markerPurity > 0.2;
       if (marker) {
         state.agentMarkerFrames += 1;
         const now = Date.now();
@@ -679,9 +689,24 @@ function installProbe() {
       state.agentMarkerActive = marker;
       const low = power(samples, context.sampleRate, 770);
       const high = power(samples, context.sampleRate, 1477);
+      const lowPurity = low / Math.max(meanEnergy, 1e-9);
+      const highPurity = high / Math.max(meanEnergy, 1e-9);
       state.agentDtmfLowMaxPower = Math.max(state.agentDtmfLowMaxPower, low);
       state.agentDtmfHighMaxPower = Math.max(state.agentDtmfHighMaxPower, high);
-      const dtmf = rms > 0.01 && low > 0.00005 && high > 0.00005;
+      state.agentDtmfLowMaxPurity = Math.max(
+        state.agentDtmfLowMaxPurity,
+        lowPurity,
+      );
+      state.agentDtmfHighMaxPurity = Math.max(
+        state.agentDtmfHighMaxPurity,
+        highPurity,
+      );
+      const dtmf =
+        rms > 0.01 &&
+        low > 0.00005 &&
+        high > 0.00005 &&
+        lowPurity > 0.12 &&
+        highPurity > 0.12;
       if (dtmf && !state.dtmfActive) state.dtmfAgentToSourceObserved = true;
       state.dtmfActive = dtmf;
     }, 20);
@@ -853,8 +878,11 @@ async function probeSnapshot(page) {
       remoteAudioActiveFrames: state.remoteAudioActiveFrames,
       remoteAudioMaxRms: state.remoteAudioMaxRms,
       agentMarkerMaxPower: state.agentMarkerMaxPower,
+      agentMarkerMaxPurity: state.agentMarkerMaxPurity,
       agentDtmfLowMaxPower: state.agentDtmfLowMaxPower,
       agentDtmfHighMaxPower: state.agentDtmfHighMaxPower,
+      agentDtmfLowMaxPurity: state.agentDtmfLowMaxPurity,
+      agentDtmfHighMaxPurity: state.agentDtmfHighMaxPurity,
       audioPacketsSent,
       audioBytesSent,
       audioPacketsReceived,
@@ -1260,7 +1288,10 @@ async function observe(options) {
       Math.min(timeoutMs, 90_000),
       "Bridgefu WebRTC media did not establish",
     );
-    if (Date.now() - initial.captureRequestedAtMs >= PROMPT_START_MS) {
+    if (
+      Date.now() - initial.captureRequestedAtMs >=
+      MEDIA_ESTABLISHMENT_DEADLINE_MS
+    ) {
       fail("Bridgefu WebRTC media missed the spoken-trigger window");
     }
     const callId = initial.callId;
@@ -1322,8 +1353,11 @@ async function observe(options) {
         + `active_frames=${probe?.remoteAudioActiveFrames ?? 0} `
         + `max_rms=${Number(probe?.remoteAudioMaxRms ?? 0).toFixed(6)} `
         + `marker_power=${Number(probe?.agentMarkerMaxPower ?? 0).toExponential(3)} `
+        + `marker_purity=${Number(probe?.agentMarkerMaxPurity ?? 0).toFixed(3)} `
         + `dtmf_low=${Number(probe?.agentDtmfLowMaxPower ?? 0).toExponential(3)} `
-        + `dtmf_high=${Number(probe?.agentDtmfHighMaxPower ?? 0).toExponential(3)}`,
+        + `dtmf_high=${Number(probe?.agentDtmfHighMaxPower ?? 0).toExponential(3)} `
+        + `dtmf_purity=${Number(probe?.agentDtmfLowMaxPurity ?? 0).toFixed(3)}/`
+        + `${Number(probe?.agentDtmfHighMaxPurity ?? 0).toFixed(3)}`,
       );
     }
     let localEndCompleted = false;

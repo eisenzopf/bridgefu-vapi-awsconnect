@@ -73,8 +73,9 @@ class QualificationAssetTests(unittest.TestCase):
         )
         self.assertIn('required(options, "--route-attachment")', browser)
         self.assertIn('required(options, "--prompt-pcm")', browser)
-        self.assertIn("const PROMPT_START_MS = 5_000;", browser)
-        self.assertIn("const PROBE_INITIAL_SILENCE_MS = 10_000;", browser)
+        self.assertIn("const MEDIA_ESTABLISHMENT_DEADLINE_MS = 5_000;", browser)
+        self.assertIn("const PROMPT_START_MS = 10_000;", browser)
+        self.assertIn("const PROBE_INITIAL_SILENCE_MS = 15_000;", browser)
         self.assertIn('value.peerConnectionState === "connected"', browser)
         self.assertIn("media.audioPacketsSent > 5", browser)
         self.assertIn("media.audioBytesSent > 0", browser)
@@ -598,8 +599,11 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("* 12_000", agent)
         self.assertIn("dtmf_agent_to_source_observed", web)
         self.assertIn("agentMarkerMaxPower", web)
+        self.assertIn("agentMarkerMaxPurity", web)
         self.assertIn("agentDtmfLowMaxPower", web)
         self.assertIn("agentDtmfHighMaxPower", web)
+        self.assertIn("lowPurity > 0.12", web)
+        self.assertIn("highPurity > 0.12", web)
         install_probe = web[
             web.index("function installProbe()") : web.index(
                 "async function probeSnapshot"
