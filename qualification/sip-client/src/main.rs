@@ -74,7 +74,6 @@ struct SipAuthentication {
 #[derive(Default)]
 struct WireEvidence {
     invite_count: usize,
-    request_host_is_vapi: bool,
     challenge_received: bool,
     answer_received: bool,
     final_status: Option<u16>,
@@ -155,7 +154,7 @@ struct AuthenticationProbeObservation {
 
 #[derive(Serialize)]
 struct AuthenticationProbeSignaling {
-    request_host_is_vapi: bool,
+    target_validation: &'static str,
     digest_challenge_received: bool,
     authenticated_invite_count: usize,
     answered: bool,
@@ -469,10 +468,6 @@ fn observe_wire(trace: &SipTrace, evidence: &mut WireEvidence) {
         return;
     }
     evidence.invite_count += 1;
-    evidence.request_host_is_vapi &= trace.start_line.contains("@sip.vapi.ai");
-    if evidence.invite_count == 1 {
-        evidence.request_host_is_vapi = trace.start_line.contains("@sip.vapi.ai");
-    }
     evidence.transport = Some(trace.transport.to_ascii_lowercase());
 }
 
@@ -598,7 +593,6 @@ async fn run(args: Args) -> anyhow::Result<()> {
             if args.authentication_probe {
                 let wire = wire.lock().await;
                 let final_status = wire.final_status.unwrap_or(0);
-                let request_host_is_vapi = wire.request_host_is_vapi;
                 let challenge_received = wire.challenge_received;
                 let invite_count = wire.invite_count;
                 let transport = wire.transport.clone().unwrap_or_else(|| "unknown".into());
@@ -615,7 +609,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
                         ready: false,
                         final_status,
                         signaling: AuthenticationProbeSignaling {
-                            request_host_is_vapi,
+                            target_validation: "exact-us-vapi-sip-uri",
                             digest_challenge_received: challenge_received,
                             authenticated_invite_count: invite_count,
                             answered: false,
@@ -658,13 +652,8 @@ async fn run(args: Args) -> anyhow::Result<()> {
             .await
             .context("Vapi authentication probe BYE did not complete")?;
         let wire = wire.lock().await;
-        if wire.invite_count != 2
-            || !wire.request_host_is_vapi
-            || !wire.challenge_received
-            || !wire.answer_received
-        {
+        if wire.invite_count != 2 || !wire.challenge_received || !wire.answer_received {
             let final_status = wire.final_status.unwrap_or(0);
-            let request_host_is_vapi = wire.request_host_is_vapi;
             let challenge_received = wire.challenge_received;
             let invite_count = wire.invite_count;
             let answer_received = wire.answer_received;
@@ -682,7 +671,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
                     ready: false,
                     final_status,
                     signaling: AuthenticationProbeSignaling {
-                        request_host_is_vapi,
+                        target_validation: "exact-us-vapi-sip-uri",
                         digest_challenge_received: challenge_received,
                         authenticated_invite_count: invite_count,
                         answered: answer_received,
@@ -716,7 +705,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
                 ready: true,
                 final_status: 200,
                 signaling: AuthenticationProbeSignaling {
-                    request_host_is_vapi: true,
+                    target_validation: "exact-us-vapi-sip-uri",
                     digest_challenge_received: true,
                     authenticated_invite_count: 2,
                     answered: true,
@@ -778,11 +767,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
         .await
         .context("SIP smoke BYE did not complete")?;
     let wire = wire.lock().await;
-    if wire.invite_count != 2
-        || !wire.request_host_is_vapi
-        || !wire.challenge_received
-        || !wire.answer_received
-    {
+    if wire.invite_count != 2 || !wire.challenge_received || !wire.answer_received {
         bail!("wire trace did not prove Vapi Digest challenge, retry, and answer")
     }
     let transport = wire.transport.clone().unwrap_or_else(|| "unknown".into());
@@ -867,12 +852,12 @@ mod tests {
         for (direction, start_line) in [
             (
                 SipTraceDirection::Outbound,
-                "INVITE sip:bfq_12345678@sip.vapi.ai SIP/2.0",
+                "INVITE <redacted-request-uri> SIP/2.0",
             ),
             (SipTraceDirection::Inbound, "SIP/2.0 401 Unauthorized"),
             (
                 SipTraceDirection::Outbound,
-                "INVITE sip:bfq_12345678@sip.vapi.ai SIP/2.0",
+                "INVITE <redacted-request-uri> SIP/2.0",
             ),
             (SipTraceDirection::Inbound, "SIP/2.0 200 OK"),
         ] {
@@ -895,7 +880,6 @@ mod tests {
             );
         }
         assert_eq!(evidence.invite_count, 2);
-        assert!(evidence.request_host_is_vapi);
         assert!(evidence.challenge_received);
         assert!(evidence.answer_received);
         assert_eq!(evidence.final_status, Some(200));

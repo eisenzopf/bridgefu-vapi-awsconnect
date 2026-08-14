@@ -535,7 +535,7 @@ class QualificationControllerTests(unittest.TestCase):
                             "ready": True,
                             "final_status": 200,
                             "signaling": {
-                                "request_host_is_vapi": True,
+                                "target_validation": "exact-us-vapi-sip-uri",
                                 "digest_challenge_received": True,
                                 "authenticated_invite_count": 2,
                                 "answered": True,
@@ -580,7 +580,7 @@ class QualificationControllerTests(unittest.TestCase):
             "ready": True,
             "final_status": 200,
             "signaling": {
-                "request_host_is_vapi": True,
+                "target_validation": "exact-us-vapi-sip-uri",
                 "digest_challenge_received": True,
                 "authenticated_invite_count": 2,
                 "answered": True,

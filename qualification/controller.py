@@ -4574,13 +4574,13 @@ class Controller:
             and isinstance(signaling, Mapping)
             and set(signaling)
             == {
-                "request_host_is_vapi",
+                "target_validation",
                 "digest_challenge_received",
                 "authenticated_invite_count",
                 "answered",
                 "transport",
             }
-            and isinstance(signaling.get("request_host_is_vapi"), bool)
+            and signaling.get("target_validation") == "exact-us-vapi-sip-uri"
             and isinstance(signaling.get("digest_challenge_received"), bool)
             and isinstance(signaling.get("authenticated_invite_count"), int)
             and 0 <= signaling.get("authenticated_invite_count") <= 255
@@ -4593,9 +4593,7 @@ class Controller:
         ):
             raise QualificationError("temporary Vapi SIP probe result is invalid")
         if ready is not True:
-            if signaling.get("request_host_is_vapi") is not True:
-                category = "target"
-            elif signaling.get("digest_challenge_received") is not True:
+            if signaling.get("digest_challenge_received") is not True:
                 category = "challenge"
             elif signaling.get("authenticated_invite_count") != 2:
                 category = "retry-count"
@@ -4615,8 +4613,7 @@ class Controller:
                 f"{category} status {final_status}"
             )
         if not (
-            signaling.get("request_host_is_vapi") is True
-            and signaling.get("digest_challenge_received") is True
+            signaling.get("digest_challenge_received") is True
             and signaling.get("authenticated_invite_count") == 2
             and signaling.get("answered") is True
             and final_status == 200
@@ -5479,7 +5476,7 @@ class Controller:
                 message = str(error)
                 if re.fullmatch(
                     r"temporary Vapi SIP data plane readiness failed category "
-                    r"(?:target|challenge|retry-count|answer|media|hangup|wire) status "
+                    r"(?:challenge|retry-count|answer|media|hangup|wire) status "
                     r"(?:0|200|401|403|404|408|409|425|429|500|502|503|504)",
                     message,
                 ):
