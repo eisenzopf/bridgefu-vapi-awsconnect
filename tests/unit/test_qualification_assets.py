@@ -74,8 +74,11 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn('required(options, "--route-attachment")', browser)
         self.assertIn('required(options, "--prompt-pcm")', browser)
         self.assertIn("const MEDIA_ESTABLISHMENT_DEADLINE_MS = 5_000;", browser)
-        self.assertIn("const PROMPT_START_MS = 10_000;", browser)
-        self.assertIn("const PROBE_INITIAL_SILENCE_MS = 15_000;", browser)
+        self.assertIn(
+            "const PROMPT_STARTS_MS = Object.freeze([10_000, 20_000, 30_000]);",
+            browser,
+        )
+        self.assertIn("const PROBE_INITIAL_SILENCE_MS = 40_000;", browser)
         self.assertIn("const PROMPT_GAIN = 2.8;", browser)
         self.assertIn('value.peerConnectionState === "connected"', browser)
         self.assertIn("media.audioPacketsSent > 5", browser)
