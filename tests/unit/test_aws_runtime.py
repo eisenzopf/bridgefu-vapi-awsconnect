@@ -341,6 +341,8 @@ class AwsRuntimeTests(unittest.TestCase):
             [
                 conflict(),
                 conflict(),
+                conflict(),
+                conflict(),
                 FakeHttpResponse(
                     202,
                     b'{"call_id":"018f9c2a-7b3d-7ef0-bfee-9d5a5c600001"}',
@@ -355,14 +357,14 @@ class AwsRuntimeTests(unittest.TestCase):
                 "amazon-connect",
                 "replace_001",
             )
-        self.assertEqual(len(opener.requests), 3)
+        self.assertEqual(len(opener.requests), 5)
         self.assertEqual(
             [request.get_header("Idempotency-key") for request, _ in opener.requests],
-            ["replace_001"] * 3,
+            ["replace_001"] * 5,
         )
         self.assertEqual(
             sleep.call_args_list,
-            [mock.call(0.1), mock.call(0.25)],
+            [mock.call(0.17), mock.call(0.53), mock.call(1.11), mock.call(2.03)],
         )
 
         for code in ("invalid_transition", "unknown"):
