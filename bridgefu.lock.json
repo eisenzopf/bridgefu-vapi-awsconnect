@@ -1,7 +1,7 @@
 {
   "schema": "bridgefu-source-lock/v1",
   "repository": "https://github.com/eisenzopf/bridgefu.git",
-  "commit": "53650d3de2df4be72eb5f7ec8850191dd1599d4e",
+  "commit": "9617be494bfe60835afc86235b4cba80b355db6b",
   "base_commit": "f4598f4c7bf18f37e5af81613499588b2c9ed2af",
   "cargo_lock_sha256": "bc49cee0aedbd61eb85d5c438b26da7138e8e86f875747f1ff6af53c99424e7d",
   "required_rvoip_version": "0.3.7",

@@ -2139,3 +2139,99 @@ and full 226-test Python suite passed.
   the existing durable database reaches and continuously holds healthy
   readiness without a restart loop. Only after that recovery gate passes may
   one bounded Web SDK media retry run with the corrected two-sided diagnostics.
+
+### 2026-08-13 — WAL fixed contention but exposed unbounded recovery work
+
+- Bridgefu commit `53650d3de2df4be72eb5f7ec8850191dd1599d4e`
+  contains the WAL/single-writer change and is pushed to
+  `origin/codex/vapi-tls-rtp-evidence`. Distribution commit
+  `c2095ec4f26162ff140fccd47eb25a016dd9ed68` pins that exact source and is
+  pushed to `origin/codex/staged-vapi-qualification`.
+- The exact ARM64 binary was installed on the retained Oregon instance. Its
+  SHA-256 is
+  `9c3f0b91dc9928b140034dcdbea9194e2741074f03fd760a7f9a20e621b9bb54`.
+  The preexisting 4.6-MiB database opened as WAL and held healthy readiness for
+  45 seconds without a restart. That proved the original writer-contention
+  fix, but not long-term recovery scalability.
+- One authorized Web SDK retry then added 116 durable commands, 227 call-
+  outbox rows, and 107 media-activity deadline refreshes in roughly one minute.
+  Cleanup stopped Bridgefu normally. The next three starts each failed with
+  the exact top-level cause `durable call execution recovery timed out`; the
+  fourth start succeeded after caches were warm. No Rust panic, OOM, or signal
+  crash initiated those restarts. The cancellation message containing the word
+  `panicked` was emitted only after systemd stop and is cleanup noise.
+- The deeper defect is now source-proven. Every SQLite claim operation rebuilds
+  and validates the full backend-neutral event snapshot before asking whether
+  work exists. Startup runs restart claims plus four cleanup claim classes
+  under the normal 15-second call-setup deadline. In this database both calls
+  were terminal and no coordination item was pending, so logically empty
+  recovery still re-read all retained calls, commands, outbox rows, deadlines,
+  provider state, and service rows several times. Durable media activity also
+  appends roughly two commands per second while two legs are active, and there
+  is no runtime terminal-history purge, so the cost is unbounded across calls.
+- The latest Web call is a separate call-path failure. Vapi used only the
+  dedicated direct tool surface and eventually returned one accepted result.
+  The source browser decoded non-silent remote audio (`147` active frames,
+  maximum RMS `0.255269`) but did not receive the expected marker or DTMF. No
+  Amazon Connect contact was found in the call window, and Bridgefu ended its
+  outbound leg as `transport_failed`. The exact Amazon-side invocation boundary
+  still requires CloudTrail and redacted Bridgefu-log correlation; it must not
+  be conflated with the startup-recovery defect.
+- CloudTrail and the durable execution timeline have now closed that boundary.
+  There were zero `StartWebRTCContact` API calls in the retry window. Bridgefu
+  durably queued the Amazon replacement at `00:33:40Z`, but did not finish
+  processing that outbox effect until `00:34:57Z`, 77 seconds later and after
+  the transfer deadline had already failed the call. The stored replacement
+  payload was valid, selected the Amazon Connect endpoint, and contained the
+  server-owned Amazon start specification. Amazon Connect, its contact flow,
+  and the agent therefore never had a call to accept in this retry.
+- This is the same repository starvation defect expressed on the live path:
+  ordinary work polling, media-activity mutations, and execution reads all
+  contended through one SQLite pool connection while repeatedly reconstructing
+  retained history. A second masking defect then classified the never-started
+  replacement as succeeded merely because it was finally retired after the
+  call was terminal.
+- The next permitted product action is an indexed, worker-safe SQLite no-work
+  claim path, concurrent WAL readers with one explicit mutation gate, and a
+  dedicated durable-recovery deadline. It must prove empty claims do not
+  deserialize retained history, stale worker fences still fail closed,
+  eligible work is never skipped, active replacement execution is not starved
+  by media activity, and repeated cold starts against a database shaped like
+  the retained one complete without systemd restarts. Terminal retirement must
+  also record an unstarted replacement as failed external work. A longer
+  timeout alone is not an acceptable final fix. No further call is permitted
+  until this recovery gate passes.
+
+### 2026-08-13 — Durable recovery and live-work starvation fix is locally proven
+
+- Bridgefu commit `9617be494bfe60835afc86235b4cba80b355db6b`
+  implements the bounded product fix and is pushed to
+  `origin/codex/vapi-tls-rtp-evidence`. The distribution source lock now pins
+  that exact commit; its Cargo lock digest remains unchanged and continues to
+  resolve exact crates.io rvoip `0.3.7`.
+- Standalone SQLite now uses WAL with eight pooled connections so indexed
+  reads and health/recovery probes do not queue behind an occupied connection.
+  A repository-owned async writer gate serializes mutations before they enter
+  SQLite's busy handler. `BEGIN IMMEDIATE` remains the database-level fence,
+  including between independently connected repository instances.
+- Each of the five durable claim classes first performs a conservative indexed
+  emptiness check against materialized state columns. The check validates the
+  exact worker fence and database-authoritative lease expiry. It skips retained
+  history deserialization only when no eligible work exists; any possible work
+  falls back to the complete backend-neutral transition.
+- Startup recovery has a separate 120-second minimum process-start budget. This
+  is defense in depth, not the starvation fix: empty recovery no longer rebuilds
+  settled history in the first place.
+- Retiring a queued `StartLegReplacement` after terminal convergence now records
+  `call_already_terminal` instead of falsely reporting success. JoinSet task
+  cancellations during an intentional stop are logged as cancellation rather
+  than mislabeled as panics.
+- The complete locked Rust test suite passed, including SQLite independent-
+  instance races, repository/runtime restart conformance, and real SIP/SRTP/
+  DTMF integration tests. Clippy with warnings denied, formatting, and diff
+  checks also passed.
+- The next permitted live action remains recovery-only: build and atomically
+  install this exact ARM64 commit on the retained Oregon instance, then run
+  repeated restarts against the existing retained database and require healthy
+  readiness without any automatic restart. No Web SDK call may run until that
+  gate passes.
