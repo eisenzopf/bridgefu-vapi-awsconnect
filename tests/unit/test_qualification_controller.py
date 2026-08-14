@@ -614,6 +614,7 @@ class QualificationControllerTests(unittest.TestCase):
         self.assertNotIn(authentication["password"], encoded)
         self.assertNotIn("phone_1234", encoded)
         self.assertIn("cat /var/lib/bridgefu/qualification/", encoded)
+        self.assertIn("--timeout-seconds 90 >/dev/null", encoded)
         self.assertNotIn("observation.json s3://", encoded)
         self.assertEqual(controller.ssm_commands, [])
         self.assertEqual(

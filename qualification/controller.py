@@ -4500,7 +4500,7 @@ class Controller:
                 f"{remote_client} --auth-stdin --authentication-probe "
                 f"--sip-uri {sip_uri} --public-ip {public_ip} "
                 f"--execution-id {self.args.execution_id} --output {remote_output} "
-                "--timeout-seconds 90"
+                "--timeout-seconds 90 >/dev/null"
             ),
             # The gateway role is intentionally read-only for qualification
             # objects. The probe artifact is a strict, closed-vocabulary,
