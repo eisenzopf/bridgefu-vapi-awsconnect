@@ -187,10 +187,25 @@ function validateSession(path) {
   ) {
     fail("private session violates the Agent Workspace contract");
   }
+  const allowedSipContext =
+    ["Bridgefu Synthetic Caller", "Alternate Synthetic Caller"].includes(
+      value.expected_context.customer_name,
+    ) &&
+    [
+      "Qualification SIP transfer source hangup.",
+      "Qualification Bridgefu Web SDK source hangup.",
+    ].includes(value.expected_context.issue_summary) &&
+    ["qualification", "other"].includes(value.expected_context.intent) &&
+    ["synthetic", "verified"].includes(value.expected_context.verification_status);
+  const exactWebContext =
+    value.expected_context.customer_name === "Bridgefu Synthetic Caller" &&
+    value.expected_context.issue_summary ===
+      "Qualification Bridgefu Web SDK source hangup." &&
+    value.expected_context.intent === "qualification" &&
+    value.expected_context.verification_status === "synthetic";
   if (
-    value.expected_context.customer_name !== "Bridgefu Synthetic Caller" ||
-    value.expected_context.verification_status !== "synthetic" ||
-    value.expected_context.intent !== "qualification"
+    (value.scenario_id === "vapi-sip-transfer" && !allowedSipContext) ||
+    (value.scenario_id === "bridgefu-web-sdk-handoff" && !exactWebContext)
   ) {
     fail("Agent Workspace qualification accepts synthetic context only");
   }

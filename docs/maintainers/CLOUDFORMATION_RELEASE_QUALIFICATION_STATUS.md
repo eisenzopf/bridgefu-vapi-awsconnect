@@ -2606,3 +2606,40 @@ and full 226-test Python suite passed.
 - The next permitted gate is the retained Oregon rvoip SIP-source smoke against
   this same environment, sequentially and with the database reset first. No
   GitHub candidate or release workflow is permitted before it passes.
+
+### 2026-08-14 — Retained Oregon SIP-source smoke passed
+
+- The initial SIP-source attempts exposed qualification-harness defects rather
+  than a Bridgefu transfer failure. The client originally treated a sustained
+  return marker as five required tone edges, sent short DTMF before the Connect
+  leg existed, and stopped without requiring a fresh source probe after agent
+  media became observable. The corrected client accepts one sustained return
+  marker, sends five-second marker and DTMF probes repeatedly, and cannot finish
+  until both have been sent after the first received agent marker.
+- The Web and SIP smokes now share one exact spoken request,
+  `Transfer me please.`, and one authenticated Vapi SIP data-plane readiness
+  gate. That gate requires the Digest challenge, exactly one authenticated
+  retry, SIP 200, open media, silence, BYE, and cleanup. A control-plane-active
+  endpoint that fails this gate is exact-deleted and replaced within the same
+  three-attempt bound already proven by the Web smoke.
+- The passing retained run reset the disposable database before dialing. Vapi
+  transferred the rvoip 0.3.7 SIP source to Bridgefu, Bridgefu admitted exactly
+  one correlation header over TLS signaling, optional-SRTP mode accepted the
+  Vapi `RTP/AVP` offer, Amazon Connect accepted the contact, and DynamoDB lookup
+  rendered all four configured screen-pop rows. Audio passed in both
+  directions, source-to-agent DTMF was observed, and source BYE produced clean
+  remote hangup and resource cleanup.
+- The exact call window was 22.304 seconds. CloudWatch reported 2.706% peak host
+  CPU, 2.99% peak host memory, 2.513% Bridgefu CPU as a percentage of the
+  eight-vCPU host, and 0.724% Bridgefu memory on the 16-GiB `c7g.2xlarge`.
+  There were zero Bridgefu startup events during the call. Compilation was
+  outside the measured window.
+- Both required retained Oregon sources have now passed. The subsequent local
+  gate passed 303 Python tests, both Rust qualification clients, browser
+  syntax, lint, deterministic Lambda/release packaging, CloudFormation lint,
+  local release validation, and checksum-verified Packer 1.12.0 validation.
+  All ten rendered root and nested templates then
+  passed the real AWS CloudFormation `ValidateTemplate` API in both
+  `us-west-2` and `us-east-1`. No candidate or publication workflow is
+  authorized by this result; the retained diagnostic stack remains available
+  for review.

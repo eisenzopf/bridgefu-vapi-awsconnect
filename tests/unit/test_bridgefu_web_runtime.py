@@ -319,7 +319,7 @@ printf 'status=%s restarts=%s\n' "$status" "$restart_count"
         )[0]
         self.assertLess(
             web_smoke.index("vapi_tls_reachability_script"),
-            web_smoke.index("provision_temporary_vapi_phone"),
+            web_smoke.index("provision_ready_temporary_vapi_phone"),
         )
 
 

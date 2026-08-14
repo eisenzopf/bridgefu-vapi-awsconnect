@@ -30,7 +30,11 @@ const SOURCE_MARKER_HZ: f32 = 997.0;
 const SOURCE_DTMF_LOW_HZ: f32 = 770.0;
 const SOURCE_DTMF_HIGH_HZ: f32 = 1_336.0;
 const AGENT_MARKER_HZ: f64 = 880.0;
-const REQUIRED_AGENT_MARKERS: usize = 5;
+const REQUIRED_AGENT_MARKER_EPISODES: usize = 1;
+const REQUIRED_AGENT_MARKER_FRAMES: usize = 5;
+const INITIAL_SILENCE_FRAMES: usize = 250;
+const SOURCE_MARKER_FRAMES: usize = 250;
+const SOURCE_DTMF_FRAMES: usize = 250;
 const MAX_PROMPT_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Parser)]
@@ -86,6 +90,9 @@ struct ToneEdges {
     last_edge_ms: Option<u64>,
     timestamps: Vec<u64>,
     frames: usize,
+    received_frames: usize,
+    active_frames: usize,
+    max_rms: f64,
 }
 
 #[derive(Clone, Default)]
@@ -335,16 +342,20 @@ fn rms(samples: &[i16]) -> f64 {
 
 impl ToneEdges {
     fn observe(&mut self, frame: &AudioFrame) {
+        self.received_frames += 1;
+        let frame_rms = rms(&frame.samples);
+        self.max_rms = self.max_rms.max(frame_rms);
+        if frame_rms >= 0.001 {
+            self.active_frames += 1;
+        }
         let agent = tone_power(&frame.samples, frame.sample_rate, AGENT_MARKER_HZ);
         let source = tone_power(
             &frame.samples,
             frame.sample_rate,
             f64::from(SOURCE_MARKER_HZ),
         );
-        let present = frame.channels == 1
-            && rms(&frame.samples) >= 0.01
-            && agent >= 0.001
-            && agent >= source * 8.0;
+        let present =
+            frame.channels == 1 && frame_rms >= 0.01 && agent >= 0.001 && agent >= source * 8.0;
         if present {
             self.frames += 1;
             let current = now_ms();
@@ -352,7 +363,7 @@ impl ToneEdges {
                 && self
                     .last_edge_ms
                     .is_none_or(|previous| current.saturating_sub(previous) >= 500)
-                && self.timestamps.len() < REQUIRED_AGENT_MARKERS
+                && self.timestamps.len() < REQUIRED_AGENT_MARKER_EPISODES
             {
                 self.timestamps.push(current);
                 self.last_edge_ms = Some(current);
@@ -406,7 +417,7 @@ async fn send_media(
     stats: Arc<Mutex<SendStats>>,
 ) -> anyhow::Result<()> {
     let mut timestamp = 0_u32;
-    for _ in 0..150 {
+    for _ in 0..INITIAL_SILENCE_FRAMES {
         send_frame(&sender, vec![0; FRAME_SAMPLES], &mut timestamp).await?;
     }
     let mut prompt_frames = 0;
@@ -422,16 +433,16 @@ async fn send_media(
     let mut dtmf_high_phase = 0.0;
     for _ in 0..90 {
         let marker_timestamp = now_ms();
-        for _ in 0..5 {
+        for _ in 0..SOURCE_MARKER_FRAMES {
             send_frame(&sender, tone_frame(&mut phase), &mut timestamp).await?;
         }
         {
             let mut current = stats.lock().await;
             current.marker_timestamps.push(marker_timestamp);
-            current.marker_frames += 5;
+            current.marker_frames += SOURCE_MARKER_FRAMES;
         }
         let dtmf_timestamp = now_ms();
-        for _ in 0..15 {
+        for _ in 0..SOURCE_DTMF_FRAMES {
             send_frame(
                 &sender,
                 dtmf_frame(&mut dtmf_low_phase, &mut dtmf_high_phase),
@@ -442,13 +453,24 @@ async fn send_media(
         {
             let mut current = stats.lock().await;
             current.dtmf_timestamps.push(dtmf_timestamp);
-            current.dtmf_frames += 15;
+            current.dtmf_frames += SOURCE_DTMF_FRAMES;
         }
         for _ in 0..30 {
             send_frame(&sender, vec![0; FRAME_SAMPLES], &mut timestamp).await?;
         }
     }
     Ok(())
+}
+
+fn source_probe_sent_after(stats: &SendStats, established_at_ms: u64) -> bool {
+    stats
+        .marker_timestamps
+        .iter()
+        .any(|timestamp| *timestamp > established_at_ms)
+        && stats
+            .dtmf_timestamps
+            .iter()
+            .any(|timestamp| *timestamp > established_at_ms)
 }
 
 fn observe_wire(trace: &SipTrace, evidence: &mut WireEvidence) {
@@ -732,21 +754,38 @@ async fn run(args: Args) -> anyhow::Result<()> {
     let send_task = tokio::spawn(send_media(sender, prompt, Arc::clone(&send_stats)));
     let receive_deadline = tokio::time::Instant::now() + Duration::from_secs(args.timeout_seconds);
     let mut agent_markers = ToneEdges::default();
-    while tokio::time::Instant::now() < receive_deadline
-        && agent_markers.timestamps.len() < REQUIRED_AGENT_MARKERS
-    {
+    while tokio::time::Instant::now() < receive_deadline {
         let remaining = receive_deadline.saturating_duration_since(tokio::time::Instant::now());
         match tokio::time::timeout(remaining.min(Duration::from_secs(2)), receiver.recv()).await {
             Ok(Some(frame)) => agent_markers.observe(&frame),
             Ok(None) => break,
             Err(_) => {}
         }
+        let current_send_stats = send_stats.lock().await;
+        let agent_media_established_at = agent_markers.timestamps.first().copied();
+        let source_probe_sent = agent_media_established_at
+            .is_some_and(|established| source_probe_sent_after(&current_send_stats, established));
+        drop(current_send_stats);
+        if agent_markers.timestamps.len() >= REQUIRED_AGENT_MARKER_EPISODES
+            && agent_markers.frames >= REQUIRED_AGENT_MARKER_FRAMES
+            && source_probe_sent
+        {
+            break;
+        }
     }
-    if agent_markers.timestamps.len() < REQUIRED_AGENT_MARKERS
-        || agent_markers.frames < REQUIRED_AGENT_MARKERS
+    if agent_markers.timestamps.len() < REQUIRED_AGENT_MARKER_EPISODES
+        || agent_markers.frames < REQUIRED_AGENT_MARKER_FRAMES
     {
         send_task.abort();
-        bail!("Connect agent audio marker was not received through Vapi and Bridgefu")
+        bail!(
+            "Connect agent audio marker was not received through Vapi and Bridgefu \
+             edges={} marker_frames={} received_frames={} active_frames={} max_rms={:.6}",
+            agent_markers.timestamps.len(),
+            agent_markers.frames,
+            agent_markers.received_frames,
+            agent_markers.active_frames,
+            agent_markers.max_rms,
+        )
     }
     send_task.abort();
     match send_task.await {
@@ -756,8 +795,8 @@ async fn run(args: Args) -> anyhow::Result<()> {
     }
     let send_stats = send_stats.lock().await.clone();
     if send_stats.prompt_frames == 0
-        || send_stats.marker_frames < 5
-        || send_stats.dtmf_frames < 15
+        || send_stats.marker_frames < SOURCE_MARKER_FRAMES
+        || send_stats.dtmf_frames < SOURCE_DTMF_FRAMES
         || send_stats.dtmf_timestamps.is_empty()
     {
         bail!("source audio and DTMF were not sent before the return marker arrived")
@@ -835,6 +874,9 @@ mod tests {
         let mut detector = ToneEdges::default();
         detector.observe(&frame);
         assert!(detector.timestamps.is_empty());
+        assert_eq!(detector.received_frames, 1);
+        assert_eq!(detector.active_frames, 1);
+        assert!(detector.max_rms >= 0.1);
     }
 
     #[test]
@@ -844,6 +886,20 @@ mod tests {
         let samples = dtmf_frame(&mut low_phase, &mut high_phase);
         assert!(tone_power(&samples, SAMPLE_RATE, f64::from(SOURCE_DTMF_LOW_HZ)) > 0.001);
         assert!(tone_power(&samples, SAMPLE_RATE, f64::from(SOURCE_DTMF_HIGH_HZ)) > 0.001);
+    }
+
+    #[test]
+    fn source_probe_must_follow_agent_media_establishment() {
+        let mut stats = SendStats {
+            marker_timestamps: vec![100],
+            dtmf_timestamps: vec![200],
+            ..SendStats::default()
+        };
+        assert!(!source_probe_sent_after(&stats, 250));
+        stats.marker_timestamps.push(300);
+        assert!(!source_probe_sent_after(&stats, 250));
+        stats.dtmf_timestamps.push(400);
+        assert!(source_probe_sent_after(&stats, 250));
     }
 
     #[test]

@@ -2349,7 +2349,7 @@ class QualificationControllerTests(unittest.TestCase):
                 "source_to_agent_marker_frames_sent": 5,
                 "dtmf_source_to_agent_sent_at_ms": [2],
                 "dtmf_source_to_agent_frames_sent": 15,
-                "agent_marker_observed_at_ms": [1, 2, 3, 4, 5],
+                "agent_marker_observed_at_ms": [1],
                 "agent_to_source_marker_frames": 5,
             },
             "hangup": {"local_bye_completed": True, "cleanup_observed": True},

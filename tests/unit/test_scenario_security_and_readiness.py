@@ -173,7 +173,7 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
         )[0]
         ordered = (
             "self.install_direct_assistant()",
-            "self.provision_temporary_vapi_phone(",
+            "self.provision_ready_temporary_vapi_phone(",
             "self.install_web_runtime(",
             "self.authorize_web_media()",
             "ensure_connect_agent_available",
@@ -190,6 +190,20 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
         positions = [web.index(fragment) for fragment in ordered]
         self.assertEqual(positions, sorted(positions))
         self.assertNotIn("handoff_token", web.split("private_json(session_path", 1)[1])
+
+    def test_both_sources_share_the_transfer_prompt_and_data_plane_gate(self) -> None:
+        text = (QUALIFICATION / "controller.py").read_text(encoding="utf-8")
+        web = text.split("    def _web_smoke(", 1)[1].split(
+            "    def cleanup_sip_transients(", 1
+        )[0]
+        sip = text.split("    def _sip_smoke(", 1)[1].split(
+            "    def bind_sip_session_context(", 1
+        )[0]
+        self.assertEqual(CONTROLLER.TRANSFER_REQUEST_SPEECH, "Transfer me please.")
+        self.assertEqual(text.count('"Transfer me please."'), 1)
+        for source in (web, sip):
+            self.assertIn("self.provision_ready_temporary_vapi_phone(", source)
+            self.assertIn("speech = TRANSFER_REQUEST_SPEECH", source)
 
     def test_destination_security_proof_is_single_correlated_runtime_event(
         self,

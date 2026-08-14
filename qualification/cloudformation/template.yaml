@@ -47,7 +47,7 @@ Parameters:
   ScreenPopFieldsJson:
     Type: String
     MaxLength: 4096
-    Default: '[{"key":"customer_name","label":"Customer","description":"Synthetic caller name.","type":"text","required":true,"max_length":256},{"key":"issue_summary","label":"Issue","description":"Synthetic qualification issue.","type":"text","required":true,"max_length":1024},{"key":"intent","label":"Intent","description":"Synthetic qualification intent.","type":"text","required":true,"max_length":128},{"key":"verification_status","label":"Verification","description":"Synthetic qualification status.","type":"choice","required":true,"choices":["synthetic","verified"]}]'
+    Default: '[{"key":"customer_name","label":"Customer","description":"For automated qualification use Bridgefu Synthetic Caller.","type":"choice","required":true,"choices":["Bridgefu Synthetic Caller","Alternate Synthetic Caller"]},{"key":"issue_summary","label":"Issue","description":"For the SIP-source qualification use Qualification SIP transfer source hangup.","type":"choice","required":true,"choices":["Qualification SIP transfer source hangup.","Qualification Bridgefu Web SDK source hangup."]},{"key":"intent","label":"Intent","description":"For automated qualification use qualification.","type":"choice","required":true,"choices":["qualification","other"]},{"key":"verification_status","label":"Verification","description":"For automated qualification use synthetic.","type":"choice","required":true,"choices":["synthetic","verified"]}]'
 
 Resources:
   DisposableConnect:

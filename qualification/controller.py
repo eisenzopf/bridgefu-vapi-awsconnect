@@ -106,6 +106,7 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 S3_BUCKET = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
 WEB_SCENARIO = "bridgefu-web-sdk-handoff"
 SCENARIOS = (WEB_SCENARIO, "vapi-sip-transfer")
+TRANSFER_REQUEST_SPEECH = "Transfer me please."
 CONTEXT = {
     "customer_name": "Bridgefu Synthetic Caller",
     "intent": "qualification",
@@ -1199,7 +1200,17 @@ class Aws:
         try:
             return json.loads(output)
         except json.JSONDecodeError as error:
-            raise QualificationError("AWS CLI returned invalid JSON") from error
+            service = arguments[0] if arguments else "unknown"
+            operation = arguments[1] if len(arguments) > 1 else "unknown"
+            if not all(
+                re.fullmatch(r"[a-z0-9-]{1,64}", value)
+                for value in (service, operation)
+            ):
+                service = operation = "unknown"
+            raise QualificationError(
+                f"AWS CLI returned invalid JSON service={service} "
+                f"operation={operation} bytes={len(output.encode('utf-8'))}"
+            ) from error
 
     def text(self, arguments: list[str], timeout: int = 900) -> str:
         return self.runner.run(
@@ -2399,6 +2410,27 @@ def synthetic_context(scenario: str) -> dict[str, str]:
         "intent": CONTEXT["intent"],
         "verification_status": CONTEXT["verification_status"],
     }
+
+
+def allowed_synthetic_context(value: Any, scenario: str) -> bool:
+    if not isinstance(value, Mapping) or set(value) != set(SCREEN_POP_KEYS):
+        return False
+    if scenario == WEB_SCENARIO:
+        return dict(value) == synthetic_context(scenario)
+    if scenario != "vapi-sip-transfer":
+        return False
+    allowed = {
+        "customer_name": {"Bridgefu Synthetic Caller", "Alternate Synthetic Caller"},
+        "issue_summary": {
+            "Qualification SIP transfer source hangup.",
+            "Qualification Bridgefu Web SDK source hangup.",
+        },
+        "intent": {"qualification", "other"},
+        "verification_status": {"synthetic", "verified"},
+    }
+    return all(
+        isinstance(value[key], str) and value[key] in allowed[key] for key in allowed
+    )
 
 
 def qualification_field_schema() -> dict[str, Any]:
@@ -4624,6 +4656,35 @@ class Controller:
         ):
             raise QualificationError("temporary Vapi SIP data plane is not ready")
 
+    def provision_ready_temporary_vapi_phone(
+        self,
+        assistant_id: str | None = None,
+    ) -> tuple[dict[str, str], str, str]:
+        """Create and prove one transient Vapi endpoint before a smoke call."""
+        probe_failure = "temporary Vapi SIP data plane did not become ready"
+        for attempt in range(1, 4):
+            authentication, phone_id, sip_uri = self.provision_temporary_vapi_phone(
+                assistant_id
+            )
+            try:
+                self.prove_temporary_vapi_phone_authentication(
+                    authentication, phone_id, sip_uri
+                )
+                return authentication, phone_id, sip_uri
+            except QualificationError as error:
+                message = str(error)
+                if re.fullmatch(
+                    r"temporary Vapi SIP data plane readiness failed category "
+                    r"(?:challenge|retry-count|answer|media|hangup|wire) status "
+                    r"(?:0|200|401|403|404|408|409|425|429|500|502|503|504)",
+                    message,
+                ):
+                    probe_failure = message
+                cleanup_errors = self.cleanup_sip_transients()
+                if cleanup_errors or attempt == 3:
+                    raise QualificationError(probe_failure) from error
+        raise QualificationError(probe_failure)
+
     def put_secret_json(self, secret_arn: str, value: Mapping[str, Any]) -> None:
         if not secret_arn.startswith("arn:aws"):
             raise QualificationError("qualification secret identity is invalid")
@@ -5460,32 +5521,9 @@ class Controller:
         )
         bridgefu_web_runtime.validate_vapi_tls_reachability(reachability)
         self.install_direct_assistant()
-        authentication: dict[str, str] | None = None
-        phone_id: str | None = None
-        probe_failure = "temporary Vapi SIP data plane did not become ready"
-        for attempt in range(1, 4):
-            authentication, phone_id, sip_uri = self.provision_temporary_vapi_phone(
-                self.direct_assistant_id
-            )
-            try:
-                self.prove_temporary_vapi_phone_authentication(
-                    authentication, phone_id, sip_uri
-                )
-                break
-            except QualificationError as error:
-                message = str(error)
-                if re.fullmatch(
-                    r"temporary Vapi SIP data plane readiness failed category "
-                    r"(?:challenge|retry-count|answer|media|hangup|wire) status "
-                    r"(?:0|200|401|403|404|408|409|425|429|500|502|503|504)",
-                    message,
-                ):
-                    probe_failure = message
-                cleanup_errors = self.cleanup_sip_transients()
-                if cleanup_errors or attempt == 3:
-                    raise QualificationError(probe_failure)
-        if authentication is None or phone_id is None:
-            raise QualificationError("temporary Vapi SIP endpoint is unavailable")
+        authentication, phone_id, _ = self.provision_ready_temporary_vapi_phone(
+            self.direct_assistant_id
+        )
         signaling_port = self.reserve_local_port()
         control_port = self.reserve_local_port()
         self.install_web_runtime(
@@ -5526,7 +5564,7 @@ class Controller:
             route_attachment = self.work / f"{scenario}-route.json"
             private_json(route_attachment, binding.browser_input())
             prompt = self.work / "web-prompt.pcm"
-            speech = "Transfer me please."
+            speech = TRANSFER_REQUEST_SPEECH
             self.runner.run(
                 [
                     "aws",
@@ -5914,14 +5952,9 @@ class Controller:
         # Unlike the Web smoke, this source can ask Vapi to transfer as soon as
         # its prompt arrives, so status selection must precede SSM dispatch.
         ensure_connect_agent_available(self.aws, self.outputs)
-        authentication, phone_id, sip_uri = self.provision_temporary_vapi_phone()
+        _authentication, phone_id, sip_uri = self.provision_ready_temporary_vapi_phone()
         prompt = self.work / "sip-prompt.pcm"
-        speech = (
-            "This is an automated Bridgefu qualification. My customer name is Bridgefu Synthetic Caller. "
-            "My issue summary is exactly: Qualification SIP transfer source hangup. "
-            "My intent is qualification. My verification status is synthetic. "
-            "Please call prepare handoff with exactly those values and transfer me to a human now."
-        )
+        speech = TRANSFER_REQUEST_SPEECH
         self.runner.run(
             [
                 "aws",
@@ -5943,31 +5976,9 @@ class Controller:
         )
         prefix = f"qualification/{self.args.execution_id}"
         bucket = self.outputs["ArtifactBucket"]
-        self.temp_sip_auth_object = f"s3://{bucket}/{prefix}/sip-auth.json"
-        self.runner.run(
-            [
-                "aws",
-                "s3",
-                "cp",
-                "-",
-                self.temp_sip_auth_object,
-                "--sse",
-                "AES256",
-                "--only-show-errors",
-                "--region",
-                self.args.region,
-            ],
-            input_text=json.dumps(authentication, separators=(",", ":")),
-            timeout=120,
-        )
-        self.aws.text(
-            [
-                "s3",
-                "cp",
-                os.fspath(self.args.sip_client),
-                f"s3://{bucket}/{prefix}/sip-client",
-            ]
-        )
+        if self.temp_sip_auth_object is None:
+            raise QualificationError("temporary Vapi SIP authentication is unavailable")
+        install_sip_client = self.stage_sip_smoke_client(bucket, prefix)
         self.aws.text(
             ["s3", "cp", os.fspath(prompt), f"s3://{bucket}/{prefix}/prompt.pcm"]
         )
@@ -5988,7 +5999,6 @@ class Controller:
             raise QualificationError(
                 "Bridgefu qualification host has no public IPv4 address"
             ) from error
-        remote_output = f"s3://{bucket}/{prefix}/sip-source.json"
         remote_directory = f"/var/lib/bridgefu/qualification/{self.args.execution_id}"
         remote_client = f"{remote_directory}/sip-client"
         remote_prompt = f"{remote_directory}/prompt.pcm"
@@ -6001,18 +6011,23 @@ class Controller:
         commands = [
             "set -euo pipefail",
             f"install -d -m 0700 {remote_directory}",
-            f"aws s3 cp s3://{bucket}/{prefix}/sip-client {remote_client}",
-            f"aws s3 cp s3://{bucket}/{prefix}/prompt.pcm {remote_prompt}",
+            install_sip_client.format(remote_client=remote_client),
+            f"aws s3 cp s3://{bucket}/{prefix}/prompt.pcm {remote_prompt} --only-show-errors",
             f"chmod 0700 {remote_client}",
             (
                 f"aws s3 cp {self.temp_sip_auth_object} - --only-show-errors | "
                 f"{remote_client} --auth-stdin --sip-uri {sip_uri} --prompt-pcm {remote_prompt} "
                 f"--public-ip {public_ip} --execution-id {self.args.execution_id} "
-                f"--output {remote_observation} --timeout-seconds 240"
+                f"--output {remote_observation} --timeout-seconds 240 >/dev/null"
             ),
-            f"aws s3 cp {remote_observation} {remote_output}",
+            # The gateway is intentionally read-only in the qualification
+            # bucket. Return the bounded, redacted observation through SSM.
+            f"cat {remote_observation}",
             f"rm -f {remote_client} {remote_prompt} {remote_observation}",
-            f"rmdir {remote_directory}",
+            self.finalize_sip_smoke_remote_directory(
+                remote_directory,
+                (remote_client, remote_prompt, remote_observation),
+            ),
         ]
         # Establish the discovery window before dispatching the remote client.
         # SSM can start the SIP call before send-command returns, so taking this
@@ -6048,18 +6063,106 @@ class Controller:
             release=self.args.release,
             sip_uri=sip_uri,
         )
+        session = self.bind_sip_session_context(session, correlation_key)
         private_json(session_path, session)
-        wait_for_ssm_command(
-            self.aws,
-            command_id,
-            instance,
-            timeout=360,
-        )
-        self.ssm_commands.remove(command_id)
-        self.complete_process(agent_process, "Amazon Connect SIP smoke observer", 360)
+        observer_errors: list[str] = []
+        ssm_terminal = False
+        try:
+            wait_for_ssm_command(
+                self.aws,
+                command_id,
+                instance,
+                timeout=360,
+            )
+            ssm_terminal = True
+        except QualificationError as error:
+            observer_errors.append(str(error))
+            ssm_terminal = str(error).startswith(
+                "qualification SSM command ended with "
+            )
+        finally:
+            # A terminal remote media failure still permits the independent
+            # agent observer to finish and report its closed counters. A local
+            # wait timeout remains owned so stop_active_work can cancel it.
+            if ssm_terminal and command_id in self.ssm_commands:
+                self.ssm_commands.remove(command_id)
+        try:
+            self.complete_process(
+                agent_process, "Amazon Connect SIP smoke observer", 360
+            )
+        except QualificationError as error:
+            observer_errors.append(str(error))
+        if observer_errors:
+            raise QualificationError("; ".join(observer_errors))
         source_observation = self.work / f"{scenario}-source.json"
-        self.aws.text(["s3", "cp", remote_output, os.fspath(source_observation)])
+        try:
+            source_result = json.loads(read_ssm_output(self.aws, command_id, instance))
+        except json.JSONDecodeError as error:
+            raise QualificationError("SIP source observation is invalid") from error
+        private_json(source_observation, source_result)
         self.verify_scenario(scenario, session, source_observation, agent_observation)
+
+    def bind_sip_session_context(
+        self, session: Mapping[str, Any], correlation_key: str
+    ) -> dict[str, Any]:
+        """Bind the exact bounded Vapi-selected values before Connect renders them."""
+        deadline = time.monotonic() + 120
+        while True:
+            result = self.aws.json(
+                [
+                    "dynamodb",
+                    "get-item",
+                    "--table-name",
+                    self.outputs["HandoffTableName"],
+                    "--key",
+                    json.dumps(
+                        {"correlation_id": {"S": session["correlation_id"]}},
+                        separators=(",", ":"),
+                    ),
+                    "--consistent-read",
+                    "--return-consumed-capacity",
+                    "TOTAL",
+                ]
+            )
+            item = result.get("Item") if isinstance(result, Mapping) else None
+            if item is not None:
+                if not isinstance(item, Mapping):
+                    raise QualificationError("handoff context record is invalid")
+                decoded = {key: decode_dynamo(value) for key, value in item.items()}
+                values = decoded.get("screen_pop_values")
+                if not isinstance(values, Mapping):
+                    values = {key: decoded.get(key) for key in SCREEN_POP_KEYS}
+                if not allowed_synthetic_context(values, "vapi-sip-transfer"):
+                    raise QualificationError(
+                        "handoff context is outside the synthetic qualification schema"
+                    )
+                bound = dict(session)
+                bound["expected_context"] = dict(values)
+                bound["session_hmac"] = session_hmac(bound, correlation_key)
+                return bound
+            if time.monotonic() >= deadline:
+                raise QualificationError(
+                    "handoff context was not stored before transfer"
+                )
+            time.sleep(1)
+
+    def stage_sip_smoke_client(self, bucket: str, prefix: str) -> str:
+        """Stage the immutable SIP smoke binary and return its remote install command.
+
+        Retained diagnostics may override this narrow boundary to select an
+        already-attested binary on the test instance. Release qualification
+        always uses the controller input uploaded to the candidate bucket.
+        """
+        client_object = f"s3://{bucket}/{prefix}/sip-client"
+        self.aws.text(["s3", "cp", os.fspath(self.args.sip_client), client_object])
+        return f"aws s3 cp {client_object} {{remote_client}} --only-show-errors"
+
+    def finalize_sip_smoke_remote_directory(
+        self, remote_directory: str, transient_paths: tuple[str, ...]
+    ) -> str:
+        """Return the release cleanup command for SIP-source remote state."""
+        del transient_paths
+        return f"rmdir {remote_directory}"
 
     def verify_scenario(
         self,
