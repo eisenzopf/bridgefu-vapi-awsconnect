@@ -79,6 +79,8 @@ class QualificationAssetTests(unittest.TestCase):
             browser,
         )
         self.assertIn("const PROBE_INITIAL_SILENCE_MS = 25_000;", browser)
+        self.assertIn("const PROBE_PULSES_PER_CYCLE = 1;", browser)
+        self.assertIn("const PROBE_PULSE_MS = 5_000;", browser)
         self.assertIn("const PROMPT_GAIN = 2.8;", browser)
         self.assertIn('value.peerConnectionState === "connected"', browser)
         self.assertIn("media.audioPacketsSent > 5", browser)

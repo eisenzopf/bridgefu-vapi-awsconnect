@@ -73,8 +73,12 @@ const SOURCE_MARKER_HZ = 997;
 const AGENT_MARKER_HZ = 880;
 const PROBE_INITIAL_SILENCE_MS = 25_000;
 const PROBE_CYCLE_MS = 10_000;
-const PROBE_PULSES_PER_CYCLE = 5;
-const PROBE_PULSE_MS = 100;
+// Hold the deterministic source marker for five full seconds. A long marker
+// is materially easier to observe through two transcoding legs than short
+// diagnostic chirps, while the separate DTMF interval remains independently
+// classified.
+const PROBE_PULSES_PER_CYCLE = 1;
+const PROBE_PULSE_MS = 5_000;
 const DTMF_START_MS = 6_000;
 const DTMF_DURATION_MS = 350;
 // The fake microphone starts before the peer connection is established. Require
