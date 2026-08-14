@@ -2521,3 +2521,38 @@ and full 226-test Python suite passed.
   compilation. After the binary hashes are recorded, installation must retain
   an exact rollback binary and pass sustained readiness before the one permitted
   retained Web smoke begins.
+
+### 2026-08-14 — The CloudWatch retry stopped at the Vapi readiness observer
+
+- The diagnostic Bridgefu binary with named-profile security observation was
+  installed on the retained Oregon instance. Its exact SHA-256 is
+  `51d47a767986123cbc91572a51177b0cc161c7dcde0ea01e754e7076be9cdbfe`;
+  the prior binary remains available for exact rollback. Installation passed
+  sustained readiness with zero automatic restarts.
+- The first CloudWatch retry did not reach the browser. Its readiness command
+  successfully completed the Vapi SIP dialog, then failed only when the EC2
+  gateway role tried to upload the redacted observation to S3. That role is
+  intentionally read-only. Commit `298579f` returns the strict observation in
+  authenticated SSM output instead; no S3 write permission was added.
+- The next bounded retry created three isolated Vapi SIP endpoints in sequence.
+  Each waited for 90 continuous seconds of API `active` state. The first two
+  probes became real Vapi inbound calls, received an answer, opened media, sent
+  silence, and ended because the qualification client sent BYE. Vapi recorded
+  both as `ended` with `customer-ended-call`. The wire observer nevertheless
+  rejected them under its combined Digest/target/retry-count/answer assertion.
+  The third attempt produced the same aggregate readiness failure. The browser,
+  Connect call, and Bridgefu replacement were never started.
+- Exact cleanup passed. No qualification phone, direct assistant, or direct
+  tool remains; the direct identity binding is unbound. The retained AWS stack
+  and product assistant remain intentionally available for this single gate.
+- Commit `000e157` changes the readiness client to return a machine-readable,
+  redacted failure observation after a successfully completed media dialog.
+  It records only target-host match, Digest-challenge presence, INVITE count,
+  answer presence, bounded final status, transport, media-open/silence, and BYE
+  cleanup. The controller persists each observation before classifying the
+  failure. It contains no URI, credential, SIP/SDP body, call ID, assistant ID,
+  phone ID, media address, or customer data.
+- The next permitted action remains this same retained readiness gate with the
+  `000e157` client. It must identify the exact observer mismatch before the Web
+  smoke may continue. No candidate workflow, fresh stack, SIP-source smoke, or
+  release version is permitted first.
