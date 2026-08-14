@@ -2974,9 +2974,11 @@ def call_contains_transfer(value: Any, scenario: str = "vapi-sip-transfer") -> b
                 if isinstance(result, Mapping) and result.get("accepted") is True:
                     accepted_results += 1
         return (
-            calls == [bridgefu_web_handoff.DIRECT_TOOL_NAME]
-            and results == [bridgefu_web_handoff.DIRECT_TOOL_NAME]
-            and accepted_results == 1
+            bool(calls)
+            and len(calls) == len(results)
+            and all(name == bridgefu_web_handoff.DIRECT_TOOL_NAME for name in calls)
+            and all(name == bridgefu_web_handoff.DIRECT_TOOL_NAME for name in results)
+            and accepted_results == len(results)
         )
     return "prepare_handoff" in names and "transferCall" in names and transfer
 
@@ -4426,6 +4428,170 @@ class Controller:
         )
         return authentication, phone_id, str(sip_uri)
 
+    def prove_temporary_vapi_phone_authentication(
+        self,
+        authentication: Mapping[str, str],
+        phone_id: str,
+        sip_uri: str,
+    ) -> None:
+        """Prove the newly active endpoint with a real Digest SIP dialog.
+
+        Vapi's API status is only a control-plane signal. This gate requires
+        the data plane to challenge, accept the authenticated retry, answer,
+        open media, and complete BYE before the full smoke is allowed to run.
+        """
+        if self.temp_sip_auth_object is not None:
+            raise QualificationError("temporary Vapi SIP authentication is not clean")
+        if not RESOURCE_ID.fullmatch(phone_id) or not sip_uri.startswith("sip:"):
+            raise QualificationError("temporary Vapi SIP probe identity is invalid")
+        bucket = self.outputs["ArtifactBucket"]
+        phone_fingerprint = hashlib.sha256(phone_id.encode()).hexdigest()[:12]
+        prefix = (
+            f"qualification/{self.args.execution_id}/auth-probe/{phone_fingerprint}"
+        )
+        self.temp_sip_auth_object = f"s3://{bucket}/{prefix}/sip-auth.json"
+        client_object = f"s3://{bucket}/{prefix}/sip-client"
+        output_object = f"s3://{bucket}/{prefix}/observation.json"
+        self.runner.run(
+            [
+                "aws",
+                "s3",
+                "cp",
+                "-",
+                self.temp_sip_auth_object,
+                "--sse",
+                "AES256",
+                "--only-show-errors",
+                "--region",
+                self.args.region,
+            ],
+            input_text=json.dumps(authentication, separators=(",", ":")),
+            timeout=120,
+        )
+        self.aws.text(["s3", "cp", os.fspath(self.args.sip_client), client_object])
+        instance = self.outputs["BridgefuInstanceId"]
+        public_ip = self.aws.text(
+            [
+                "ec2",
+                "describe-instances",
+                "--instance-ids",
+                instance,
+                "--query",
+                "Reservations[0].Instances[0].PublicIpAddress",
+            ]
+        )
+        try:
+            socket.inet_aton(public_ip)
+        except OSError as error:
+            raise QualificationError(
+                "Bridgefu qualification host has no public IPv4 address"
+            ) from error
+        remote_directory = (
+            f"/var/lib/bridgefu/qualification/{self.args.execution_id}/auth-probe"
+        )
+        remote_client = f"{remote_directory}/sip-client"
+        remote_output = f"{remote_directory}/observation.json"
+        commands = [
+            "set -euo pipefail",
+            f"install -d -m 0700 {remote_directory}",
+            f"aws s3 cp {client_object} {remote_client} --only-show-errors",
+            f"chmod 0700 {remote_client}",
+            (
+                f"aws s3 cp {self.temp_sip_auth_object} - --only-show-errors | "
+                f"{remote_client} --auth-stdin --authentication-probe "
+                f"--sip-uri {sip_uri} --public-ip {public_ip} "
+                f"--execution-id {self.args.execution_id} --output {remote_output} "
+                "--timeout-seconds 90"
+            ),
+            f"aws s3 cp {remote_output} {output_object} --only-show-errors",
+            f"rm -f {remote_client} {remote_output}",
+            f"rmdir {remote_directory}",
+        ]
+        command_id = self.aws.text(
+            [
+                "ssm",
+                "send-command",
+                "--instance-ids",
+                instance,
+                "--document-name",
+                "AWS-RunShellScript",
+                "--parameters",
+                encode_ssm_shell_parameters(commands),
+                "--query",
+                "Command.CommandId",
+            ]
+        )
+        self.ssm_commands.append(command_id)
+        try:
+            wait_for_ssm_command(self.aws, command_id, instance, timeout=150)
+        except QualificationError:
+            if cancel_and_wait_ssm_terminal(self.aws, command_id, instance):
+                self.ssm_commands.remove(command_id)
+            raise
+        self.ssm_commands.remove(command_id)
+        local_output = self.work / f"vapi-auth-probe-{phone_fingerprint}.json"
+        self.aws.text(["s3", "cp", output_object, os.fspath(local_output)])
+        result = read_json(local_output)
+        expected = {
+            "schema_version": 1,
+            "producer": "bridgefu-vapi-sip-smoke@1",
+            "mode": "authenticated-readiness",
+            "redacted": True,
+        }
+        if set(result) != {
+            *expected,
+            "producer_revision_sha256",
+            "ready",
+            "final_status",
+            "signaling",
+            "media",
+            "hangup",
+        } or any(result.get(key) != value for key, value in expected.items()):
+            raise QualificationError("temporary Vapi SIP probe result is invalid")
+        revision = result.get("producer_revision_sha256")
+        ready = result.get("ready")
+        final_status = result.get("final_status")
+        signaling = result.get("signaling")
+        media = result.get("media")
+        hangup = result.get("hangup")
+        if not (
+            isinstance(revision, str)
+            and SHA256.fullmatch(revision)
+            and isinstance(ready, bool)
+            and isinstance(final_status, int)
+            and final_status
+            in {0, 200, 401, 403, 404, 408, 409, 425, 429, 500, 502, 503, 504}
+            and isinstance(signaling, Mapping)
+            and set(signaling)
+            == {
+                "digest_challenge_received",
+                "authenticated_invite_count",
+                "answered",
+                "transport",
+            }
+            and signaling.get("transport") == "udp"
+            and isinstance(media, Mapping)
+            and set(media) == {"opened", "silence_frames_sent"}
+            and isinstance(hangup, Mapping)
+            and set(hangup) == {"local_bye_completed", "cleanup_observed"}
+        ):
+            raise QualificationError("temporary Vapi SIP probe result is invalid")
+        if ready is not True:
+            raise QualificationError(
+                f"temporary Vapi SIP data plane rejected authentication status {final_status}"
+            )
+        if not (
+            signaling.get("digest_challenge_received") is True
+            and signaling.get("authenticated_invite_count") == 2
+            and signaling.get("answered") is True
+            and final_status == 200
+            and media.get("opened") is True
+            and media.get("silence_frames_sent") == 50
+            and hangup.get("local_bye_completed") is True
+            and hangup.get("cleanup_observed") is True
+        ):
+            raise QualificationError("temporary Vapi SIP data plane is not ready")
+
     def put_secret_json(self, secret_arn: str, value: Mapping[str, Any]) -> None:
         if not secret_arn.startswith("arn:aws"):
             raise QualificationError("qualification secret identity is invalid")
@@ -5262,9 +5428,31 @@ class Controller:
         )
         bridgefu_web_runtime.validate_vapi_tls_reachability(reachability)
         self.install_direct_assistant()
-        authentication, phone_id, _ = self.provision_temporary_vapi_phone(
-            self.direct_assistant_id
-        )
+        authentication: dict[str, str] | None = None
+        phone_id: str | None = None
+        probe_failure = "temporary Vapi SIP data plane did not become ready"
+        for attempt in range(1, 4):
+            authentication, phone_id, sip_uri = self.provision_temporary_vapi_phone(
+                self.direct_assistant_id
+            )
+            try:
+                self.prove_temporary_vapi_phone_authentication(
+                    authentication, phone_id, sip_uri
+                )
+                break
+            except QualificationError as error:
+                message = str(error)
+                if re.fullmatch(
+                    r"temporary Vapi SIP data plane rejected authentication status "
+                    r"(?:0|200|401|403|404|408|409|425|429|500|502|503|504)",
+                    message,
+                ):
+                    probe_failure = message
+                cleanup_errors = self.cleanup_sip_transients()
+                if cleanup_errors or attempt == 3:
+                    raise QualificationError(probe_failure)
+        if authentication is None or phone_id is None:
+            raise QualificationError("temporary Vapi SIP endpoint is unavailable")
         signaling_port = self.reserve_local_port()
         control_port = self.reserve_local_port()
         self.install_web_runtime(

@@ -40,7 +40,7 @@ struct Args {
     sip_uri: String,
     /// Signed little-endian 16-bit, mono, 8 kHz PCM containing synthetic speech.
     #[arg(long)]
-    prompt_pcm: PathBuf,
+    prompt_pcm: Option<PathBuf>,
     /// Public IPv4 address advertised in SDP by the disposable Bridgefu host.
     #[arg(long)]
     public_ip: Ipv4Addr,
@@ -57,6 +57,10 @@ struct Args {
     /// Read the temporary Vapi SIP Digest credential as JSON from standard input.
     #[arg(long)]
     auth_stdin: bool,
+    /// Prove Digest authentication, SIP answer, media opening, and clean BYE
+    /// without sending speech or invoking an assistant tool.
+    #[arg(long)]
+    authentication_probe: bool,
 }
 
 #[derive(Deserialize)]
@@ -73,6 +77,7 @@ struct WireEvidence {
     request_host_is_vapi: bool,
     challenge_received: bool,
     answer_received: bool,
+    final_status: Option<u16>,
     transport: Option<String>,
 }
 
@@ -134,6 +139,34 @@ struct HangupObservation {
     cleanup_observed: bool,
 }
 
+#[derive(Serialize)]
+struct AuthenticationProbeObservation {
+    schema_version: u8,
+    producer: &'static str,
+    producer_revision_sha256: String,
+    mode: &'static str,
+    ready: bool,
+    final_status: u16,
+    signaling: AuthenticationProbeSignaling,
+    media: AuthenticationProbeMedia,
+    hangup: HangupObservation,
+    redacted: bool,
+}
+
+#[derive(Serialize)]
+struct AuthenticationProbeSignaling {
+    digest_challenge_received: bool,
+    authenticated_invite_count: usize,
+    answered: bool,
+    transport: String,
+}
+
+#[derive(Serialize)]
+struct AuthenticationProbeMedia {
+    opened: bool,
+    silence_frames_sent: usize,
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -188,6 +221,9 @@ fn validate_args(args: &Args) -> anyhow::Result<()> {
     }
     if !args.auth_stdin {
         bail!("temporary Vapi SIP authentication must arrive on standard input")
+    }
+    if args.authentication_probe == args.prompt_pcm.is_some() {
+        bail!("exactly one SIP smoke mode must be selected")
     }
     if args.public_ip.is_private()
         || args.public_ip.is_loopback()
@@ -419,6 +455,13 @@ fn observe_wire(trace: &SipTrace, evidence: &mut WireEvidence) {
     if trace.direction == SipTraceDirection::Inbound {
         evidence.challenge_received |= trace.start_line.starts_with("SIP/2.0 401 ");
         evidence.answer_received |= trace.start_line.starts_with("SIP/2.0 200 ");
+        evidence.final_status = trace
+            .start_line
+            .split_ascii_whitespace()
+            .nth(1)
+            .and_then(|status| status.parse::<u16>().ok())
+            .filter(|status| *status >= 200)
+            .or(evidence.final_status);
         return;
     }
     if !trace.start_line.starts_with("INVITE ") {
@@ -455,10 +498,36 @@ fn write_observation(path: &Path, value: &Observation) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn write_authentication_probe_observation(
+    path: &Path,
+    value: &AuthenticationProbeObservation,
+) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .context("authentication probe requires a parent directory")?;
+    fs::create_dir_all(parent).context("creating authentication probe directory")?;
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    let temporary = path.with_extension("json.tmp");
+    let file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&temporary)
+        .context("creating authentication probe observation")?;
+    let mut writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(&mut writer, value)?;
+    writer.write_all(b"\n")?;
+    writer.flush()?;
+    drop(writer);
+    fs::rename(temporary, path)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
 async fn run(args: Args) -> anyhow::Result<()> {
     validate_args(&args)?;
     let authentication = read_authentication()?;
-    let prompt = read_prompt(&args.prompt_pcm)?;
+    let prompt = args.prompt_pcm.as_deref().map(read_prompt).transpose()?;
     let mut config = Config::on(
         "bridgefu-vapi-sip-smoke",
         IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -525,6 +594,44 @@ async fn run(args: Args) -> anyhow::Result<()> {
             break;
         }
         if tokio::time::Instant::now() >= answer_deadline {
+            if args.authentication_probe {
+                let wire = wire.lock().await;
+                let final_status = wire.final_status.unwrap_or(0);
+                let challenge_received = wire.challenge_received;
+                let invite_count = wire.invite_count;
+                let transport = wire.transport.clone().unwrap_or_else(|| "unknown".into());
+                drop(wire);
+                shutdown.shutdown();
+                let _ = tokio::time::timeout(Duration::from_secs(5), peer_task).await;
+                write_authentication_probe_observation(
+                    &args.output,
+                    &AuthenticationProbeObservation {
+                        schema_version: 1,
+                        producer: PRODUCER,
+                        producer_revision_sha256: digest(include_bytes!("main.rs")),
+                        mode: "authenticated-readiness",
+                        ready: false,
+                        final_status,
+                        signaling: AuthenticationProbeSignaling {
+                            digest_challenge_received: challenge_received,
+                            authenticated_invite_count: invite_count,
+                            answered: false,
+                            transport,
+                        },
+                        media: AuthenticationProbeMedia {
+                            opened: false,
+                            silence_frames_sent: 0,
+                        },
+                        hangup: HangupObservation {
+                            local_bye_completed: false,
+                            cleanup_observed: false,
+                        },
+                        redacted: true,
+                    },
+                )?;
+                println!("{}", args.output.display());
+                return Ok(());
+            }
             bail!("Vapi SIP 200 did not converge with the active rvoip session")
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -537,6 +644,59 @@ async fn run(args: Args) -> anyhow::Result<()> {
     tokio::time::sleep(Duration::from_secs(2)).await;
     let audio = handle.audio().await.context("opening Vapi SIP audio")?;
     let (sender, mut receiver) = audio.split();
+
+    if args.authentication_probe {
+        let mut timestamp = 0_u32;
+        for _ in 0..50 {
+            send_frame(&sender, vec![0; FRAME_SAMPLES], &mut timestamp).await?;
+        }
+        handle
+            .hangup_and_wait(Some(Duration::from_secs(10)))
+            .await
+            .context("Vapi authentication probe BYE did not complete")?;
+        let wire = wire.lock().await;
+        if wire.invite_count != 2
+            || !wire.request_host_is_vapi
+            || !wire.challenge_received
+            || !wire.answer_received
+        {
+            bail!("wire trace did not prove Vapi Digest challenge, retry, and answer")
+        }
+        let transport = wire.transport.clone().unwrap_or_else(|| "unknown".into());
+        drop(wire);
+        shutdown.shutdown();
+        let _ = tokio::time::timeout(Duration::from_secs(5), peer_task).await;
+        write_authentication_probe_observation(
+            &args.output,
+            &AuthenticationProbeObservation {
+                schema_version: 1,
+                producer: PRODUCER,
+                producer_revision_sha256: digest(include_bytes!("main.rs")),
+                mode: "authenticated-readiness",
+                ready: true,
+                final_status: 200,
+                signaling: AuthenticationProbeSignaling {
+                    digest_challenge_received: true,
+                    authenticated_invite_count: 2,
+                    answered: true,
+                    transport,
+                },
+                media: AuthenticationProbeMedia {
+                    opened: true,
+                    silence_frames_sent: 50,
+                },
+                hangup: HangupObservation {
+                    local_bye_completed: true,
+                    cleanup_observed: true,
+                },
+                redacted: true,
+            },
+        )?;
+        println!("{}", args.output.display());
+        return Ok(());
+    }
+
+    let prompt = prompt.context("synthetic prompt is required for the full SIP smoke")?;
 
     let send_stats = Arc::new(Mutex::new(SendStats::default()));
     let send_task = tokio::spawn(send_media(sender, prompt, Arc::clone(&send_stats)));
@@ -697,5 +857,6 @@ mod tests {
         assert!(evidence.request_host_is_vapi);
         assert!(evidence.challenge_received);
         assert!(evidence.answer_received);
+        assert_eq!(evidence.final_status, Some(200));
     }
 }

@@ -501,6 +501,90 @@ class QualificationControllerTests(unittest.TestCase):
                 stable_seconds=1,
             )
 
+    def test_vapi_phone_readiness_requires_real_digest_answer_media_and_bye(self):
+        work = Path(tempfile.mkdtemp(prefix="vapi-auth-probe-test-"))
+        sip_client = work / "sip-client"
+        sip_client.write_bytes(b"binary")
+
+        class Runner:
+            def run(self, arguments, **kwargs):
+                self.arguments = arguments
+                self.kwargs = kwargs
+                return ""
+
+        class Aws:
+            def __init__(self):
+                self.calls = []
+
+            def text(self, arguments, timeout=900):
+                self.calls.append(arguments)
+                if arguments[:2] == ["ec2", "describe-instances"]:
+                    return "35.81.187.107"
+                if arguments[:2] == ["ssm", "send-command"]:
+                    return "command-1234"
+                if arguments[:2] == ["s3", "cp"] and str(arguments[-1]).endswith(
+                    ".json"
+                ):
+                    CONTROLLER.private_json(
+                        Path(arguments[-1]),
+                        {
+                            "schema_version": 1,
+                            "producer": "bridgefu-vapi-sip-smoke@1",
+                            "producer_revision_sha256": "a" * 64,
+                            "mode": "authenticated-readiness",
+                            "ready": True,
+                            "final_status": 200,
+                            "signaling": {
+                                "digest_challenge_received": True,
+                                "authenticated_invite_count": 2,
+                                "answered": True,
+                                "transport": "udp",
+                            },
+                            "media": {"opened": True, "silence_frames_sent": 50},
+                            "hangup": {
+                                "local_bye_completed": True,
+                                "cleanup_observed": True,
+                            },
+                            "redacted": True,
+                        },
+                    )
+                return ""
+
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.args = SimpleNamespace(
+            execution_id="bfq-test1234",
+            region="us-west-2",
+            sip_client=sip_client,
+        )
+        controller.outputs = {
+            "ArtifactBucket": "bridgefu-artifacts-test",
+            "BridgefuInstanceId": "i-0123456789abcdef0",
+        }
+        controller.runner = Runner()
+        controller.aws = Aws()
+        controller.work = work
+        controller.temp_sip_auth_object = None
+        controller.ssm_commands = []
+        authentication = {
+            "realm": "sip.vapi.ai",
+            "username": "bfq_0123456789abcdef",
+            "password": "not-retained-password-value",
+        }
+        with mock.patch.object(CONTROLLER, "wait_for_ssm_command"):
+            controller.prove_temporary_vapi_phone_authentication(
+                authentication,
+                "phone_1234",
+                "sip:bfq_0123456789abcdef@sip.vapi.ai",
+            )
+        send = next(
+            call for call in controller.aws.calls if call[:2] == ["ssm", "send-command"]
+        )
+        encoded = send[send.index("--parameters") + 1]
+        self.assertIn("--authentication-probe", encoded)
+        self.assertNotIn(authentication["password"], encoded)
+        self.assertNotIn("phone_1234", encoded)
+        self.assertEqual(controller.ssm_commands, [])
+
     def test_vapi_generic_deletion_targets_and_verifies_one_exact_id(self):
         class FakeVapi(CONTROLLER.Vapi):
             def __init__(self):
@@ -2839,6 +2923,46 @@ class QualificationControllerTests(unittest.TestCase):
                     },
                 },
                 "bridgefu-web-sdk-handoff",
+            )
+        )
+        repeated_idempotent = {
+            "status": "ended",
+            "artifact": {
+                "messages": [
+                    {
+                        "role": "tool_calls",
+                        "toolCalls": [
+                            {"function": {"name": "bridgefu_direct_handoff"}}
+                        ],
+                    },
+                    {
+                        "role": "tool_call_result",
+                        "name": "bridgefu_direct_handoff",
+                        "result": '{"accepted":true}',
+                    },
+                    {
+                        "role": "tool_calls",
+                        "toolCalls": [
+                            {"function": {"name": "bridgefu_direct_handoff"}}
+                        ],
+                    },
+                    {
+                        "role": "tool_call_result",
+                        "name": "bridgefu_direct_handoff",
+                        "result": '{"accepted":true}',
+                    },
+                ]
+            },
+        }
+        self.assertTrue(
+            CONTROLLER.call_contains_transfer(
+                repeated_idempotent, "bridgefu-web-sdk-handoff"
+            )
+        )
+        repeated_idempotent["artifact"]["messages"][-1]["result"] = '{"accepted":false}'
+        self.assertFalse(
+            CONTROLLER.call_contains_transfer(
+                repeated_idempotent, "bridgefu-web-sdk-handoff"
             )
         )
 

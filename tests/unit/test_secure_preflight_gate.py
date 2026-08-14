@@ -497,9 +497,9 @@ class SecurePreflightGateTests(unittest.TestCase):
 
     def test_every_controller_ssm_program_uses_one_exact_validated_encoder(self):
         source = (ROOT / "qualification" / "controller.py").read_text(encoding="utf-8")
-        self.assertEqual(source.count('"ssm",\n                "send-command"'), 4)
-        # Four dispatches plus the encoder definition itself.
-        self.assertEqual(source.count("encode_ssm_shell_parameters("), 5)
+        self.assertEqual(source.count('"ssm",\n                "send-command"'), 5)
+        # Five dispatches plus the encoder definition itself.
+        self.assertEqual(source.count("encode_ssm_shell_parameters("), 6)
 
         programs = (
             [
