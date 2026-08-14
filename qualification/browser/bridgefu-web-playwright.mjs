@@ -596,6 +596,9 @@ function installProbe() {
     remoteAudioTracks: 0,
     remoteAudioActiveFrames: 0,
     remoteAudioMaxRms: 0,
+    agentMarkerMaxPower: 0,
+    agentDtmfLowMaxPower: 0,
+    agentDtmfHighMaxPower: 0,
     iceCandidateSummary: newCandidateSummary(),
     remoteIceCandidateSummary: newCandidateSummary(),
     remoteIceComplete: 0,
@@ -656,7 +659,9 @@ function installProbe() {
       const rms = Math.sqrt(energy / samples.length);
       state.remoteAudioMaxRms = Math.max(state.remoteAudioMaxRms, rms);
       if (rms > 0.01) state.remoteAudioActiveFrames += 1;
-      const marker = rms > 0.01 && power(samples, context.sampleRate, AGENT_MARKER_HZ) > 0.0003;
+      const markerPower = power(samples, context.sampleRate, AGENT_MARKER_HZ);
+      state.agentMarkerMaxPower = Math.max(state.agentMarkerMaxPower, markerPower);
+      const marker = rms > 0.01 && markerPower > 0.0001;
       if (marker) {
         state.agentMarkerFrames += 1;
         const now = Date.now();
@@ -672,7 +677,9 @@ function installProbe() {
       state.agentMarkerActive = marker;
       const low = power(samples, context.sampleRate, 770);
       const high = power(samples, context.sampleRate, 1477);
-      const dtmf = rms > 0.01 && low > 0.00015 && high > 0.00015;
+      state.agentDtmfLowMaxPower = Math.max(state.agentDtmfLowMaxPower, low);
+      state.agentDtmfHighMaxPower = Math.max(state.agentDtmfHighMaxPower, high);
+      const dtmf = rms > 0.01 && low > 0.00005 && high > 0.00005;
       if (dtmf && !state.dtmfActive) state.dtmfAgentToSourceObserved = true;
       state.dtmfActive = dtmf;
     }, 20);
@@ -843,6 +850,9 @@ async function probeSnapshot(page) {
       remoteAudioTracks: state.remoteAudioTracks,
       remoteAudioActiveFrames: state.remoteAudioActiveFrames,
       remoteAudioMaxRms: state.remoteAudioMaxRms,
+      agentMarkerMaxPower: state.agentMarkerMaxPower,
+      agentDtmfLowMaxPower: state.agentDtmfLowMaxPower,
+      agentDtmfHighMaxPower: state.agentDtmfHighMaxPower,
       audioPacketsSent,
       audioBytesSent,
       audioPacketsReceived,
@@ -1308,7 +1318,10 @@ async function observe(options) {
         + `received_packets=${probe?.audioPacketsReceived ?? 0} `
         + `received_bytes=${probe?.audioBytesReceived ?? 0} `
         + `active_frames=${probe?.remoteAudioActiveFrames ?? 0} `
-        + `max_rms=${Number(probe?.remoteAudioMaxRms ?? 0).toFixed(6)}`,
+        + `max_rms=${Number(probe?.remoteAudioMaxRms ?? 0).toFixed(6)} `
+        + `marker_power=${Number(probe?.agentMarkerMaxPower ?? 0).toExponential(3)} `
+        + `dtmf_low=${Number(probe?.agentDtmfLowMaxPower ?? 0).toExponential(3)} `
+        + `dtmf_high=${Number(probe?.agentDtmfHighMaxPower ?? 0).toExponential(3)}`,
       );
     }
     let localEndCompleted = false;

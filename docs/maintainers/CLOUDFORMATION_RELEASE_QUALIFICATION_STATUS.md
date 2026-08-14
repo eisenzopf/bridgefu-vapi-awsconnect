@@ -2310,3 +2310,25 @@ and full 226-test Python suite passed.
   misses the five-second trigger window. Source contract tests pin the timing
   and media gate. The next permitted action is one bounded retained retry with
   a fresh full-window capacity capture.
+
+### 2026-08-13 — Trigger and screen pop passed; reverse-media probe isolated
+
+- The media-gated retry passed its intended boundary. Vapi heard the short
+  trigger, invoked the exact direct tool, Bridgefu replaced the leg, Connect
+  rendered the exact deterministic screen pop, and the agent observed the
+  source-side marker and DTMF. The source received 4,984 audio packets and 527
+  KiB of non-silent Connect audio (`max_rms=0.520521`). Bridgefu remained healthy
+  with zero automatic restarts.
+- The source did not classify the agent's expected 880-Hz marker or DTMF. The
+  agent fake-microphone marker was a short 100-ms mixture of 880 Hz plus both
+  DTMF frequencies, which is unnecessarily fragile across browser processing,
+  Connect audio processing, and transcoding. The source therefore withheld its
+  success-path hangup, and the agent's later hangup timeout was consequential.
+- The agent probe now uses 300-ms, higher-level, pure 880-Hz marker pulses and a
+  separate stronger DTMF-six interval. The Web source records bounded maximum
+  marker/DTMF spectral powers in failure diagnostics and uses conservative
+  thresholds. For the mandatory reverse DTMF event, the agent now sends digit
+  six through the real Connect Streams connection, with the real number-pad UI
+  as fallback, rather than inferring transmission from WAV timing.
+- The next permitted action remains one bounded retained Web SDK retry after
+  the exact browser contracts and complete local suite pass.

@@ -87,7 +87,7 @@ const AGENT_DTMF_SIX_HIGH_HZ = 1_477;
 const PROBE_INITIAL_SILENCE_MS = 5_000;
 const PROBE_CYCLE_MS = 10_000;
 const PROBE_PULSES_PER_CYCLE = 5;
-const PROBE_PULSE_MS = 100;
+const PROBE_PULSE_MS = 300;
 const PROBE_DTMF_SIX_START_MS = 4_500;
 const PROBE_DTMF_SIX_DURATION_MS = 300;
 
@@ -308,16 +308,13 @@ function writeProbeWav(path) {
     let value = 0;
     if (inPulse) {
       value = Math.round(
-        (Math.sin((2 * Math.PI * AGENT_MARKER_HZ * sample) / SAMPLE_RATE) +
-          Math.sin((2 * Math.PI * AGENT_DTMF_SIX_LOW_HZ * sample) / SAMPLE_RATE) +
-          Math.sin((2 * Math.PI * AGENT_DTMF_SIX_HIGH_HZ * sample) / SAMPLE_RATE)) *
-          2730,
+        Math.sin((2 * Math.PI * AGENT_MARKER_HZ * sample) / SAMPLE_RATE) * 12_000,
       );
     } else if (inDtmfSix) {
       value = Math.round(
         (Math.sin((2 * Math.PI * AGENT_DTMF_SIX_LOW_HZ * sample) / SAMPLE_RATE) +
           Math.sin((2 * Math.PI * AGENT_DTMF_SIX_HIGH_HZ * sample) / SAMPLE_RATE)) *
-          4095,
+          8191,
       );
     }
     buffer.writeInt16LE(value, 44 + sample * bytesPerSample);
@@ -1269,6 +1266,17 @@ async function observe(options) {
           `max_rms=${probe.remoteAudioMaxRms.toFixed(6)}`,
       );
     }
+    const agentDtmfSentAtMs = [];
+    if (session.scenario_id === "bridgefu-web-sdk-handoff") {
+      const sentThroughStreams = await sendDigitsViaConnectStreams(page, "6");
+      const sentThroughKeypad = sentThroughStreams
+        ? false
+        : await clickNestedNumberPadDigit(page, "6", 10_000);
+      if (!sentThroughStreams && !sentThroughKeypad) {
+        fail("Agent Workspace could not send the reverse DTMF probe");
+      }
+      agentDtmfSentAtMs.push(Date.now());
+    }
     const mediaProbe = await probeSnapshot(page);
     await page.screenshot({ path: screenshotPath, fullPage: false });
     chmodSync(screenshotPath, 0o600);
@@ -1301,11 +1309,15 @@ async function observe(options) {
       mediaProbe.sourceMarkerObservedAtMs[0],
       observedAtMs,
     );
-    const agentDtmfSentAtMs = agentDtmfSchedule(
-      mediaProbe.captureRequestedAtMs,
-      mediaProbe.sourceMarkerObservedAtMs[0],
-      observedAtMs,
-    );
+    if (session.scenario_id !== "bridgefu-web-sdk-handoff") {
+      agentDtmfSentAtMs.push(
+        ...agentDtmfSchedule(
+          mediaProbe.captureRequestedAtMs,
+          mediaProbe.sourceMarkerObservedAtMs[0],
+          observedAtMs,
+        ),
+      );
+    }
     if (
       mediaProbe.sourceMarkerObservedAtMs.length < 5 ||
       mediaProbe.sourceMarkerFrames < 5 ||
