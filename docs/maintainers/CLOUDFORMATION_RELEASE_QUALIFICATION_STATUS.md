@@ -2324,8 +2324,9 @@ and full 226-test Python suite passed.
   DTMF frequencies, which is unnecessarily fragile across browser processing,
   Connect audio processing, and transcoding. The source therefore withheld its
   success-path hangup, and the agent's later hangup timeout was consequential.
-- The agent probe now uses 300-ms, higher-level, pure 880-Hz marker pulses and a
-  separate stronger DTMF-six interval. The Web source records bounded maximum
+- The agent probe now uses five-second, higher-level, pure 880-Hz marker tones
+  separated by five seconds of silence, plus a separate one-second stronger
+  DTMF-six interval. The Web source records bounded maximum
   marker/DTMF spectral powers in failure diagnostics and uses conservative
   thresholds. For the mandatory reverse DTMF event, the agent now sends digit
   six through the real Connect Streams connection, with the real number-pad UI
