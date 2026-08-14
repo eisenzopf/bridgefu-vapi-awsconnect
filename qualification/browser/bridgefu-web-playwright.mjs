@@ -83,6 +83,9 @@ const DTMF_DURATION_MS = 350;
 const MEDIA_ESTABLISHMENT_DEADLINE_MS = 5_000;
 const PROMPT_START_MS = 10_000;
 const PROMPT_SAMPLE_RATE = 8_000;
+// The WAV mixer reserves full scale for synthetic probes. Restore Polly to
+// roughly 70% of its source amplitude so Vapi's transcriber hears the phrase.
+const PROMPT_GAIN = 2.8;
 const STARTUP_ERROR_TYPES = new Set([
   "invalid-attachment",
   "invalid-credential",
@@ -374,7 +377,7 @@ function writeProbeWav(path, promptPcmPath) {
       ((elapsedMs - PROMPT_START_MS) * PROMPT_SAMPLE_RATE) / 1000,
     );
     if (promptSample >= 0 && promptSample < promptSamples.length) {
-      value += (promptSamples[promptSample] / 32768) * 0.8;
+      value += (promptSamples[promptSample] / 32768) * PROMPT_GAIN;
     }
     if (marker) value += Math.sin((2 * Math.PI * SOURCE_MARKER_HZ * sample) / SAMPLE_RATE);
     if (dtmf) {
