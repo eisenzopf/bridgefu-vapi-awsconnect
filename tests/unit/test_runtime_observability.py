@@ -56,6 +56,13 @@ class RuntimeObservabilityTests(unittest.TestCase):
             10,
         )
 
+        observability = (
+            ROOT / "cloudformation" / "nested" / "observability.yaml"
+        ).read_text()
+        self.assertIn('"mem_used_percent"', observability)
+        self.assertIn('"procstat_cpu_usage"', observability)
+        self.assertIn('"procstat_memory_rss"', observability)
+
     def test_systemd_captures_stdout_and_stderr_in_private_runtime_log(self):
         service = (RUNTIME / "bridgefu.service").read_text()
 

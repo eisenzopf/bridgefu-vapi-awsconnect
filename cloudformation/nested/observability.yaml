@@ -488,10 +488,13 @@ Resources:
               "type": "metric",
               "x": 12, "y": 14, "width": 12, "height": 6,
               "properties": {
-                "region": "${AWS::Region}", "title": "Host and certificate capacity", "view": "timeSeries", "period": 300,
+                "region": "${AWS::Region}", "title": "Host, Bridgefu process, and certificate capacity", "view": "timeSeries", "period": 60,
                 "metrics": [
                   ["AWS/EC2", "CPUUtilization", "InstanceId", "${RuntimeInstanceId}", {"stat": "Average"}],
                   [".", "StatusCheckFailed", ".", ".", {"stat": "Maximum"}],
+                  ["Bridgefu/Runtime", "mem_used_percent", "InstanceId", "${RuntimeInstanceId}", {"stat": "Maximum"}],
+                  [".", "procstat_cpu_usage", ".", ".", {"stat": "Maximum"}],
+                  [".", "procstat_memory_rss", ".", ".", {"stat": "Maximum", "yAxis": "right"}],
                   ["Bridgefu/Runtime", "CertificateDaysToExpiry", "deployment", "${DeploymentId}", {"stat": "Minimum", "yAxis": "right"}]
                 ]
               }
