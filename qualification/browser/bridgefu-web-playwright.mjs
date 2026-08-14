@@ -71,18 +71,18 @@ const SAMPLE_RATE = 48_000;
 const PROBE_SECONDS = 120;
 const SOURCE_MARKER_HZ = 997;
 const AGENT_MARKER_HZ = 880;
-const PROBE_INITIAL_SILENCE_MS = 40_000;
+const PROBE_INITIAL_SILENCE_MS = 25_000;
 const PROBE_CYCLE_MS = 10_000;
 const PROBE_PULSES_PER_CYCLE = 5;
 const PROBE_PULSE_MS = 100;
 const DTMF_START_MS = 6_000;
 const DTMF_DURATION_MS = 350;
 // The fake microphone starts before the peer connection is established. Require
-// media to establish within five seconds, then leave at least five more seconds
-// of silence before speech. Repeat the same bounded request across the Vapi SIP
-// bridge-establishment window. Marker/DTMF probes start after all speech ends.
+// media to establish before the proven five-second first speech boundary.
+// Repeat the same bounded request across the Vapi SIP bridge-establishment
+// window. Marker/DTMF probes start after all speech ends.
 const MEDIA_ESTABLISHMENT_DEADLINE_MS = 5_000;
-const PROMPT_STARTS_MS = Object.freeze([10_000, 20_000, 30_000]);
+const PROMPT_STARTS_MS = Object.freeze([5_000, 10_000, 15_000]);
 const PROMPT_SAMPLE_RATE = 8_000;
 // The WAV mixer reserves full scale for synthetic probes. Restore Polly to
 // roughly 70% of its source amplitude so Vapi's transcriber hears the phrase.
