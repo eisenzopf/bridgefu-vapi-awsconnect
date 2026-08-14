@@ -535,6 +535,7 @@ class QualificationControllerTests(unittest.TestCase):
                             "ready": True,
                             "final_status": 200,
                             "signaling": {
+                                "request_host_is_vapi": True,
                                 "digest_challenge_received": True,
                                 "authenticated_invite_count": 2,
                                 "answered": True,
@@ -555,6 +556,7 @@ class QualificationControllerTests(unittest.TestCase):
             execution_id="bfq-test1234",
             region="us-west-2",
             sip_client=sip_client,
+            output=work,
         )
         controller.outputs = {
             "ArtifactBucket": "bridgefu-artifacts-test",
@@ -578,6 +580,7 @@ class QualificationControllerTests(unittest.TestCase):
             "ready": True,
             "final_status": 200,
             "signaling": {
+                "request_host_is_vapi": True,
                 "digest_challenge_received": True,
                 "authenticated_invite_count": 2,
                 "answered": True,
@@ -613,6 +616,10 @@ class QualificationControllerTests(unittest.TestCase):
         self.assertIn("cat /var/lib/bridgefu/qualification/", encoded)
         self.assertNotIn("observation.json s3://", encoded)
         self.assertEqual(controller.ssm_commands, [])
+        self.assertEqual(
+            json.loads(next(work.glob("vapi-sip-readiness-*.json")).read_text()),
+            observation,
+        )
 
     def test_vapi_generic_deletion_targets_and_verifies_one_exact_id(self):
         class FakeVapi(CONTROLLER.Vapi):

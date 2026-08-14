@@ -155,6 +155,7 @@ struct AuthenticationProbeObservation {
 
 #[derive(Serialize)]
 struct AuthenticationProbeSignaling {
+    request_host_is_vapi: bool,
     digest_challenge_received: bool,
     authenticated_invite_count: usize,
     answered: bool,
@@ -597,6 +598,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
             if args.authentication_probe {
                 let wire = wire.lock().await;
                 let final_status = wire.final_status.unwrap_or(0);
+                let request_host_is_vapi = wire.request_host_is_vapi;
                 let challenge_received = wire.challenge_received;
                 let invite_count = wire.invite_count;
                 let transport = wire.transport.clone().unwrap_or_else(|| "unknown".into());
@@ -613,6 +615,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
                         ready: false,
                         final_status,
                         signaling: AuthenticationProbeSignaling {
+                            request_host_is_vapi,
                             digest_challenge_received: challenge_received,
                             authenticated_invite_count: invite_count,
                             answered: false,
@@ -660,7 +663,44 @@ async fn run(args: Args) -> anyhow::Result<()> {
             || !wire.challenge_received
             || !wire.answer_received
         {
-            bail!("wire trace did not prove Vapi Digest challenge, retry, and answer")
+            let final_status = wire.final_status.unwrap_or(0);
+            let request_host_is_vapi = wire.request_host_is_vapi;
+            let challenge_received = wire.challenge_received;
+            let invite_count = wire.invite_count;
+            let answer_received = wire.answer_received;
+            let transport = wire.transport.clone().unwrap_or_else(|| "unknown".into());
+            drop(wire);
+            shutdown.shutdown();
+            let _ = tokio::time::timeout(Duration::from_secs(5), peer_task).await;
+            write_authentication_probe_observation(
+                &args.output,
+                &AuthenticationProbeObservation {
+                    schema_version: 1,
+                    producer: PRODUCER,
+                    producer_revision_sha256: digest(include_bytes!("main.rs")),
+                    mode: "authenticated-readiness",
+                    ready: false,
+                    final_status,
+                    signaling: AuthenticationProbeSignaling {
+                        request_host_is_vapi,
+                        digest_challenge_received: challenge_received,
+                        authenticated_invite_count: invite_count,
+                        answered: answer_received,
+                        transport,
+                    },
+                    media: AuthenticationProbeMedia {
+                        opened: true,
+                        silence_frames_sent: 50,
+                    },
+                    hangup: HangupObservation {
+                        local_bye_completed: true,
+                        cleanup_observed: true,
+                    },
+                    redacted: true,
+                },
+            )?;
+            println!("{}", args.output.display());
+            return Ok(());
         }
         let transport = wire.transport.clone().unwrap_or_else(|| "unknown".into());
         drop(wire);
@@ -676,6 +716,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
                 ready: true,
                 final_status: 200,
                 signaling: AuthenticationProbeSignaling {
+                    request_host_is_vapi: true,
                     digest_challenge_received: true,
                     authenticated_invite_count: 2,
                     answered: true,

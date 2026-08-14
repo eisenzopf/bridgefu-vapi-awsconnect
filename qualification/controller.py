@@ -4538,6 +4538,10 @@ class Controller:
             raise QualificationError(
                 "temporary Vapi SIP probe result is invalid"
             ) from error
+        private_json(
+            Path(self.args.output) / f"vapi-sip-readiness-{phone_fingerprint}.json",
+            result,
+        )
         expected = {
             "schema_version": 1,
             "producer": "bridgefu-vapi-sip-smoke@1",
@@ -4570,11 +4574,17 @@ class Controller:
             and isinstance(signaling, Mapping)
             and set(signaling)
             == {
+                "request_host_is_vapi",
                 "digest_challenge_received",
                 "authenticated_invite_count",
                 "answered",
                 "transport",
             }
+            and isinstance(signaling.get("request_host_is_vapi"), bool)
+            and isinstance(signaling.get("digest_challenge_received"), bool)
+            and isinstance(signaling.get("authenticated_invite_count"), int)
+            and 0 <= signaling.get("authenticated_invite_count") <= 255
+            and isinstance(signaling.get("answered"), bool)
             and signaling.get("transport") == "udp"
             and isinstance(media, Mapping)
             and set(media) == {"opened", "silence_frames_sent"}
@@ -4583,11 +4593,30 @@ class Controller:
         ):
             raise QualificationError("temporary Vapi SIP probe result is invalid")
         if ready is not True:
+            if signaling.get("request_host_is_vapi") is not True:
+                category = "target"
+            elif signaling.get("digest_challenge_received") is not True:
+                category = "challenge"
+            elif signaling.get("authenticated_invite_count") != 2:
+                category = "retry-count"
+            elif signaling.get("answered") is not True:
+                category = "answer"
+            elif media.get("opened") is not True:
+                category = "media"
+            elif (
+                hangup.get("local_bye_completed") is not True
+                or hangup.get("cleanup_observed") is not True
+            ):
+                category = "hangup"
+            else:
+                category = "wire"
             raise QualificationError(
-                f"temporary Vapi SIP data plane rejected authentication status {final_status}"
+                "temporary Vapi SIP data plane readiness failed category "
+                f"{category} status {final_status}"
             )
         if not (
-            signaling.get("digest_challenge_received") is True
+            signaling.get("request_host_is_vapi") is True
+            and signaling.get("digest_challenge_received") is True
             and signaling.get("authenticated_invite_count") == 2
             and signaling.get("answered") is True
             and final_status == 200
@@ -5449,7 +5478,8 @@ class Controller:
             except QualificationError as error:
                 message = str(error)
                 if re.fullmatch(
-                    r"temporary Vapi SIP data plane rejected authentication status "
+                    r"temporary Vapi SIP data plane readiness failed category "
+                    r"(?:target|challenge|retry-count|answer|media|hangup|wire) status "
                     r"(?:0|200|401|403|404|408|409|425|429|500|502|503|504)",
                     message,
                 ):
