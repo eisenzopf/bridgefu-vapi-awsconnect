@@ -30,7 +30,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -1836,6 +1836,48 @@ class Vapi:
             raise QualificationError("Vapi API resource has an invalid shape")
         return value
 
+    def _delete_owned_and_prove_stable_absence(
+        self,
+        resource: str,
+        resource_id: str,
+        owned: Callable[[Mapping[str, Any]], bool],
+        *,
+        timeout: int,
+        poll_seconds: float,
+        stable_seconds: float,
+    ) -> None:
+        """Delete only an exact owned ID and reject transient 404 as completion."""
+        if (
+            not RESOURCE_ID.fullmatch(resource_id)
+            or timeout <= 0
+            or poll_seconds < 0
+            or stable_seconds < 0
+            or stable_seconds >= timeout
+        ):
+            raise QualificationError("Vapi deletion bound is invalid")
+        deadline = time.monotonic() + timeout
+        absent_since: float | None = None
+        while True:
+            current = self.get(resource, resource_id)
+            now = time.monotonic()
+            if current is None:
+                if absent_since is None:
+                    absent_since = now
+                if now - absent_since >= stable_seconds:
+                    return
+            else:
+                absent_since = None
+                if current.get("id") != resource_id or not owned(current):
+                    raise QualificationError("Vapi deletion target is not owned")
+                # Vapi can briefly return 404 and then expose the same deleted
+                # object again. Reissue DELETE only after exact ownership is
+                # re-proven; never treat one missing read as final cleanup.
+                self.request("DELETE", f"/{resource}/{resource_id}", allow_missing=True)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise QualificationError("Vapi exact-resource deletion timed out")
+            time.sleep(min(poll_seconds, remaining))
+
     def list(self, resource: str, *, limit: int = 100) -> list[Mapping[str, Any]]:
         if not 1 <= limit <= 100:
             raise QualificationError("Vapi API list limit is invalid")
@@ -1979,27 +2021,26 @@ class Vapi:
         endpoint_url: str,
         credential_id: str,
         desired: Mapping[str, Any],
+        timeout: int = 60,
+        poll_seconds: float = 0.5,
+        stable_seconds: float = 10,
     ) -> None:
-        exact = self.get("tool", resource_id)
-        if exact is None:
-            return
-        if (
-            exact.get("id") != resource_id
-            or not bridgefu_web_handoff.direct_tool_owned(
+        def owned(exact: Mapping[str, Any]) -> bool:
+            return bridgefu_web_handoff.direct_tool_owned(
                 exact,
                 execution_id=execution_id,
                 endpoint_url=endpoint_url,
                 credential_id=credential_id,
-            )
-            or not direct_tool_surface_matches(exact, desired)
-        ):
-            raise QualificationError("direct Vapi tool deletion target is not owned")
-        self.request("DELETE", f"/tool/{resource_id}", allow_missing=True)
-        deadline = time.monotonic() + 30
-        while self.get("tool", resource_id) is not None:
-            if time.monotonic() >= deadline:
-                raise QualificationError("direct Vapi tool deletion timed out")
-            time.sleep(0.5)
+            ) and direct_tool_surface_matches(exact, desired)
+
+        self._delete_owned_and_prove_stable_absence(
+            "tool",
+            resource_id,
+            owned,
+            timeout=timeout,
+            poll_seconds=poll_seconds,
+            stable_seconds=stable_seconds,
+        )
 
     def find_direct_assistant(
         self,
@@ -2134,29 +2175,25 @@ class Vapi:
         prompt_sha256: str,
         model_name: str,
         voice_id: str,
+        timeout: int = 60,
+        poll_seconds: float = 0.5,
+        stable_seconds: float = 10,
     ) -> None:
-        exact = self.get("assistant", resource_id)
-        if exact is None:
-            return
-        if exact.get(
-            "id"
-        ) != resource_id or not bridgefu_web_handoff.direct_assistant_owned(
-            exact,
-            execution_id=execution_id,
-            tool_id=tool_id,
-            prompt_sha256=prompt_sha256,
-            model_name=model_name,
-            voice_id=voice_id,
-        ):
-            raise QualificationError(
-                "direct Vapi assistant deletion target is not owned"
-            )
-        self.request("DELETE", f"/assistant/{resource_id}", allow_missing=True)
-        deadline = time.monotonic() + 30
-        while self.get("assistant", resource_id) is not None:
-            if time.monotonic() >= deadline:
-                raise QualificationError("direct Vapi assistant deletion timed out")
-            time.sleep(0.5)
+        self._delete_owned_and_prove_stable_absence(
+            "assistant",
+            resource_id,
+            lambda exact: bridgefu_web_handoff.direct_assistant_owned(
+                exact,
+                execution_id=execution_id,
+                tool_id=tool_id,
+                prompt_sha256=prompt_sha256,
+                model_name=model_name,
+                voice_id=voice_id,
+            ),
+            timeout=timeout,
+            poll_seconds=poll_seconds,
+            stable_seconds=stable_seconds,
+        )
 
     def create_phone(
         self,
@@ -2268,26 +2305,16 @@ class Vapi:
         *,
         timeout: int = 30,
         poll_seconds: float = 0.5,
+        stable_seconds: float = 10,
     ) -> None:
-        if not RESOURCE_ID.fullmatch(resource_id):
-            raise QualificationError("Vapi resource ID is invalid")
-        existing = self.get("phone-number", resource_id)
-        if existing is None:
-            return
-        if not vapi_phone_matches_intent(existing, intent):
-            raise QualificationError("Vapi phone deletion target is not owned")
-        self.request("DELETE", f"/phone-number/{resource_id}", allow_missing=True)
-        deadline = time.monotonic() + timeout
-        while True:
-            current = self.get("phone-number", resource_id)
-            if current is None:
-                return
-            if not vapi_phone_matches_intent(current, intent):
-                raise QualificationError("Vapi phone deletion target identity changed")
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise QualificationError("Vapi exact-resource deletion timed out")
-            time.sleep(min(poll_seconds, remaining))
+        self._delete_owned_and_prove_stable_absence(
+            "phone-number",
+            resource_id,
+            lambda current: vapi_phone_matches_intent(current, intent),
+            timeout=timeout,
+            poll_seconds=poll_seconds,
+            stable_seconds=stable_seconds,
+        )
 
     def delete(
         self,
@@ -2296,28 +2323,20 @@ class Vapi:
         *,
         timeout: int = 30,
         poll_seconds: float = 0.5,
+        stable_seconds: float = 10,
     ) -> None:
         if resource == "phone-number":
             raise QualificationError(
                 "Vapi phone deletion requires an exact ownership intent"
             )
-        existing = self.get(resource, resource_id)
-        if existing is None:
-            return
-        if existing.get("id") != resource_id:
-            raise QualificationError("Vapi deletion target identity changed")
-        self.request("DELETE", f"/{resource}/{resource_id}", allow_missing=True)
-        deadline = time.monotonic() + timeout
-        while True:
-            current = self.get(resource, resource_id)
-            if current is None:
-                return
-            if current.get("id") != resource_id:
-                raise QualificationError("Vapi deletion target identity changed")
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise QualificationError("Vapi exact-resource deletion timed out")
-            time.sleep(min(poll_seconds, remaining))
+        self._delete_owned_and_prove_stable_absence(
+            resource,
+            resource_id,
+            lambda current: current.get("id") == resource_id,
+            timeout=timeout,
+            poll_seconds=poll_seconds,
+            stable_seconds=stable_seconds,
+        )
 
 
 def extract_vapi_key(secret: str) -> str:

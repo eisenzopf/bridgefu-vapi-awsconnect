@@ -88,6 +88,8 @@ const PROBE_INITIAL_SILENCE_MS = 5_000;
 const PROBE_CYCLE_MS = 10_000;
 const PROBE_PULSES_PER_CYCLE = 1;
 const PROBE_PULSE_MS = 5_000;
+const REQUIRED_MARKER_EPISODES = 1;
+const REQUIRED_MARKER_ANALYSER_FRAMES = 50;
 const PROBE_DTMF_SIX_START_MS = 6_000;
 const PROBE_DTMF_SIX_DURATION_MS = 1_000;
 
@@ -1234,7 +1236,8 @@ async function observe(options) {
           const probe = await probeSnapshot(page);
           const sourceMediaReadyAtMs = probe.sourceMarkerObservedAtMs[0];
           return (
-            probe.sourceMarkerObservedAtMs.length >= 5 &&
+            probe.sourceMarkerObservedAtMs.length >= REQUIRED_MARKER_EPISODES &&
+            probe.sourceMarkerFrames >= REQUIRED_MARKER_ANALYSER_FRAMES &&
             probe.dtmfSourceToAgentObserved &&
             probe.captureRequestedAtMs &&
             Number.isInteger(sourceMediaReadyAtMs) &&
@@ -1242,7 +1245,7 @@ async function observe(options) {
               probe.captureRequestedAtMs,
               sourceMediaReadyAtMs,
               Date.now(),
-            ).length >= 5 &&
+            ).length >= REQUIRED_MARKER_EPISODES &&
             probe.remoteAudioTracks > 0 &&
             probe.audioPacketsSent > 0 &&
             probe.audioBytesSent > 0
@@ -1319,10 +1322,10 @@ async function observe(options) {
       );
     }
     if (
-      mediaProbe.sourceMarkerObservedAtMs.length < 5 ||
-      mediaProbe.sourceMarkerFrames < 5 ||
+      mediaProbe.sourceMarkerObservedAtMs.length < REQUIRED_MARKER_EPISODES ||
+      mediaProbe.sourceMarkerFrames < REQUIRED_MARKER_ANALYSER_FRAMES ||
       !mediaProbe.dtmfSourceToAgentObserved ||
-      agentMarkerSentAtMs.length < 5 ||
+      agentMarkerSentAtMs.length < REQUIRED_MARKER_EPISODES ||
       (session.scenario_id === "bridgefu-web-sdk-handoff" && agentDtmfSentAtMs.length < 1) ||
       mediaProbe.audioPacketsSent < 5
     ) {

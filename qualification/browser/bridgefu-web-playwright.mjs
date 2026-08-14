@@ -79,6 +79,11 @@ const PROBE_CYCLE_MS = 10_000;
 // classified.
 const PROBE_PULSES_PER_CYCLE = 1;
 const PROBE_PULSE_MS = 5_000;
+// One sustained marker is sufficient evidence. Requiring five distinct edges
+// after lengthening each marker to five seconds created a needless 50-second
+// cross-browser barrier and could end the call before the reverse probe began.
+const REQUIRED_MARKER_EPISODES = 1;
+const REQUIRED_MARKER_ANALYSER_FRAMES = 50;
 const DTMF_START_MS = 6_000;
 const DTMF_DURATION_MS = 350;
 // The fake microphone starts before the peer connection is established. Require
@@ -1337,8 +1342,8 @@ async function observe(options) {
         async () => {
           const probe = await probeSnapshot(page);
           return (
-            probe?.agentMarkerObservedAtMs.length >= 5 &&
-            probe.agentMarkerFrames >= 5 &&
+            probe?.agentMarkerObservedAtMs.length >= REQUIRED_MARKER_EPISODES &&
+            probe.agentMarkerFrames >= REQUIRED_MARKER_ANALYSER_FRAMES &&
             probe.dtmfAgentToSourceObserved &&
             probe.remoteAudioTracks > 0 &&
             probe.audioPacketsSent > 5 &&
@@ -1403,10 +1408,10 @@ async function observe(options) {
       observedAtMs,
     );
     if (
-      sourceMarkers.length < 5 ||
+      sourceMarkers.length < REQUIRED_MARKER_EPISODES ||
       sourceDtmfSentAtMs.length < 1 ||
-      probe.agentMarkerObservedAtMs.length < 5 ||
-      probe.agentMarkerFrames < 5 ||
+      probe.agentMarkerObservedAtMs.length < REQUIRED_MARKER_EPISODES ||
+      probe.agentMarkerFrames < REQUIRED_MARKER_ANALYSER_FRAMES ||
       !probe.dtmfAgentToSourceObserved
     ) {
       fail("Bridgefu browser final media evidence is incomplete");

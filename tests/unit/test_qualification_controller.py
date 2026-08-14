@@ -489,9 +489,7 @@ class QualificationControllerTests(unittest.TestCase):
                 stable_seconds=0,
             )
 
-        with self.assertRaisesRegex(
-            CONTROLLER.QualificationError, "stability bound"
-        ):
+        with self.assertRaisesRegex(CONTROLLER.QualificationError, "stability bound"):
             CONTROLLER.wait_for_vapi_phone_active(
                 FakeVapi(["active"]),
                 "phone_1234",
@@ -524,7 +522,13 @@ class QualificationControllerTests(unittest.TestCase):
                 return None
 
         client = FakeVapi()
-        client.delete("tool", "tool_1234", timeout=1, poll_seconds=0)
+        client.delete(
+            "tool",
+            "tool_1234",
+            timeout=1,
+            poll_seconds=0,
+            stable_seconds=0,
+        )
         self.assertEqual(client.observed, ("tool", "tool_1234"))
         self.assertEqual(client.deleted, ("DELETE", "/tool/tool_1234", True))
 
@@ -601,8 +605,40 @@ class QualificationControllerTests(unittest.TestCase):
             endpoint_url="https://direct.example.test/v1/direct-handoff",
             credential_id="credential_1234",
             desired=desired,
+            stable_seconds=0,
         )
         self.assertTrue(client.deleted)
+
+    def test_vapi_delete_rejects_transient_absence_and_redeletes_owned_resource(self):
+        owned = {"id": "tool_1234"}
+
+        class FakeVapi(CONTROLLER.Vapi):
+            def __init__(self):
+                super().__init__("private-test-key")
+                self.values = iter((owned, None, owned, None, None))
+                self.deletes = 0
+
+            def get(self, resource, resource_id):
+                return next(self.values)
+
+            def request(self, method, path, payload=None, *, allow_missing=False):
+                self.deletes += 1
+                return None
+
+        client = FakeVapi()
+        clock = iter((0, 0, 0, 0.5, 0.5, 1, 1, 1.5, 1.5, 2.6))
+        with (
+            mock.patch.object(CONTROLLER.time, "monotonic", side_effect=clock),
+            mock.patch.object(CONTROLLER.time, "sleep"),
+        ):
+            client.delete(
+                "tool",
+                "tool_1234",
+                timeout=10,
+                poll_seconds=0,
+                stable_seconds=1,
+            )
+        self.assertEqual(client.deletes, 2)
 
     def test_direct_assistant_ambiguous_create_reconciles_without_second_post(self):
         desired, prompt_hash = CONTROLLER.bridgefu_web_handoff.direct_assistant_payload(

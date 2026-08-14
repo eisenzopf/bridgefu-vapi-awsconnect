@@ -2379,3 +2379,41 @@ and full 226-test Python suite passed.
   invoke the qualification database reset first, wait through the Vapi endpoint
   stability window, then run with continuous CPU/memory/restart monitoring. No
   GitHub candidate or release workflow is permitted.
+
+### 2026-08-13 — Isolated run 15 proved media but exposed an overlong edge-count gate
+
+- Retained Oregon run 15 passed the new SQLite reset, sustained health, Vapi
+  endpoint-stability interval, WebRTC establishment, Vapi direct handoff,
+  Bridgefu replacement, Connect delivery, screen-pop lookup, agent availability,
+  call acceptance, ordinary audio, source marker, source DTMF, reverse marker,
+  and reverse DTMF boundaries. Bridgefu remained healthy with zero automatic
+  restarts.
+- The agent measured three separate 997-Hz source-marker episodes and 156
+  analyzer frames, plus source DTMF. The source-side media wait separately
+  passed its agent-marker and agent-DTMF requirements. Both finalizers still
+  rejected the call because they retained the older requirement for five
+  distinct marker edges after each marker had been lengthened from a short
+  pulse to five continuous seconds. The source then ended the call before a
+  fifth edge could exist. This is a qualification timing defect, not missing
+  media.
+- The corrected contract requires one distinct marker episode plus at least 50
+  positive 20-ms analyzer frames—one full second of sustained spectral proof.
+  The five-second generated tones therefore retain a large margin without
+  forcing a 50-second multi-edge handshake before hangup. DTMF remains a
+  separate mandatory observation in both directions.
+- Cleanup exposed a second Vapi eventual-consistency defect in the harness.
+  Vapi returned 404 immediately after DELETE, then made the same exact owned
+  assistant and tool visible again. The old cleanup treated the first 404 as
+  final. Deletion now requires ten continuous seconds of absence; if the exact
+  owned ID reappears, ownership is revalidated and DELETE is retried. Foreign or
+  changed resources still fail closed. The run-15 assistant and tool were
+  exact-deleted with this rule and remained absent after an additional delay;
+  the direct identity binding is unbound and the product runtime is restored.
+- Active-call capacity remained far below the 60-percent ceiling on the
+  eight-vCPU `c7g.2xlarge`: host CPU peak 12.515%, Bridgefu-normalized CPU peak
+  11.308%, host memory peak 4.276%, and Bridgefu RSS peak 1.067%. The full
+  capture contained 589 one-second samples and zero automatic restarts.
+- The local regression suite now has 299 passing unit tests. The next permitted
+  action is one run of this same retained Web gate after committing the marker
+  and sustained-Vapi-deletion fixes. No other smoke and no candidate workflow
+  may start first.
