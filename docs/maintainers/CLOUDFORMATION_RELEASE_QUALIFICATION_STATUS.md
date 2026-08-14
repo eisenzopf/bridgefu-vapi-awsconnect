@@ -2457,3 +2457,67 @@ and full 226-test Python suite passed.
   passed this longer absence gate; the direct identity binding is unbound,
   Bridgefu is healthy with zero restarts, the qualification overlay and pending
   reset directories are absent, and the database contains one terminal call.
+
+### 2026-08-14 — Runs 18–19 closed the call mechanics and isolated two evidence-boundary defects
+
+- Run 18 proved that Vapi's API-level `active` phone status is not a sufficient
+  data-plane readiness signal. The real authenticated SIP INVITE still received
+  HTTP/SIP 403. Qualification now performs a silent, authenticated SIP probe
+  before every Web smoke: receive the Digest challenge, send exactly one
+  authenticated retry, require 200, open media, send one second of silence,
+  send BYE, and prove cleanup. A failed probe exact-deletes and recreates the
+  qualification-owned endpoint, up to the bounded retry limit. No speech or
+  handoff tool can be triggered by this probe.
+- Run 19 completed the actual Bridgefu Web SDK path: WebRTC media established;
+  Vapi invoked only `bridgefu_direct_handoff`; Bridgefu replaced the Vapi leg;
+  Connect answered; all four configured screen-pop rows appeared in order;
+  both five-second media markers and both DTMF directions were observed; and
+  source/agent hangup cleanup completed. Vapi repeated the same idempotent
+  direct tool once while media continued. The acceptance rule now permits one
+  or more identical accepted retries while continuing to reject any foreign
+  tool, failed result, prepare tool, or transfer tool.
+- Run 19 did not receive the required
+  `bridgefu_vapi_source_security_evidence` event in CloudWatch. This was not a
+  CloudWatch delivery failure and not missing TLS media. The product installed
+  the observer only on the default rvoip coordinator. The Bridgefu-to-Vapi leg
+  is owned by a named SIP egress profile with its own child coordinator, so the
+  event could never reach that observer.
+- The upstream rvoip fix branch now exposes the named profile's coordinator for
+  read-only observation without transferring signaling ownership. Commit
+  `34b73100` is pushed on `codex/fix-sips-contact-fallback`; its focused tests
+  and Clippy pass. Bridgefu now installs and lifecycle-manages one redacted
+  security observer for every SRTP-capable named profile. Local product tests
+  prove the child observer is installed and the existing security suite remains
+  green. The customer release continues to pin crates.io rvoip 0.3.7; this
+  observer change cannot be promoted until the upstream getter is published.
+
+### 2026-08-14 — CloudWatch-first retained smoke is in progress
+
+- Qualification commit `f172cc6` is pushed and contains the authenticated SIP
+  endpoint readiness probe plus the idempotent direct-tool result gate. The
+  complete local gate passed: 301 Python tests, Rust SIP-client tests, Ruff,
+  Rust formatting, deterministic release validation, CloudFormation lint, and
+  the local CloudFormation verifier.
+- Commits `18f6239` and `c3f441e` are pushed and add ten-second CloudWatch
+  Agent collection for host CPU/memory plus `procstat` collection for the exact
+  Bridgefu process (`cpu_usage` and `memory_rss`).
+  The retained Oregon agent accepted the rendered configuration, and the
+  `Bridgefu/Runtime` namespace is receiving both process metrics. Existing
+  structured JSON runtime events continue to stream from
+  `/var/log/bridgefu/bridgefu.log` to the stack-owned CloudWatch Logs group;
+  the controller uses CloudWatch `filter-log-events`, not copied EC2 log files,
+  as the authoritative security evidence source.
+- The next bounded call uses the retained `c7g.2xlarge` (eight vCPUs, 16 GiB),
+  resets the disposable database before the scenario, requires WebRTC media
+  establishment before the prompt, plays five seconds of silence followed by
+  `Transfer me please.`, and uses sustained five-second media markers. CPU and
+  memory are read back from CloudWatch for only the smoke window; compiler load
+  is excluded. Host CPU and memory must both remain below 60 percent, and the
+  CloudWatch runtime stream must contain no Bridgefu startup event during the
+  call.
+- A diagnostic ARM64 Bridgefu build is currently compiling from exact hashed
+  inputs: Bridgefu base commit `0605edfa` plus the two-file observer patch, and
+  rvoip fix commit `34b73100`. The running service has not been replaced during
+  compilation. After the binary hashes are recorded, installation must retain
+  an exact rollback binary and pass sustained readiness before the one permitted
+  retained Web smoke begins.
