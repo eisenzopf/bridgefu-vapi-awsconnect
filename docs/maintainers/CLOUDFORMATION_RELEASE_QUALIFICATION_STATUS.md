@@ -2690,7 +2690,7 @@ and full 226-test Python suite passed.
 
 - rvoip `0.3.8` is published on crates.io with the secure fallback Contact and
   profiled SIP coordinator fixes required by the smoke-tested Bridgefu source.
-- Bridgefu commit `71558b26987ac4e24e30c77c49c5cdc8037b09aa`
+- Bridgefu `main` commit `e00db3289480f93c2783c57440a324e4438e29de`
   preserves the passing `53ef1c7` call-path implementation and pins all 25
   rvoip packages exactly to registry version `0.3.8`. Its committed
   `Cargo.lock` SHA-256 is
@@ -2714,10 +2714,10 @@ and full 226-test Python suite passed.
   validation. The AWS CloudFormation `ValidateTemplate` API then accepted all
   ten exact rendered root and nested templates in both `us-west-2` and
   `us-east-1`.
-- The next permitted work is GitHub CI and review for both pull requests. No
-  candidate or publication is authorized until those checks pass, Bridgefu is
-  merged, and the distribution lock is repinned to the final Bridgefu `main`
-  commit.
+- Bridgefu PR 4 passed every required GitHub check and was merged. The exact
+  resulting `main` commit is
+  `e00db3289480f93c2783c57440a324e4438e29de`; this distribution lock now
+  targets that merge commit rather than the pre-merge branch head.
 - GitHub CI run `31963835122` passed the exact Bridgefu commit above: Linux
   infrastructure and release-image policy, strict Clippy, all-target Rust
   tests, runtime/conformance checks, and native AMD64 and ARM64 image builds.
@@ -2725,7 +2725,13 @@ and full 226-test Python suite passed.
   `19b7097cb4adb717ff03be82c25746038c9112f6`: deterministic packaging,
   CloudFormation and Packer validation, the SDP observer, both exact rvoip
   qualification clients, static ARM64 launch checks, and browser harness
-  syntax. The next permitted step is review and merge of Bridgefu PR 4; after
-  that merge, this repository must repin the final Bridgefu `main` commit and
-  rerun its distribution gate before PR 26 can merge. A candidate remains
-  unauthorized.
+  syntax. After the final merge-commit repin, the complete local distribution
+  gate passed again: 303 Python tests, both Rust clients, the SDP observer,
+  browser syntax, Ruff, deterministic packaging, local CloudFormation checks,
+  and Packer 1.12.0 validation. AWS then accepted all ten freshly rendered
+  templates through the real `ValidateTemplate` API in both `us-west-2` and
+  `us-east-1` (20 remote validations).
+- The next permitted step is branch-head GitHub CI for this exact repin, then
+  review and merge of distribution PR 26. A candidate, infrastructure
+  deployment, or publication remains unauthorized until that merge is
+  complete and separately requested.
