@@ -9,7 +9,7 @@ qualification-test:
 	cargo test --locked --manifest-path qualification/direct-secure-probe/Cargo.toml
 	cargo clippy --locked --all-targets --manifest-path qualification/direct-secure-probe/Cargo.toml -- -D warnings
 	@metadata="$$(cargo metadata --locked --format-version 1 --manifest-path qualification/direct-secure-probe/Cargo.toml)"; \
-	printf '%s\n' "$$metadata" | jq -e '([.packages[] | select(.name == "bridgefu-direct-secure-probe") | .dependencies[] | select(.name == "rvoip-sip" and .req == "=0.3.7" and .source == "registry+https://github.com/rust-lang/crates.io-index" and .uses_default_features == false)] | length) == 1 and ([.packages[] | select(.name == "rvoip-sip" and .version == "0.3.7" and .source == "registry+https://github.com/rust-lang/crates.io-index")] | length) == 1'
+	printf '%s\n' "$$metadata" | jq -e '([.packages[] | select(.name == "bridgefu-direct-secure-probe") | .dependencies[] | select(.name == "rvoip-sip" and .req == "=0.3.8" and .source == "registry+https://github.com/rust-lang/crates.io-index" and .uses_default_features == false)] | length) == 1 and ([.packages[] | select(.name == "rvoip-sip" and .version == "0.3.8" and .source == "registry+https://github.com/rust-lang/crates.io-index")] | length) == 1'
 	npm --prefix qualification ci --ignore-scripts
 	PLAYWRIGHT_BROWSERS_PATH=0 npm --prefix qualification exec playwright install chromium
 	node --check qualification/browser/agent-workspace-playwright.mjs

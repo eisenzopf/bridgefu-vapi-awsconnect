@@ -1,10 +1,10 @@
 {
   "schema": "bridgefu-source-lock/v1",
   "repository": "https://github.com/eisenzopf/bridgefu.git",
-  "commit": "f350cd72bd48bcd8466f00b5e40fab2eb3eaaeb5",
+  "commit": "65e1b0760a48db21689ae7931e3d7a3e10bb41b0",
   "base_commit": "f4598f4c7bf18f37e5af81613499588b2c9ed2af",
-  "cargo_lock_sha256": "bc49cee0aedbd61eb85d5c438b26da7138e8e86f875747f1ff6af53c99424e7d",
-  "required_rvoip_version": "0.3.7",
+  "cargo_lock_sha256": "8bd0c889cc121076cd6d31bfa9058c763744f0c96022f5bb88b8f1d707a16ba9",
+  "required_rvoip_version": "0.3.8",
   "required_rvoip_source": "registry+https://github.com/rust-lang/crates.io-index",
   "release_requires_remote_commit": true,
   "release_ready": false

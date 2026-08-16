@@ -2336,7 +2336,7 @@ class QualificationControllerTests(unittest.TestCase):
             "scenario_id": "vapi-sip-transfer",
             "observed_at": "2026-08-11T04:20:00Z",
             "signaling": {
-                "source": "rvoip-sip-0.3.7",
+                "source": "rvoip-sip-0.3.8",
                 "target": "sip.vapi.ai",
                 "invite_sent": True,
                 "answered": True,

@@ -22,7 +22,7 @@ jobs:
           cargo metadata --locked --format-version 1 \
             --manifest-path qualification/sdp-observer/Cargo.toml \
             | jq -e '.packages[] | select(.name == "rvoip-sip-core") |
-              .version == "0.3.7" and
+              .version == "0.3.8" and
               .source == "registry+https://github.com/rust-lang/crates.io-index"'
 
   qualification-client:
@@ -45,12 +45,12 @@ jobs:
               select(.name == "bridgefu-direct-secure-probe") |
               .dependencies[] |
               select(.name == "rvoip-sip" and
-                .req == "=0.3.7" and
+                .req == "=0.3.8" and
                 .source == "registry+https://github.com/rust-lang/crates.io-index" and
                 .uses_default_features == false)] | length) == 1 and
             ([.packages[] |
               select(.name == "rvoip-sip" and
-                .version == "0.3.7" and
+                .version == "0.3.8" and
                 .source == "registry+https://github.com/rust-lang/crates.io-index")] |
               length) == 1' <<<"$metadata"
       - name: Build and launch the static release qualification clients

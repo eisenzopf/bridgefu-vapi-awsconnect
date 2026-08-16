@@ -50,7 +50,7 @@ happened.
 | Local delta | None; the named SIP-egress media-bind fix is committed and pushed |
 | Pull request | [bridgefu#4](https://github.com/eisenzopf/bridgefu/pull/4) |
 | PR state at last update | Open, not merged |
-| Dependency posture | Exact crates.io `rvoip = 0.3.7`; no local rvoip dependency |
+| Dependency posture | Exact crates.io `rvoip = 0.3.8`; no local rvoip dependency |
 
 The Oregon Vapi A/B test selected the optional-mode URI/media contract for this
 Bridgefu change. It remains unqualified product behavior until the corrected
@@ -2643,3 +2643,72 @@ and full 226-test Python suite passed.
   `us-west-2` and `us-east-1`. No candidate or publication workflow is
   authorized by this result; the retained diagnostic stack remains available
   for review.
+
+### 2026-08-14 — Release dependency gate identified
+
+- The exact Bridgefu source used by the passing retained Web and SIP smokes is
+  commit `53ef1c767f0c29bf8a6ca78f673a4a76122681c5` on
+  `codex/vapi-tls-rtp-evidence`.
+- That commit cannot be repinned as-is for a reproducible AMI build. It calls
+  `SipEgressProfileRegistration::coordinator()`, which is supplied by rvoip
+  fix commit `34b73100` but is absent from the published crates.io rvoip
+  `0.3.7`. Bridgefu PR 4 therefore fails its clean-clone test and image jobs.
+  The passing retained binary used the local rvoip fix branch; it did not prove
+  that commit `53ef1c7` compiles against the declared crates.io graph.
+- No AWS distribution repin or candidate run is permitted until the rvoip fix
+  is published from the isolated `codex/fix-sips-contact-fallback` lineage and
+  the smoke-tested Bridgefu source is updated to exact published versions. The
+  recommended release is the next unused rvoip patch version, followed by a
+  Bridgefu commit whose only release-enablement change is the exact dependency
+  repin and regenerated lockfile.
+- Required order:
+  1. Merge and release the two rvoip fix-branch commits after its complete
+     release gate passes: secure fallback Contact `023c0642` and profiled SIP
+     coordinator observer `34b73100`.
+  2. Update every Bridgefu rvoip dependency from exact `0.3.7` to that exact
+     published patch version, regenerate `Cargo.lock`, and prove the registry
+     sources and checksums contain no path or git overrides.
+  3. Run Bridgefu tests plus both ARM64 and x86_64 image jobs from a clean clone;
+     merge PR 4 only after all checks pass. The resulting main commit must
+     retain the tested `53ef1c7` call-path changes.
+  4. Repin `bridgefu.lock.json` to that remotely reachable Bridgefu main commit,
+     its exact `Cargo.lock` SHA-256, and the new exact crates.io rvoip version.
+  5. Rerun the AWS distribution local contract gate and remote
+     `ValidateTemplate` gate, merge the distribution PR to `main`, and remove
+     the retained Oregon diagnostic environment with zero-resource evidence.
+  6. Only then create the next unused private candidate. GitHub builds the
+     ARM64 AMI in `us-west-2`, copies it privately to `us-east-1`, qualifies
+     Oregon and then Virginia sequentially, and seals the exact private bits.
+  7. After receipt review, tag the exact qualified distribution commit. The
+     release workflow makes both AMIs and snapshots public, publishes the
+     immutable S3 objects, and updates `latest` last.
+- Current publication readiness is **blocked** at step 1. The GitHub AWS
+  build/copy/qualify/publish topology is present, but running it before this
+  dependency gate passes would use the release pipeline as a debugger again.
+
+### 2026-08-16 — rvoip 0.3.8 dependency and distribution validation gates passed
+
+- rvoip `0.3.8` is published on crates.io with the secure fallback Contact and
+  profiled SIP coordinator fixes required by the smoke-tested Bridgefu source.
+- Bridgefu commit `65e1b0760a48db21689ae7931e3d7a3e10bb41b0`
+  preserves the passing `53ef1c7` call-path implementation and pins all 25
+  rvoip packages exactly to registry version `0.3.8`. Its committed
+  `Cargo.lock` SHA-256 is
+  `8bd0c889cc121076cd6d31bfa9058c763744f0c96022f5bb88b8f1d707a16ba9`.
+- The Bridgefu local gate passed registry-source verification, strict Clippy,
+  all-target tests, credential-free runtime smoke, release-image policy tests,
+  config and Compose validation, shell checks, and an optimized release build.
+- The AWS distribution now pins that exact remotely reachable Bridgefu commit
+  and lock digest. Its SIP smoke client, SDP observer, and direct secure probe
+  are also repinned to exact crates.io rvoip `0.3.8`; their machine-readable
+  source contracts and workflow assertions were updated together.
+- The AWS distribution gate passed all 303 Python unit tests, both Rust smoke
+  clients, the SDP observer, browser syntax, Ruff, deterministic Lambda and
+  release packaging, local CloudFormation validation, and Packer 1.12.0
+  validation. The AWS CloudFormation `ValidateTemplate` API then accepted all
+  ten exact rendered root and nested templates in both `us-west-2` and
+  `us-east-1`.
+- The next permitted work is GitHub CI and review for both pull requests. No
+  candidate or publication is authorized until those checks pass, Bridgefu is
+  merged, and the distribution lock is repinned to the final Bridgefu `main`
+  commit.

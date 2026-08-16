@@ -824,7 +824,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
             scenario_id: "vapi-sip-transfer",
             observed_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             signaling: SignalingObservation {
-                source: "rvoip-sip-0.3.7",
+                source: "rvoip-sip-0.3.8",
                 target: "sip.vapi.ai",
                 invite_sent: true,
                 answered: true,

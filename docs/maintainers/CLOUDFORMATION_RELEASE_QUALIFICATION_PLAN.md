@@ -50,7 +50,7 @@ Owns the Bridgefu runtime:
 - Correlation-header handling.
 - Amazon Connect call bridging.
 - Redacted signaling and negotiated-media evidence.
-- Exact crates.io `rvoip = 0.3.7` dependency.
+- Exact crates.io `rvoip = 0.3.8` dependency.
 
 ### `bridgefu-vapi-awsconnect`
 
@@ -72,7 +72,7 @@ Prove the code and generated artifacts before any AWS deployment.
 ### Bridgefu runtime
 
 - Run formatting, Clippy, and all Rust tests.
-- Verify every rvoip dependency is exactly version `0.3.7` from crates.io.
+- Verify every rvoip dependency is exactly version `0.3.8` from crates.io.
 - Test the SIP security matrix:
   - `sips_srtp`: TLS signaling and SRTP media required.
   - `sips_optional_srtp`: TLS signaling required; accept SRTP when offered and
@@ -178,7 +178,7 @@ Run the direct rvoip probe without Vapi and require:
 - Bidirectional audio and required DTMF.
 - Clean hangup and complete runtime restoration.
 
-This proves Bridgefu and crates.io rvoip 0.3.7 can negotiate and carry secure
+This proves Bridgefu and crates.io rvoip 0.3.8 can negotiate and carry secure
 media through the real AWS runtime.
 
 ### 3.2 Vapi URI and SDP A/B test

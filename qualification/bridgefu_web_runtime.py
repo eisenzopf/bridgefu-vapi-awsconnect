@@ -333,7 +333,7 @@ def build_runtime_config(
                     "port_end": 20399,
                 },
                 "audio_codecs": ["opus"],
-                # rvoip-rtc 0.3.7 accepts a one-to-one NAT setting but does
+                # rvoip-rtc 0.3.8 accepts a one-to-one NAT setting but does
                 # not apply it to the ICE agent's gathered candidate. A
                 # wildcard-bound EC2 peer would therefore signal 0.0.0.0 and
                 # never receive a controlling-browser nomination. Gather a

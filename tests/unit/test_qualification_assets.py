@@ -39,15 +39,15 @@ class QualificationAssetTests(unittest.TestCase):
             self.assertNotIn(removed_scope, text)
         self.assertIn("dtmf_source_to_agent", text)
 
-    def test_sip_source_uses_exact_crates_io_rvoip_037(self):
+    def test_sip_source_uses_exact_crates_io_rvoip_038(self):
         crate = tomllib.loads((QUALIFICATION / "sip-client" / "Cargo.toml").read_text())
         self.assertEqual(
             crate["dependencies"]["rvoip-sip"],
-            {"version": "=0.3.7", "default-features": False},
+            {"version": "=0.3.8", "default-features": False},
         )
         lock = (QUALIFICATION / "sip-client" / "Cargo.lock").read_text()
         package = lock.split('name = "rvoip-sip"', 1)[1].split("[[package]]", 1)[0]
-        self.assertIn('version = "0.3.7"', package)
+        self.assertIn('version = "0.3.8"', package)
         self.assertIn(
             'source = "registry+https://github.com/rust-lang/crates.io-index"',
             package,
@@ -418,11 +418,11 @@ class QualificationAssetTests(unittest.TestCase):
         )
         self.assertEqual(
             crate["dependencies"]["rvoip-sip-core"],
-            "=0.3.7",
+            "=0.3.8",
         )
         lock = (QUALIFICATION / "sdp-observer" / "Cargo.lock").read_text()
         package = lock.split('name = "rvoip-sip-core"', 1)[1].split("[[package]]", 1)[0]
-        self.assertIn('version = "0.3.7"', package)
+        self.assertIn('version = "0.3.8"', package)
         self.assertIn(
             'source = "registry+https://github.com/rust-lang/crates.io-index"',
             package,
@@ -450,11 +450,11 @@ class QualificationAssetTests(unittest.TestCase):
         )
         self.assertEqual(
             crate["dependencies"]["rvoip-sip"],
-            {"version": "=0.3.7", "default-features": False},
+            {"version": "=0.3.8", "default-features": False},
         )
         lock = (QUALIFICATION / "direct-secure-probe" / "Cargo.lock").read_text()
         package = lock.split('name = "rvoip-sip"', 1)[1].split("[[package]]", 1)[0]
-        self.assertIn('version = "0.3.7"', package)
+        self.assertIn('version = "0.3.8"', package)
         self.assertIn(
             'source = "registry+https://github.com/rust-lang/crates.io-index"',
             package,
@@ -499,7 +499,7 @@ class QualificationAssetTests(unittest.TestCase):
             self.assertIn("file \"$binary\" | grep -F 'ARM aarch64'", workflow)
             self.assertIn("file \"$binary\" | grep -F 'statically linked'", workflow)
             self.assertIn('"$binary" --help >/dev/null', workflow)
-            self.assertIn('.req == "=0.3.7"', workflow)
+            self.assertIn('.req == "=0.3.8"', workflow)
             self.assertIn(
                 '.source == "registry+https://github.com/rust-lang/crates.io-index"',
                 workflow,

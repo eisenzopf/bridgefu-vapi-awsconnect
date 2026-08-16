@@ -251,12 +251,12 @@ jobs:
               select(.name == "bridgefu-direct-secure-probe") |
               .dependencies[] |
               select(.name == "rvoip-sip" and
-                .req == "=0.3.7" and
+                .req == "=0.3.8" and
                 .source == "registry+https://github.com/rust-lang/crates.io-index" and
                 .uses_default_features == false)] | length) == 1 and
             ([.packages[] |
               select(.name == "rvoip-sip" and
-                .version == "0.3.7" and
+                .version == "0.3.8" and
                 .source == "registry+https://github.com/rust-lang/crates.io-index")] |
               length) == 1' <<<"$metadata"
           cargo build --release --locked --target aarch64-unknown-linux-musl \

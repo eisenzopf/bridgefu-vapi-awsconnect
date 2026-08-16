@@ -348,7 +348,7 @@ class ReleaseContractTests(unittest.TestCase):
             output = Path(directory)
             manifest = json.loads((output / "manifest.json").read_text())
             self.assertFalse(manifest["contains_secrets"])
-            self.assertEqual(manifest["bridgefu"]["required_rvoip_version"], "0.3.7")
+            self.assertEqual(manifest["bridgefu"]["required_rvoip_version"], "0.3.8")
             self.assertEqual(
                 set(manifest["supported_regions"]), self.supported_regions()
             )

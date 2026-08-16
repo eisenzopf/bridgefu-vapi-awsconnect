@@ -168,7 +168,7 @@ jobs:
             '.supported_regions == $receipt[0].regional_amis and
              .object_versions.exact == true and
              .bridgefu.commit == $receipt[0].bridgefu_commit and
-             .bridgefu.required_rvoip_version == "0.3.7" and
+             .bridgefu.required_rvoip_version == "0.3.8" and
              .bridgefu.required_rvoip_source ==
                "registry+https://github.com/rust-lang/crates.io-index"' \
             target/verified/us-east-1/manifest.json >/dev/null
@@ -232,7 +232,7 @@ jobs:
             test "$(jq -r '.Images[0].Tags[] | select(.Key == "BridgefuCommit") | .Value' \
               <<<"$image")" = "$(jq -r .bridgefu_commit target/publication/receipt.json)"
             test "$(jq -r '.Images[0].Tags[] | select(.Key == "BridgefuRvoipVersion") | .Value' \
-              <<<"$image")" = 0.3.7
+              <<<"$image")" = 0.3.8
             permissions="$(aws ec2 describe-image-attribute --region "$region" \
               --image-id "$ami" --attribute launchPermission --output json)"
             jq -e '[.LaunchPermissions[]? | select(.Group == "all")] |

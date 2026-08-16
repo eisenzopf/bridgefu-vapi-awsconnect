@@ -17,7 +17,7 @@
       "additionalProperties": false,
       "required": ["source", "target", "invite_sent", "answered", "transport"],
       "properties": {
-        "source": {"const": "rvoip-sip-0.3.7"},
+        "source": {"const": "rvoip-sip-0.3.8"},
         "target": {"const": "sip.vapi.ai"},
         "invite_sent": {"const": true},
         "answered": {"const": true},

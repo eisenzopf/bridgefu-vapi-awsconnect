@@ -60,7 +60,7 @@ temporary Vapi resources, test credentials, and qualification S3 objects are
 absent.
 
 The controller does not use a Vapi web call for the SIP test. It creates a
-temporary Vapi SIP URI and runs the statically linked `rvoip-sip = 0.3.7`
+temporary Vapi SIP URI and runs the statically linked `rvoip-sip = 0.3.8`
 client on the candidate Bridgefu host. The Web SDK test is a separate call.
 
 ## Run it
