@@ -3,9 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "dependencies": {
-    "@vapi-ai/web": "2.5.2"
-  },
   "devDependencies": {
     "esbuild": "0.28.1",
     "playwright": "1.62.1"

@@ -55,7 +55,7 @@ workflow verifies that every regional snapshot is unencrypted and grants public
 snapshot permission before it grants public AMI launch permission.
 
 Before any AMI can be built, `bridgefu.lock.json` must name a remotely reachable
-Bridgefu commit containing the exact crates.io rvoip 0.3.7 graph and its
+Bridgefu commit containing the exact crates.io rvoip 0.3.8 graph and its
 Cargo.lock digest. A private candidate may intentionally use
 `release_ready: false`; final publication then requires the immutable signed
 dual-region qualification receipt as the explicit release gate.

@@ -77,8 +77,8 @@ Parameters:
     AllowedPattern: '^arn:aws[-a-z0-9]*:secretsmanager:[-a-z0-9]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$'
   InstanceType:
     Type: String
-    Default: t4g.large
-    AllowedValues: [t4g.medium, t4g.large, t4g.xlarge, c7g.large, c7g.xlarge, m7g.large, m7g.xlarge]
+    Default: c7g.2xlarge
+    AllowedValues: [t4g.medium, t4g.large, t4g.xlarge, t4g.2xlarge, c7g.large, c7g.xlarge, c7g.2xlarge, m7g.large, m7g.xlarge, m7g.2xlarge]
   AmiId:
     Type: AWS::EC2::Image::Id
   RootVolumeGiB:
@@ -793,6 +793,8 @@ Outputs:
       - !Sub 'http://${ControlHostname}:443'
   GatewaySecurityGroupId:
     Value: !Ref GatewaySecurityGroup
+  GatewayRoleName:
+    Value: !Ref GatewayRole
   CertificateArn:
     Value: !If [SecureSip, !Ref PublicCertificate, none]
   BridgefuControlHmacSecretArn:

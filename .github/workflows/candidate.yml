@@ -59,14 +59,26 @@ jobs:
             echo "bridgefu_commit=$bridgefu_commit"
             echo "bridgefu_lock=$bridgefu_lock"
           } >> "$GITHUB_OUTPUT"
+      - name: Checkout the exact Bridgefu source before AWS mutation
+        run: |
+          set -euo pipefail
+          repository="$(jq -r .repository bridgefu.lock.json)"
+          commit="${{ steps.inputs.outputs.bridgefu_commit }}"
+          git clone --filter=blob:none --no-checkout "$repository" target/pinned-bridgefu
+          git -C target/pinned-bridgefu checkout --detach "$commit"
+          test "$(sha256sum target/pinned-bridgefu/Cargo.lock | awk '{print $1}')" = \
+            "${{ steps.inputs.outputs.bridgefu_lock }}"
       - name: Build the immutable qualification demo site before AWS mutation
         run: |
           set -euo pipefail
           python qualification/build_demo_site.py \
-            --output target/candidate/qualification-demo-site
+            --output target/candidate/qualification-demo-site \
+            --bridgefu-checkout target/pinned-bridgefu
           jq -e '
-            .schema_version == 1 and
-            .producer == "bridgefu-vapi-awsconnect-qualification-site@1" and
+            .schema_version == 2 and
+            .producer == "bridgefu-vapi-awsconnect-qualification-site@2" and
+            .bridgefu_commit == "${{ steps.inputs.outputs.bridgefu_commit }}" and
+            .bridgefu_sdk.name == "@bridgefu/webrtc-browser" and
             (.archive_sha256 | test("^[0-9a-f]{64}$"))' \
             target/candidate/qualification-demo-site/manifest.json >/dev/null
           test "$(sha256sum target/candidate/qualification-demo-site/demo-site.zip |
@@ -239,12 +251,12 @@ jobs:
               select(.name == "bridgefu-direct-secure-probe") |
               .dependencies[] |
               select(.name == "rvoip-sip" and
-                .req == "=0.3.7" and
+                .req == "=0.3.8" and
                 .source == "registry+https://github.com/rust-lang/crates.io-index" and
                 .uses_default_features == false)] | length) == 1 and
             ([.packages[] |
               select(.name == "rvoip-sip" and
-                .version == "0.3.7" and
+                .version == "0.3.8" and
                 .source == "registry+https://github.com/rust-lang/crates.io-index")] |
               length) == 1' <<<"$metadata"
           cargo build --release --locked --target aarch64-unknown-linux-musl \
@@ -501,12 +513,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  qualify-both-regions:
+  qualify-regions-sequentially:
     needs: build-private-candidate
-    strategy:
-      fail-fast: false
-      matrix:
-        region: [us-west-2, us-east-1]
     runs-on: ubuntu-latest
     environment: live-qualification
     steps:
@@ -525,25 +533,30 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_QUALIFICATION_ROLE_ARN }}
           role-duration-seconds: 10800
-          aws-region: ${{ matrix.region }}
+          aws-region: us-west-2
       - name: Install pinned qualification dependencies
         run: |
+          session_manager_version=1.2.835.0
+          session_manager_sha256=7c6dcad12518571cc7959a713e6a8ae1bdf6ed66fd9bee37dc189e39ca58ae03
+          curl --fail --location --silent --show-error \
+            "https://s3.amazonaws.com/session-manager-downloads/plugin/$session_manager_version/ubuntu_64bit/session-manager-plugin.deb" \
+            --output /tmp/session-manager-plugin.deb
+          echo "$session_manager_sha256  /tmp/session-manager-plugin.deb" | sha256sum --check --strict
+          sudo dpkg --install /tmp/session-manager-plugin.deb
+          command -v session-manager-plugin >/dev/null
+          session-manager-plugin --version | grep -F "$session_manager_version"
           python -m pip install -r qualification/requirements-runner.txt
           npm --prefix qualification ci --ignore-scripts
           PLAYWRIGHT_BROWSERS_PATH=0 npm --prefix qualification exec playwright install --with-deps chromium
-      - name: Checkout the exact Bridgefu source used by the AMI
+      - name: Reverify the exact Bridgefu source used by the AMI and SDK
         run: |
-          repository="$(jq -r .repository bridgefu.lock.json)"
           commit="$(jq -r .commit bridgefu.lock.json)"
-          git clone --filter=blob:none --no-checkout "$repository" target/pinned-bridgefu
-          git -C target/pinned-bridgefu checkout --detach "$commit"
+          test "$(git -C target/pinned-bridgefu rev-parse HEAD)" = "$commit"
           test "$(shasum -a 256 target/pinned-bridgefu/Cargo.lock | awk '{print $1}')" = \
             "$(jq -r .cargo_lock_sha256 bridgefu.lock.json)"
       - name: Run both live smoke paths and prove teardown
         env:
           VERSION: ${{ needs.build-private-candidate.outputs.version }}
-          REGION: ${{ matrix.region }}
-          VAPI_PUBLIC_KEY: ${{ secrets.VAPI_PUBLIC_KEY }}
           VAPI_SECRET_WEST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_WEST_2 || vars.VAPI_API_KEY_SECRET_ARN }}
           VAPI_SECRET_EAST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_EAST_1 }}
           CANDIDATE_ID: ${{ needs.build-private-candidate.outputs.candidate_id }}
@@ -554,6 +567,7 @@ jobs:
             target/candidate/bridgefu-direct-secure-probe
           account_id="$(aws sts get-caller-identity --query Account --output text)"
           bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
+          for REGION in us-west-2 us-east-1; do
           case "$REGION" in
             us-west-2) vapi_secret_arn="$VAPI_SECRET_WEST"; short_region=w ;;
             us-east-1) vapi_secret_arn="$VAPI_SECRET_EAST"; short_region=e ;;
@@ -613,16 +627,24 @@ jobs:
             --demo-site-archive target/qualification-inputs/demo-site.zip \
             --demo-site-sha256 "$demo_site_sha256" \
             --output "target/live-qualification-$REGION"
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: qualification-${{ matrix.region }}
-          path: target/live-qualification-${{ matrix.region }}
+          name: qualification-us-west-2
+          path: target/live-qualification-us-west-2
+          if-no-files-found: warn
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qualification-us-east-1
+          path: target/live-qualification-us-east-1
           if-no-files-found: warn
           retention-days: 14
 
   seal-qualified-receipt:
-    needs: [build-private-candidate, qualify-both-regions]
+    needs: [build-private-candidate, qualify-regions-sequentially]
     runs-on: ubuntu-latest
     environment: production-release
     steps:
@@ -659,6 +681,15 @@ jobs:
                .release == $version and .region == $region and
                .bridgefu_commit == $bridgefu_commit and .redacted == true and
                .secure_preflight.passed == true and
+               ((.database_resets | keys | sort) == ["bridgefu-web-sdk-handoff","direct-secure-preflight","vapi-sip-transfer"]) and
+               ([.database_resets[] |
+                 (.schema_version == 1 and
+                  .producer == "bridgefu-qualification-database-reset@1" and
+                  .test_delete_verified == true and
+                  .prior_calls_terminal == true and
+                  .fresh_database == true and
+                  .bridgefu_ready == true and
+                  .redacted == true)] | all(. == true)) and
                (.secure_preflight.checks | exact_true_checks([
                  "sips_signaling",
                  "tls_transport",
@@ -685,7 +716,26 @@ jobs:
                  "runtime_run_artifacts_absent",
                  "runtime_bridgefu_ready"
                ])) and
-               ([.scenarios[].id] | sort) == ["vapi-sip-transfer","vapi-web-transfer"] and
+               (.vapi_provisioning_resilience |
+                 (keys | sort) == ([
+                   "ambiguous_create_reconciled",
+                   "exact_owner_resources_present",
+                   "first_cycle_deleted",
+                   "passed",
+                   "producer",
+                   "redacted",
+                   "schema_version",
+                   "second_cycle_recreated"
+                 ] | sort) and
+                 .schema_version == 1 and
+                 .producer == "bridgefu-vapi-provisioning-resilience@1" and
+                 .ambiguous_create_reconciled == true and
+                 .first_cycle_deleted == true and
+                 .second_cycle_recreated == true and
+                 .exact_owner_resources_present == true and
+                 .redacted == true and
+                 .passed == true) and
+               ([.scenarios[].id] | sort) == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"] and
                ([.scenarios[].passed] | all(. == true)) and
                ((.scenarios[] | select(.id == "vapi-sip-transfer") | .checks) |
                  exact_true_checks([
@@ -693,7 +743,7 @@ jobs:
                    "vapi_transfer_invoked",
                    "handoff_context_stored",
                    "bridgefu_received_correlation_header",
-                   "vapi_destination_sips_signaling",
+                   "vapi_destination_uri_scheme_allowed",
                    "vapi_destination_tls_transport",
                    "vapi_destination_media_profile_allowed",
                    "vapi_destination_media_posture_consistent",
@@ -705,13 +755,13 @@ jobs:
                    "dtmf_source_to_agent",
                    "source_call_ended"
                  ])) and
-               ((.scenarios[] | select(.id == "vapi-web-transfer") | .checks) |
+               ((.scenarios[] | select(.id == "bridgefu-web-sdk-handoff") | .checks) |
                  exact_true_checks([
                    "vapi_call_connected",
                    "vapi_transfer_invoked",
                    "handoff_context_stored",
                    "bridgefu_received_correlation_header",
-                   "vapi_destination_sips_signaling",
+                   "vapi_destination_uri_scheme_allowed",
                    "vapi_destination_tls_transport",
                    "vapi_destination_media_profile_allowed",
                    "vapi_destination_media_posture_consistent",
@@ -849,8 +899,8 @@ jobs:
             --argjson east_evidence_schema_version "$(jq .schema_version target/qualification/us-east-1/evidence.json)" \
             --argjson west_secure_preflight_passed "$(jq .secure_preflight.passed target/qualification/us-west-2/evidence.json)" \
             --argjson east_secure_preflight_passed "$(jq .secure_preflight.passed target/qualification/us-east-1/evidence.json)" \
-            --argjson west_required_checks_passed "$(jq '[.secure_preflight.checks[], .scenarios[].passed, .scenarios[].checks[], .teardown[]] | all(. == true)' target/qualification/us-west-2/evidence.json)" \
-            --argjson east_required_checks_passed "$(jq '[.secure_preflight.checks[], .scenarios[].passed, .scenarios[].checks[], .teardown[]] | all(. == true)' target/qualification/us-east-1/evidence.json)" \
+            --argjson west_required_checks_passed "$(jq '[.secure_preflight.checks[], .database_resets[].test_delete_verified, .database_resets[].prior_calls_terminal, .database_resets[].fresh_database, .database_resets[].bridgefu_ready, .vapi_provisioning_resilience.ambiguous_create_reconciled, .vapi_provisioning_resilience.first_cycle_deleted, .vapi_provisioning_resilience.second_cycle_recreated, .vapi_provisioning_resilience.exact_owner_resources_present, .vapi_provisioning_resilience.passed, .scenarios[].passed, .scenarios[].checks[], .teardown[]] | all(. == true)' target/qualification/us-west-2/evidence.json)" \
+            --argjson east_required_checks_passed "$(jq '[.secure_preflight.checks[], .database_resets[].test_delete_verified, .database_resets[].prior_calls_terminal, .database_resets[].fresh_database, .database_resets[].bridgefu_ready, .vapi_provisioning_resilience.ambiguous_create_reconciled, .vapi_provisioning_resilience.first_cycle_deleted, .vapi_provisioning_resilience.second_cycle_recreated, .vapi_provisioning_resilience.exact_owner_resources_present, .vapi_provisioning_resilience.passed, .scenarios[].passed, .scenarios[].checks[], .teardown[]] | all(. == true)' target/qualification/us-east-1/evidence.json)" \
             --argjson west_scenario_ids "$(jq -c '[.scenarios[].id] | sort' target/qualification/us-west-2/evidence.json)" \
             --argjson east_scenario_ids "$(jq -c '[.scenarios[].id] | sort' target/qualification/us-east-1/evidence.json)" \
             '{schema: $schema, candidate_id: $candidate_id, version: $version,
@@ -890,7 +940,7 @@ jobs:
               .evidence_schema_version == 2 and
               .secure_preflight_passed == true and
               .required_checks_passed == true and
-              .scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"] and
+              .scenario_ids == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"] and
               .zero_resource_proof == true] | all(. == true))' \
             target/candidate/qualified-receipt.json >/dev/null
           openssl dgst -sha256 -binary target/candidate/qualified-receipt.json \

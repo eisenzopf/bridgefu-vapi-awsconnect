@@ -24,6 +24,45 @@ class RuntimeObservabilityTests(unittest.TestCase):
         self.assertEqual(collected[0]["log_stream_name"], "{instance_id}")
         self.assertNotIn("docker", template.lower())
 
+    def test_cloudwatch_collects_bridgefu_process_cpu_and_memory(self):
+        template = (RUNTIME / "cloudwatch-agent.json.tmpl").read_text()
+        rendered = template.replace("__AWS_REGION__", "us-west-2")
+        rendered = rendered.replace("__RUNTIME_LOG_GROUP__", "/bridgefu/runtime")
+        rendered = rendered.replace("__PROMETHEUS_LOG_GROUP__", "/bridgefu/prometheus")
+        rendered = rendered.replace("__DEPLOYMENT_ID__", "bfq-test")
+        config = json.loads(rendered)
+        procstat = config["metrics"]["metrics_collected"]["procstat"]
+
+        self.assertEqual(
+            procstat,
+            [
+                {
+                    "exe": "bridgefu",
+                    "measurement": ["cpu_usage", "memory_rss"],
+                    "metrics_collection_interval": 10,
+                }
+            ],
+        )
+        self.assertEqual(
+            config["metrics"]["metrics_collected"]["cpu"][
+                "metrics_collection_interval"
+            ],
+            10,
+        )
+        self.assertEqual(
+            config["metrics"]["metrics_collected"]["mem"][
+                "metrics_collection_interval"
+            ],
+            10,
+        )
+
+        observability = (
+            ROOT / "cloudformation" / "nested" / "observability.yaml"
+        ).read_text()
+        self.assertIn('"mem_used_percent"', observability)
+        self.assertIn('"procstat_cpu_usage"', observability)
+        self.assertIn('"procstat_memory_rss"', observability)
+
     def test_systemd_captures_stdout_and_stderr_in_private_runtime_log(self):
         service = (RUNTIME / "bridgefu.service").read_text()
 

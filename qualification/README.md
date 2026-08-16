@@ -10,13 +10,16 @@ remove the environment. The controller selects the exact disposable agent's
 routable `Available` status through the Amazon Connect API before each call.
 
 1. `vapi-sip-transfer`: a controlled SIP client calls a temporary Vapi SIP URI.
-2. `vapi-web-transfer`: the recipe harness starts a call through the modified
-   Vapi Web SDK held at the Bridgefu commit pinned by `bridgefu.lock.json`.
+2. `bridgefu-web-sdk-handoff`: a browser attaches through
+   `@bridgefu/webrtc-browser`, Bridgefu calls a dedicated Vapi SIP assistant,
+   and a trusted server-side request replaces that Vapi leg with Connect.
 
-The Web SDK is not copied into this repository. The qualification build fetches
-the pinned Bridgefu source, verifies its lock digest, and builds the SDK from
-that immutable revision. The smoke controller and evidence contracts live here
-because they are specific to this CloudFormation release.
+The SDK is not copied into this repository. Before AWS credentials are read,
+the qualification build fetches the pinned Bridgefu source, verifies its commit
+and Cargo lock digest, builds `sdk/typescript` from its own npm lock, and seals
+the SDK and site digests into the demo manifest. This path never imports
+`@vapi-ai/web` or starts a Vapi `webCall`. The smoke controller and evidence
+contracts live here because they are specific to this CloudFormation release.
 
 Before either Vapi smoke, the controller runs one direct secure preflight
 against the fresh candidate host. A separate, session-free Agent Workspace
@@ -57,7 +60,7 @@ temporary Vapi resources, test credentials, and qualification S3 objects are
 absent.
 
 The controller does not use a Vapi web call for the SIP test. It creates a
-temporary Vapi SIP URI and runs the statically linked `rvoip-sip = 0.3.7`
+temporary Vapi SIP URI and runs the statically linked `rvoip-sip = 0.3.8`
 client on the candidate Bridgefu host. The Web SDK test is a separate call.
 
 ## Run it
@@ -72,7 +75,7 @@ provide:
 - `VAPI_API_KEY_SECRET_ARN`
 - `PUBLIC_HOSTED_ZONE_ID`
 - `PUBLIC_HOSTED_ZONE_NAME`
-- `VAPI_PUBLIC_KEY` as an environment secret
+- the Vapi private API key secret ARN; no Vapi browser/public key is used
 
 The controller keeps the Vapi private key and generated Connect password only
 in process memory. Retained evidence contains hashes, fixed synthetic values,

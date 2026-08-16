@@ -178,7 +178,12 @@ class SecurePreflightGateTests(unittest.TestCase):
             "cargo_lock_sha256": "b" * 64,
         }
         controller.secure_preflight_binary_sha256 = None
-        controller.validate_inputs()
+        with mock.patch.object(
+            CONTROLLER.shutil,
+            "which",
+            return_value="/usr/local/bin/session-manager-plugin",
+        ):
+            controller.validate_inputs()
         self.assertEqual(
             controller.secure_preflight_binary_sha256,
             CONTROLLER.sha256_file(probe),
@@ -187,7 +192,23 @@ class SecurePreflightGateTests(unittest.TestCase):
         link = self.temporary / "probe-link"
         link.symlink_to(probe)
         controller.args.direct_secure_probe = link
-        with self.assertRaises(CONTROLLER.QualificationError):
+        with (
+            mock.patch.object(
+                CONTROLLER.shutil,
+                "which",
+                return_value="/usr/local/bin/session-manager-plugin",
+            ),
+            self.assertRaises(CONTROLLER.QualificationError),
+        ):
+            controller.validate_inputs()
+
+        controller.args.direct_secure_probe = probe
+        with (
+            mock.patch.object(CONTROLLER.shutil, "which", return_value=None),
+            self.assertRaisesRegex(
+                CONTROLLER.QualificationError, "Session Manager plugin is unavailable"
+            ),
+        ):
             controller.validate_inputs()
 
     def test_browser_readiness_surfaces_bounded_redacted_early_exit(self):
@@ -338,11 +359,13 @@ class SecurePreflightGateTests(unittest.TestCase):
         run_controller.secure_preflight_cleanup_required = False
         run_controller.secure_preflight_restoration_passed = False
         run_controller.secure_preflight_cleanup_passed = False
+        run_controller.database_reset_evidence = {}
         run_controller.validate_inputs = mock.Mock()
         run_controller.preflight = mock.Mock()
         run_controller.deploy = mock.Mock()
         run_controller.build_site = mock.Mock(return_value=(Path("site"), "digest"))
         run_controller.authenticate_agent = mock.Mock(return_value=Path("storage"))
+        run_controller.reset_test_database = mock.Mock()
 
         def fail_direct(_storage):
             run_controller.secure_preflight_cleanup_required = True
@@ -394,6 +417,10 @@ class SecurePreflightGateTests(unittest.TestCase):
     def test_run_orders_restoration_before_credentials_and_both_sources(self):
         source = inspect.getsource(CONTROLLER.Controller.run)
         self.assertLess(
+            source.index('self.reset_test_database("direct-secure-preflight")'),
+            source.index("self.direct_secure_preflight(storage)"),
+        )
+        self.assertLess(
             source.index("self.direct_secure_preflight(storage)"),
             source.index("self.initialize_vapi()"),
         )
@@ -404,6 +431,14 @@ class SecurePreflightGateTests(unittest.TestCase):
         self.assertLess(
             source.index("self.direct_secure_preflight(storage)"),
             source.index("self.web_smoke("),
+        )
+        self.assertLess(
+            source.index("self.reset_test_database(WEB_SCENARIO)"),
+            source.index("self.web_smoke("),
+        )
+        self.assertLess(
+            source.index('self.reset_test_database("vapi-sip-transfer")'),
+            source.index("self.sip_smoke("),
         )
         self.assertLess(
             source.index("self.direct_secure_preflight(storage)"),
@@ -460,6 +495,57 @@ class SecurePreflightGateTests(unittest.TestCase):
         self.assertNotIn('"commands=" +', source)
         self.assertNotIn("'commands=[", source)
 
+    def test_every_controller_ssm_program_uses_one_exact_validated_encoder(self):
+        source = (ROOT / "qualification" / "controller.py").read_text(encoding="utf-8")
+        self.assertEqual(source.count('"ssm",\n                "send-command"'), 5)
+        # Five dispatches plus the encoder definition itself.
+        self.assertEqual(source.count("encode_ssm_shell_parameters("), 6)
+
+        programs = (
+            [
+                "systemctl is-active bridgefu.service",
+                "curl --fail --silent --show-error --max-time 5 "
+                "http://127.0.0.1:9090/readyz",
+            ],
+            [
+                "set -euo pipefail",
+                "value='safe (value)'",
+                "printf '%s\\n' \"$value\"",
+            ],
+            [
+                "set -euo pipefail",
+                "install -d -m 0700 /var/lib/bridgefu/qualification/bfq-test1234",
+                "true",
+            ],
+        )
+        for commands in programs:
+            with self.subTest(commands=commands):
+                encoded = CONTROLLER.encode_ssm_shell_parameters(commands)
+                decoded = json.loads(encoded)
+                self.assertEqual(decoded, {"commands": commands})
+                checked = subprocess.run(
+                    ["bash", "-n"],
+                    input="\n".join(decoded["commands"]) + "\n",
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    timeout=10,
+                )
+                self.assertEqual(checked.returncode, 0, checked.stderr)
+
+        for commands in (
+            [],
+            [""],
+            ["true\nfalse"],
+            ["true\r"],
+            ["x" * 8193],
+            ["true"] * 1025,
+            ["x" * 8192] * 8,
+        ):
+            with self.subTest(invalid_commands=len(commands)):
+                with self.assertRaises(CONTROLLER.QualificationError):
+                    CONTROLLER.encode_ssm_shell_parameters(commands)
+
     def test_browser_mode_has_private_readiness_and_no_session_contract(self):
         browser = ROOT / "qualification" / "browser" / "agent-workspace-playwright.mjs"
         text = browser.read_text(encoding="utf-8")
@@ -496,7 +582,7 @@ class SecurePreflightGateTests(unittest.TestCase):
             "vapi_transfer_invoked": True,
             "handoff_context_stored": True,
             "bridgefu_received_correlation_header": True,
-            "vapi_destination_sips_signaling": True,
+            "vapi_destination_uri_scheme_allowed": True,
             "vapi_destination_tls_transport": True,
             "vapi_destination_media_profile_allowed": True,
             "vapi_destination_media_posture_consistent": True,
@@ -553,6 +639,33 @@ class SecurePreflightGateTests(unittest.TestCase):
                 "checks": secure_checks,
                 "passed": True,
             },
+            "database_resets": {
+                stage: {
+                    "schema_version": 1,
+                    "producer": "bridgefu-qualification-database-reset@1",
+                    "stage": stage,
+                    "test_delete_verified": True,
+                    "prior_calls_terminal": True,
+                    "fresh_database": True,
+                    "bridgefu_ready": True,
+                    "redacted": True,
+                }
+                for stage in (
+                    "direct-secure-preflight",
+                    "bridgefu-web-sdk-handoff",
+                    "vapi-sip-transfer",
+                )
+            },
+            "vapi_provisioning_resilience": {
+                "schema_version": 1,
+                "producer": "bridgefu-vapi-provisioning-resilience@1",
+                "ambiguous_create_reconciled": True,
+                "first_cycle_deleted": True,
+                "second_cycle_recreated": True,
+                "exact_owner_resources_present": True,
+                "redacted": True,
+                "passed": True,
+            },
             "scenarios": [
                 {
                     "id": "vapi-sip-transfer",
@@ -567,7 +680,7 @@ class SecurePreflightGateTests(unittest.TestCase):
                     "passed": True,
                 },
                 {
-                    "id": "vapi-web-transfer",
+                    "id": "bridgefu-web-sdk-handoff",
                     "source_observation_sha256": "1" * 64,
                     "agent_observation_sha256": "2" * 64,
                     "runtime_security_evidence_sha256": "3" * 64,

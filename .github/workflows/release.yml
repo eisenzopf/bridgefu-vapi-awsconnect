@@ -90,7 +90,7 @@ jobs:
                .evidence_schema_version == 2 and
                .secure_preflight_passed == true and
                .required_checks_passed == true and
-               .scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"] and
+               .scenario_ids == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"] and
                .zero_resource_proof == true] | all)' \
             target/publication/receipt.json >/dev/null
           if [[ "$(jq -r .release_ready bridgefu.lock.json)" != true ]]; then
@@ -99,7 +99,7 @@ jobs:
                 .evidence_schema_version == 2 and
                 .secure_preflight_passed == true and
                 .required_checks_passed == true and
-                .scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"] and
+                .scenario_ids == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"] and
                 .zero_resource_proof == true] | all)' \
               target/publication/receipt.json >/dev/null
             echo 'bridgefu.lock.json is gated by the signed dual-region qualification receipt.'
@@ -168,7 +168,7 @@ jobs:
             '.supported_regions == $receipt[0].regional_amis and
              .object_versions.exact == true and
              .bridgefu.commit == $receipt[0].bridgefu_commit and
-             .bridgefu.required_rvoip_version == "0.3.7" and
+             .bridgefu.required_rvoip_version == "0.3.8" and
              .bridgefu.required_rvoip_source ==
                "registry+https://github.com/rust-lang/crates.io-index"' \
             target/verified/us-east-1/manifest.json >/dev/null
@@ -232,7 +232,7 @@ jobs:
             test "$(jq -r '.Images[0].Tags[] | select(.Key == "BridgefuCommit") | .Value' \
               <<<"$image")" = "$(jq -r .bridgefu_commit target/publication/receipt.json)"
             test "$(jq -r '.Images[0].Tags[] | select(.Key == "BridgefuRvoipVersion") | .Value' \
-              <<<"$image")" = 0.3.7
+              <<<"$image")" = 0.3.8
             permissions="$(aws ec2 describe-image-attribute --region "$region" \
               --image-id "$ami" --attribute launchPermission --output json)"
             jq -e '[.LaunchPermissions[]? | select(.Group == "all")] |

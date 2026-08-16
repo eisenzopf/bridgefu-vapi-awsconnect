@@ -32,6 +32,9 @@ CORRELATION_HEADER = "X-Correlation-Id"
 PREPARE_TOOL_NAME = "prepare_handoff"
 TEMPLATE_PREPARE_TOOL_NAME = "prepare_bridgefu_amazon_connect_transfer"
 DIRECT_TRANSFER_TOOL_NAME = "bridgefu_transfer_to_amazon_connect"
+DIRECT_BROWSER_TOOL_NAME = "bridgefu_direct_handoff"
+DIRECT_HANDOFF_ISSUER = "bridgefu-vapi-awsconnect-qualification"
+DIRECT_HANDOFF_AUDIENCE = "bridgefu-direct-handoff"
 DISPLAY_FIELDS = (
     "customer_name",
     "issue_summary",
@@ -76,6 +79,19 @@ class HandoffStore(Protocol):
         bridgefu_call_id: str,
         attachment_expires_at: int,
     ) -> None: ...
+
+
+class DirectHandoffStore(Protocol):
+    def prepare_direct(
+        self,
+        session_id: str,
+        token_id: str,
+        identity: VapiIdentity,
+        values: Mapping[str, str],
+        updated_at: int,
+    ) -> Mapping[str, str]: ...
+
+    def mark_direct_started(self, session_id: str, updated_at: int) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -134,7 +150,7 @@ def _vapi_identity(message: Mapping[str, Any]) -> VapiIdentity:
 def verify_vapi_binding(event: Mapping[str, Any], binding: Mapping[str, Any]) -> None:
     """Bind authenticated requests to the exact setup-created assistant."""
     if binding == {"status": "unbound"}:
-        return
+        raise HandoffError("vapi_identity_binding_invalid", 500)
     if (
         not isinstance(binding, Mapping)
         or set(binding) != {"status", "organization_id", "assistant_id"}
@@ -257,6 +273,142 @@ def _tool_call(
         return tool_call_id, validate_values(values, configured_fields)
     except ScreenPopConfigError as error:
         raise HandoffError(str(error)) from None
+
+
+def _direct_tool_call(
+    message: Mapping[str, Any],
+    configured_fields: tuple[ScreenPopField, ...],
+) -> tuple[str, str, Mapping[str, str]]:
+    calls = message.get("toolCallList")
+    if (
+        not isinstance(calls, list)
+        or len(calls) != 1
+        or not isinstance(calls[0], Mapping)
+    ):
+        raise HandoffError("invalid_tool_call")
+    call = calls[0]
+    function = call.get("function")
+    if function is None:
+        name = call.get("name")
+        arguments = call.get("arguments")
+        parameters = call.get("parameters")
+    elif isinstance(function, Mapping):
+        if any(key in call for key in ("name", "arguments", "parameters")):
+            raise HandoffError("conflicting_tool_arguments")
+        if call.get("type") not in (None, "function"):
+            raise HandoffError("invalid_tool_call")
+        name = function.get("name")
+        arguments = function.get("arguments")
+        parameters = function.get("parameters")
+    else:
+        raise HandoffError("invalid_tool_call")
+    if name != DIRECT_BROWSER_TOOL_NAME:
+        raise HandoffError("invalid_tool_name")
+    tool_call_id = _bounded_identifier(call.get("id"), "tool_call_id")
+    if arguments is not None and parameters is not None and arguments != parameters:
+        raise HandoffError("conflicting_tool_arguments")
+    supplied = dict(_tool_arguments(arguments if arguments is not None else parameters))
+    token = supplied.pop("handoff_token", None)
+    if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,4096}", token):
+        raise HandoffError("invalid_direct_handoff_token", 401)
+    try:
+        values = validate_values(supplied, configured_fields)
+    except ScreenPopConfigError as error:
+        raise HandoffError(str(error)) from None
+    return tool_call_id, token, values
+
+
+def verify_direct_handoff_token(
+    token: str,
+    signing_key: bytes,
+    *,
+    now: int | None = None,
+) -> tuple[str, str]:
+    """Verify the qualification HS256 token without exposing its raw claims."""
+    if not 32 <= len(signing_key) <= 4096:
+        raise HandoffError("invalid_direct_handoff_key", 500)
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise HandoffError("invalid_direct_handoff_token", 401)
+
+    def decode(value: str) -> bytes:
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+            raise HandoffError("invalid_direct_handoff_token", 401)
+        try:
+            return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+        except ValueError:
+            raise HandoffError("invalid_direct_handoff_token", 401) from None
+
+    signing_input = f"{parts[0]}.{parts[1]}".encode("ascii")
+    expected = hmac.new(signing_key, signing_input, hashlib.sha256).digest()
+    if not hmac.compare_digest(expected, decode(parts[2])):
+        raise HandoffError("invalid_direct_handoff_token", 401)
+    try:
+        header = json.loads(decode(parts[0]))
+        claims = json.loads(decode(parts[1]))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HandoffError("invalid_direct_handoff_token", 401) from None
+    current = int(time.time()) if now is None else now
+    if (
+        header != {"alg": "HS256", "typ": "JWT"}
+        or not isinstance(claims, Mapping)
+        or set(claims) != {"aud", "exp", "iat", "iss", "jti", "sub"}
+        or claims.get("iss") != DIRECT_HANDOFF_ISSUER
+        or claims.get("aud") != DIRECT_HANDOFF_AUDIENCE
+        or not isinstance(claims.get("iat"), int)
+        or not isinstance(claims.get("exp"), int)
+        or claims["iat"] > current + 5
+        or claims["exp"] < current - 5
+        or claims["exp"] <= claims["iat"]
+        or claims["exp"] - claims["iat"] > 7200
+    ):
+        raise HandoffError("invalid_direct_handoff_token", 401)
+    return (
+        _bounded_identifier(claims.get("sub"), "direct_session_id"),
+        _bounded_identifier(claims.get("jti"), "direct_token_id"),
+    )
+
+
+def direct_browser_handoff(
+    event: Mapping[str, Any],
+    *,
+    binding: Mapping[str, Any],
+    signing_key: bytes,
+    store: DirectHandoffStore,
+    configured_fields: tuple[ScreenPopField, ...],
+    replace: Callable[[str, str, str, str], None],
+    now: int | None = None,
+) -> dict[str, Any]:
+    """Store validated context before replacing one server-bound Vapi leg."""
+    verify_vapi_binding(event, binding)
+    message = _message(event, "tool-calls")
+    identity = _vapi_identity(message)
+    tool_call_id, token, values = _direct_tool_call(message, configured_fields)
+    session_id, token_id = verify_direct_handoff_token(token, signing_key, now=now)
+    updated_at = int(time.time()) if now is None else now
+    prepared = store.prepare_direct(session_id, token_id, identity, values, updated_at)
+    if set(prepared) != {"call_id", "leg_id", "route_id", "idempotency_key"}:
+        raise HandoffError("direct_handoff_binding_invalid", 500)
+    call_id = _bounded_identifier(prepared.get("call_id"), "bridgefu_call_id")
+    leg_id = _bounded_identifier(prepared.get("leg_id"), "bridgefu_leg_id")
+    route_id = _bounded_identifier(prepared.get("route_id"), "bridgefu_route_id")
+    idempotency_key = _bounded_identifier(
+        prepared.get("idempotency_key"), "bridgefu_idempotency_key"
+    )
+    replace(call_id, leg_id, route_id, idempotency_key)
+    store.mark_direct_started(session_id, updated_at)
+    return {
+        "results": [
+            {
+                "toolCallId": tool_call_id,
+                "result": json.dumps(
+                    {"accepted": True, "spoken": ""},
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            }
+        ]
+    }
 
 
 def tool_name(event: Mapping[str, Any]) -> str:
@@ -397,7 +549,7 @@ def transfer_destination(
     correlation_key: bytes,
     deployment_id: str,
     reserve: Callable[[str, str], SipReservation],
-    expected_scheme: str,
+    sip_security: str,
     now: int | None = None,
 ) -> dict[str, Any]:
     message = _message(event, "transfer-destination-request")
@@ -418,12 +570,24 @@ def transfer_destination(
         + hashlib.sha256(correlation_id.encode("ascii")).hexdigest()[:48]
     )
     reservation = reserve(correlation_id, idempotency_key)
-    if expected_scheme not in ("sips", "sip") or not reservation.uri.startswith(
-        f"{expected_scheme}:"
-    ):
+    if sip_security not in ("sips_optional_srtp", "sips_srtp", "sip_rtp"):
         raise HandoffError("bridgefu_destination_invalid", 502)
-    if expected_scheme == "sips" and not reservation.uri.endswith(";transport=tls"):
-        raise HandoffError("bridgefu_destination_invalid", 502)
+    if sip_security in ("sips_optional_srtp", "sips_srtp"):
+        if not reservation.uri.startswith("sips:") or not reservation.uri.endswith(
+            ";transport=tls"
+        ):
+            raise HandoffError("bridgefu_destination_invalid", 502)
+        sip_uri = reservation.uri
+        if sip_security == "sips_optional_srtp":
+            # Vapi currently fails dynamic transfers to a `sips:` destination,
+            # but honors the standard SIP URI transport parameter. Keep the
+            # reserved user/host/port bytes exact while requesting TLS
+            # signaling independently of the media-security offer.
+            sip_uri = "sip:" + reservation.uri[len("sips:") :]
+    else:
+        if not reservation.uri.startswith("sip:"):
+            raise HandoffError("bridgefu_destination_invalid", 502)
+        sip_uri = reservation.uri
     _bounded_identifier(reservation.call_id, "bridgefu_call_id")
     if reservation.expires_at <= now:
         raise HandoffError("bridgefu_destination_expired", 502)
@@ -436,11 +600,7 @@ def transfer_destination(
     return {
         "destination": {
             "type": "sip",
-            # Preserve the exact one-use URI returned by Bridgefu. In the
-            # production posture this is a `sips:` URI with `transport=tls`;
-            # changing its scheme would alter the reserved route's security
-            # contract and is not required by Vapi's SIP destination schema.
-            "sipUri": reservation.uri,
+            "sipUri": sip_uri,
             "sipHeaders": {CORRELATION_HEADER: correlation_id},
             # A SIP-originated Vapi call defaults to REFER, which asks the
             # source carrier/client to originate the destination leg. Bridgefu

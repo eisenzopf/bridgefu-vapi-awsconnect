@@ -35,7 +35,7 @@ def main() -> int:
             raise SystemExit(f"unexpected rvoip version: {package['name']}")
         if package.get("source") != lock["required_rvoip_source"]:
             raise SystemExit(f"non-crates.io rvoip source: {package['name']}")
-    print(f"verified {len(packages)} crates.io rvoip 0.3.7 packages")
+    print(f"verified {len(packages)} crates.io rvoip 0.3.8 packages")
     return 0
 
 

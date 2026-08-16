@@ -14,8 +14,8 @@ from pathlib import Path
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     lock = json.loads((root / "bridgefu.lock.json").read_text())
-    if lock["required_rvoip_version"] != "0.3.7":
-        raise SystemExit("bridgefu.lock.json must pin rvoip 0.3.7")
+    if lock["required_rvoip_version"] != "0.3.8":
+        raise SystemExit("bridgefu.lock.json must pin rvoip 0.3.8")
     if "crates.io-index" not in lock["required_rvoip_source"]:
         raise SystemExit("rvoip source must be crates.io")
     source_templates = [root / "cloudformation" / "template.yaml"] + sorted(

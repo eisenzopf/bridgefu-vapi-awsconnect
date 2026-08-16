@@ -1619,9 +1619,9 @@ mod tests {
     }
 
     #[test]
-    fn manifest_and_lock_pin_exact_crates_io_rvoip_037() {
+    fn manifest_and_lock_pin_exact_crates_io_rvoip_038() {
         let manifest = include_str!("../Cargo.toml");
-        assert!(manifest.contains("rvoip-sip = { version = \"=0.3.7\", default-features = false }"));
+        assert!(manifest.contains("rvoip-sip = { version = \"=0.3.8\", default-features = false }"));
         assert!(!manifest.contains("path ="));
         assert!(!manifest.contains("git ="));
         let lock = include_str!("../Cargo.lock");
@@ -1632,7 +1632,7 @@ mod tests {
             .split_once("[[package]]")
             .expect("next package")
             .0;
-        assert!(package.contains("version = \"0.3.7\""));
+        assert!(package.contains("version = \"0.3.8\""));
         assert!(
             package.contains("source = \"registry+https://github.com/rust-lang/crates.io-index\"")
         );

@@ -284,6 +284,13 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/publications/*'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/vapi-phone.json'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/vapi-phone-intent.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/vapi-phone-request.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/vapi-direct-tool.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/vapi-direct-tool-intent.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/vapi-direct-tool-request.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/vapi-direct-assistant.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/vapi-direct-assistant-intent.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/vapi-direct-assistant-request.json'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/acm-validation-records.json'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/latest/*'
@@ -294,6 +301,8 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/runs/*/state.json'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/candidates/publications/*/state.json'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/vapi-phone.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/vapi-direct-tool.json'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/vapi-direct-assistant.json'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/qualification/bfq-*/ownership/acm-validation-records.json'
               - Sid: InspectCandidateOwnershipTags
                 Effect: Allow
@@ -332,6 +341,19 @@ Resources:
                 Resource:
                   - !Ref VapiApiKeySecretArnUsWest2
                   - !Ref VapiApiKeySecretArnUsEast1
+              - Sid: ReadExactQualificationVapiIdentityBindings
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:bridgefu-bfq-*-vapi-identity-*'
+                  - !Sub 'arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:bridgefu/bfq-*/qualification/direct-vapi-identity-*'
+              - Sid: UnbindOnlyTaggedDirectQualificationVapiIdentity
+                Effect: Allow
+                Action: secretsmanager:PutSecretValue
+                Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:bridgefu/bfq-*/qualification/direct-vapi-identity-*'
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/ManagedBy: bridgefu-qualification
               - Sid: DeleteOnlyDisposableQualificationStacks
                 Effect: Allow
                 Action:

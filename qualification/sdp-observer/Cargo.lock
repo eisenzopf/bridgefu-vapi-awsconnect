@@ -395,9 +395,9 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rvoip-sip-core"
-version = "0.3.7"
+version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "280305d2da9f05ac2cf07d5dcb309f9ceea96dd19506ab160561de5539c3dcae"
+checksum = "341ead273581c4ba3bd51218af3abcc7b3dfefbc731618e6e1d71cb1719aba5d"
 dependencies = [
  "base64",
  "bytes",

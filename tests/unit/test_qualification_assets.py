@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -14,23 +15,39 @@ QUALIFICATION = ROOT / "qualification"
 
 
 class QualificationAssetTests(unittest.TestCase):
+    def pinned_bridgefu_checkout(self) -> Path:
+        candidates = [
+            Path(os.environ["BRIDGEFU_CHECKOUT"])
+            if "BRIDGEFU_CHECKOUT" in os.environ
+            else None,
+            ROOT / "target" / "pinned-bridgefu",
+            ROOT.parent / "bridgefu-main-clean",
+        ]
+        for candidate in candidates:
+            if (
+                candidate is not None
+                and (candidate / "sdk/typescript/package.json").is_file()
+            ):
+                return candidate
+        self.fail("the exact pinned Bridgefu checkout is required for SDK bundle tests")
+
     def test_matrix_contains_only_the_two_release_smokes(self):
         text = (QUALIFICATION / "matrix.yaml").read_text()
         scenarios = set(re.findall(r"^  - id: ([a-z0-9-]+)$", text, re.M))
-        self.assertEqual(scenarios, {"vapi-sip-transfer", "vapi-web-transfer"})
+        self.assertEqual(scenarios, {"vapi-sip-transfer", "bridgefu-web-sdk-handoff"})
         for removed_scope in ("soak", "failure_drill", "sip-rtp-pcmu"):
             self.assertNotIn(removed_scope, text)
         self.assertIn("dtmf_source_to_agent", text)
 
-    def test_sip_source_uses_exact_crates_io_rvoip_037(self):
+    def test_sip_source_uses_exact_crates_io_rvoip_038(self):
         crate = tomllib.loads((QUALIFICATION / "sip-client" / "Cargo.toml").read_text())
         self.assertEqual(
             crate["dependencies"]["rvoip-sip"],
-            {"version": "=0.3.7", "default-features": False},
+            {"version": "=0.3.8", "default-features": False},
         )
         lock = (QUALIFICATION / "sip-client" / "Cargo.lock").read_text()
         package = lock.split('name = "rvoip-sip"', 1)[1].split("[[package]]", 1)[0]
-        self.assertIn('version = "0.3.7"', package)
+        self.assertIn('version = "0.3.8"', package)
         self.assertIn(
             'source = "registry+https://github.com/rust-lang/crates.io-index"',
             package,
@@ -43,10 +60,60 @@ class QualificationAssetTests(unittest.TestCase):
             lock["repository"], "https://github.com/eisenzopf/bridgefu.git"
         )
         self.assertRegex(lock["commit"], r"^[0-9a-f]{40}$")
-        browser = (QUALIFICATION / "browser" / "vapi-web-playwright.mjs").read_text()
+        browser = (
+            QUALIFICATION / "browser" / "bridgefu-web-playwright.mjs"
+        ).read_text()
         self.assertIn('join(ROOT, "qualification/package.json")', browser)
+        for forbidden in ("VAPI_PUBLIC_KEY", "--assistant-id", "webCall"):
+            self.assertNotIn(forbidden, browser)
+        self.assertIn("/^bfs1\\.[A-Za-z0-9_.-]{1,4091}$/", browser)
+        self.assertIn("`token.${attachment.signaling_credential.token}`", browser)
+        self.assertNotIn(
+            "attachment.signaling_credential?.token !== attachment.token", browser
+        )
+        self.assertIn('required(options, "--route-attachment")', browser)
+        self.assertIn('required(options, "--prompt-pcm")', browser)
+        self.assertIn("const MEDIA_ESTABLISHMENT_DEADLINE_MS = 5_000;", browser)
+        self.assertIn(
+            "const PROMPT_STARTS_MS = Object.freeze([5_000, 10_000, 15_000]);",
+            browser,
+        )
+        self.assertIn("const PROBE_INITIAL_SILENCE_MS = 25_000;", browser)
+        self.assertIn("const PROBE_PULSES_PER_CYCLE = 1;", browser)
+        self.assertIn("const PROBE_PULSE_MS = 5_000;", browser)
+        self.assertIn("const REQUIRED_MARKER_EPISODES = 1;", browser)
+        self.assertIn("const REQUIRED_MARKER_ANALYSER_FRAMES = 50;", browser)
+        self.assertIn("const PROMPT_GAIN = 2.8;", browser)
+        self.assertIn('value.peerConnectionState === "connected"', browser)
+        self.assertIn("media.audioPacketsSent > 5", browser)
+        self.assertIn("media.audioBytesSent > 0", browser)
+        self.assertIn("media missed the spoken-trigger window", browser)
+        self.assertIn('required(options, "--signaling-hostname")', browser)
+        self.assertIn("--host-resolver-rules=MAP", browser)
+        makefile = (ROOT / "Makefile").read_text()
+        self.assertIn(
+            "node --check qualification/browser/bridgefu-web-playwright.mjs",
+            makefile,
+        )
+        self.assertNotIn("vapi-web-playwright.mjs", makefile)
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        self.assertIn("Test the exact pinned Bridgefu browser SDK", workflow)
+        self.assertIn(
+            "npm --prefix target/pinned-bridgefu/sdk/typescript test", workflow
+        )
 
-    def test_vapi_web_demo_site_is_owned_and_built_by_this_repository(self):
+    def test_manual_qualification_gate_restores_the_pinned_browser(self):
+        makefile = (ROOT / "Makefile").read_text()
+        npm_ci = "npm --prefix qualification ci --ignore-scripts"
+        browser_install = (
+            "PLAYWRIGHT_BROWSERS_PATH=0 npm --prefix qualification exec "
+            "playwright install chromium"
+        )
+        self.assertIn(npm_ci, makefile)
+        self.assertIn(browser_install, makefile)
+        self.assertLess(makefile.index(npm_ci), makefile.index(browser_install))
+
+    def test_bridgefu_web_demo_site_is_owned_and_built_by_this_repository(self):
         controller = (QUALIFICATION / "controller.py").read_text()
         package = json.loads((QUALIFICATION / "package.json").read_text())
         self.assertNotIn("build-recipe-demo-site.py", controller)
@@ -60,11 +127,16 @@ class QualificationAssetTests(unittest.TestCase):
             run.index('self.phase = "web_site_validation"'),
             run.index('self.phase = "preflight"'),
         )
-        self.assertEqual(package["dependencies"]["@vapi-ai/web"], "2.5.2")
+        self.assertNotIn("@vapi-ai/web", package.get("dependencies", {}))
         self.assertEqual(package["devDependencies"]["esbuild"], "0.28.1")
+        app = (QUALIFICATION / "demo-site" / "app.js").read_text()
+        self.assertIn('from "@bridgefu/webrtc-browser"', app)
+        for forbidden in ("@vapi-ai/web", "VAPI_PUBLIC_KEY", "webCall", "new Vapi"):
+            self.assertNotIn(forbidden, app)
         for name in ("index.html", "style.css", "app.js"):
             self.assertTrue((QUALIFICATION / "demo-site" / name).is_file())
 
+        checkout = self.pinned_bridgefu_checkout()
         with tempfile.TemporaryDirectory() as directory:
             first = Path(directory) / "first"
             second = Path(directory) / "second"
@@ -75,6 +147,8 @@ class QualificationAssetTests(unittest.TestCase):
                         str(QUALIFICATION / "build_demo_site.py"),
                         "--output",
                         str(output),
+                        "--bridgefu-checkout",
+                        str(checkout),
                     ],
                     cwd=ROOT,
                     check=True,
@@ -99,10 +173,30 @@ class QualificationAssetTests(unittest.TestCase):
                     ),
                 )
             manifest = json.loads((first / "manifest.json").read_text())
+            source_lock = json.loads((ROOT / "bridgefu.lock.json").read_text())
             self.assertEqual(
                 manifest["producer"],
-                "bridgefu-vapi-awsconnect-qualification-site@1",
+                "bridgefu-vapi-awsconnect-qualification-site@2",
             )
+            self.assertEqual(manifest["schema_version"], 2)
+            self.assertEqual(manifest["bridgefu_commit"], source_lock["commit"])
+            self.assertEqual(
+                manifest["bridgefu_cargo_lock_sha256"],
+                source_lock["cargo_lock_sha256"],
+            )
+            self.assertEqual(
+                manifest["bridgefu_sdk"]["name"], "@bridgefu/webrtc-browser"
+            )
+            with zipfile.ZipFile(first_archive) as bundle:
+                javascript = bundle.read("app.js").decode()
+            for forbidden in ("@vapi-ai/web", "VAPI_PUBLIC_KEY", "webCall"):
+                self.assertNotIn(forbidden, javascript)
+            for marker in (
+                "bridgefu.handoff.v1",
+                "rvoip.webrtc.v1",
+                "bridgefu.attach.",
+            ):
+                self.assertIn(marker, javascript)
 
     def test_packer_creates_runtime_staging_directory_before_upload(self):
         packer = (ROOT / "image" / "bridgefu.pkr.hcl").read_text()
@@ -238,9 +332,10 @@ class QualificationAssetTests(unittest.TestCase):
         candidate = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
         publication = (ROOT / ".github" / "workflows" / "release.yml").read_text()
         self.assertIn(
-            "needs: [build-private-candidate, qualify-both-regions]", candidate
+            "needs: [build-private-candidate, qualify-regions-sequentially]", candidate
         )
-        self.assertIn("matrix:\n        region: [us-west-2, us-east-1]", candidate)
+        self.assertIn("for REGION in us-west-2 us-east-1; do", candidate)
+        self.assertNotIn("matrix:\n        region: [us-west-2, us-east-1]", candidate)
         self.assertIn("qualification/controller.py run", candidate)
         self.assertIn("bridgefu-vapi-sip-smoke", candidate)
         self.assertNotIn("--retain-on-failure", candidate)
@@ -248,6 +343,22 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("kms verify", publication)
         self.assertIn("modify-image-attribute", publication)
         self.assertNotIn("packer build", publication)
+
+    def test_live_workflows_install_the_exact_session_manager_plugin(self):
+        version = "1.2.835.0"
+        digest = "7c6dcad12518571cc7959a713e6a8ae1bdf6ed66fd9bee37dc189e39ca58ae03"
+        for workflow_name in ("candidate.yml", "remote-qualification.yml"):
+            workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text()
+            self.assertIn(f"session_manager_version={version}", workflow)
+            self.assertIn(f"session_manager_sha256={digest}", workflow)
+            self.assertIn(
+                "session-manager-downloads/plugin/$session_manager_version/"
+                "ubuntu_64bit/session-manager-plugin.deb",
+                workflow,
+            )
+            self.assertIn("sha256sum --check --strict", workflow)
+            self.assertIn("sudo dpkg --install", workflow)
+            self.assertIn("session-manager-plugin --version", workflow)
 
     def test_release_aws_sessions_cover_bounded_build_and_live_runs(self):
         qualification_role = (
@@ -286,7 +397,7 @@ class QualificationAssetTests(unittest.TestCase):
             ".evidence_schema_version == 2",
             ".secure_preflight_passed == true",
             ".required_checks_passed == true",
-            '.scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"]',
+            '.scenario_ids == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"]',
             ".zero_resource_proof == true",
         ):
             self.assertGreaterEqual(receipt_gate.count(assertion), 2)
@@ -307,11 +418,11 @@ class QualificationAssetTests(unittest.TestCase):
         )
         self.assertEqual(
             crate["dependencies"]["rvoip-sip-core"],
-            "=0.3.7",
+            "=0.3.8",
         )
         lock = (QUALIFICATION / "sdp-observer" / "Cargo.lock").read_text()
         package = lock.split('name = "rvoip-sip-core"', 1)[1].split("[[package]]", 1)[0]
-        self.assertIn('version = "0.3.7"', package)
+        self.assertIn('version = "0.3.8"', package)
         self.assertIn(
             'source = "registry+https://github.com/rust-lang/crates.io-index"',
             package,
@@ -339,11 +450,11 @@ class QualificationAssetTests(unittest.TestCase):
         )
         self.assertEqual(
             crate["dependencies"]["rvoip-sip"],
-            {"version": "=0.3.7", "default-features": False},
+            {"version": "=0.3.8", "default-features": False},
         )
         lock = (QUALIFICATION / "direct-secure-probe" / "Cargo.lock").read_text()
         package = lock.split('name = "rvoip-sip"', 1)[1].split("[[package]]", 1)[0]
-        self.assertIn('version = "0.3.7"', package)
+        self.assertIn('version = "0.3.8"', package)
         self.assertIn(
             'source = "registry+https://github.com/rust-lang/crates.io-index"',
             package,
@@ -359,6 +470,21 @@ class QualificationAssetTests(unittest.TestCase):
             ci,
         )
         self.assertIn("cargo clippy --locked --all-targets", ci)
+        self.assertIn(
+            "name: qualification-native-clients-${{ github.sha }}",
+            ci,
+        )
+        self.assertIn(
+            "qualification/sip-client/target/aarch64-unknown-linux-musl/"
+            "release/bridgefu-vapi-sip-smoke",
+            ci,
+        )
+        self.assertIn(
+            "qualification/direct-secure-probe/target/"
+            "aarch64-unknown-linux-musl/release/bridgefu-direct-secure-probe",
+            ci,
+        )
+        self.assertIn("retention-days: 7", ci)
 
         workflows = {
             name: (ROOT / ".github" / "workflows" / name).read_text()
@@ -373,7 +499,7 @@ class QualificationAssetTests(unittest.TestCase):
             self.assertIn("file \"$binary\" | grep -F 'ARM aarch64'", workflow)
             self.assertIn("file \"$binary\" | grep -F 'statically linked'", workflow)
             self.assertIn('"$binary" --help >/dev/null', workflow)
-            self.assertIn('.req == "=0.3.7"', workflow)
+            self.assertIn('.req == "=0.3.8"', workflow)
             self.assertIn(
                 '.source == "registry+https://github.com/rust-lang/crates.io-index"',
                 workflow,
@@ -422,7 +548,7 @@ class QualificationAssetTests(unittest.TestCase):
         for check in required_preflight_checks:
             self.assertIn(f'"{check}"', receipt_gate)
         self.assertIn(
-            '([.scenarios[].id] | sort) == ["vapi-sip-transfer","vapi-web-transfer"]',
+            '([.scenarios[].id] | sort) == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"]',
             receipt_gate,
         )
         for attestation in (
@@ -441,7 +567,7 @@ class QualificationAssetTests(unittest.TestCase):
             )
             self.assertIn(".required_checks_passed == true", signed_receipt_gate)
             self.assertIn(
-                '.scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"]',
+                '.scenario_ids == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"]',
                 signed_receipt_gate,
             )
 
@@ -465,16 +591,73 @@ class QualificationAssetTests(unittest.TestCase):
         agent = (
             QUALIFICATION / "browser" / "agent-workspace-playwright.mjs"
         ).read_text()
-        web = (QUALIFICATION / "browser" / "vapi-web-playwright.mjs").read_text()
+        web = (QUALIFICATION / "browser" / "bridgefu-web-playwright.mjs").read_text()
         sip = (QUALIFICATION / "sip-client" / "src" / "main.rs").read_text()
         evidence_schema = (
             QUALIFICATION / "schemas" / "evidence-v1.schema.json"
         ).read_text()
         self.assertNotIn("CHECKS = {", controller)
         self.assertIn("dtmf_source_to_agent_observed", agent)
+        self.assertIn('sendDigitsViaConnectStreams(page, "6")', agent)
+        self.assertIn('clickNestedNumberPadDigit(page, "6", 10_000)', agent)
+        self.assertIn("const PROBE_PULSES_PER_CYCLE = 1;", agent)
+        self.assertIn("const PROBE_PULSE_MS = 5_000;", agent)
+        self.assertIn("const REQUIRED_MARKER_EPISODES = 1;", agent)
+        self.assertIn("const REQUIRED_MARKER_ANALYSER_FRAMES = 50;", agent)
+        self.assertIn("const PROBE_DTMF_SIX_START_MS = 6_000;", agent)
+        self.assertIn("const PROBE_DTMF_SIX_DURATION_MS = 1_000;", agent)
+        self.assertIn("* 12_000", agent)
         self.assertIn("dtmf_agent_to_source_observed", web)
+        self.assertIn("agentMarkerMaxPower", web)
+        self.assertIn("agentMarkerMaxPurity", web)
+        self.assertIn("agentDtmfLowMaxPower", web)
+        self.assertIn("agentDtmfHighMaxPower", web)
+        self.assertIn("lowPurity > 0.12", web)
+        self.assertIn("highPurity > 0.12", web)
+        install_probe = web[
+            web.index("function installProbe()") : web.index(
+                "async function probeSnapshot"
+            )
+        ]
+        self.assertIn("const agentMarkerHz = 880;", install_probe)
+        self.assertNotIn("AGENT_MARKER_HZ", install_probe)
         self.assertIn("dtmf_source_to_agent_frames_sent", sip)
         self.assertIn('"dtmf_source_to_agent": {"const": true}', evidence_schema)
+
+    def test_web_smoke_reports_only_closed_startup_failure_categories(self):
+        demo = (QUALIFICATION / "demo-site" / "app.js").read_text()
+        web = (QUALIFICATION / "browser" / "bridgefu-web-playwright.mjs").read_text()
+        for field in (
+            "errorType",
+            "peerConnectionState",
+            "iceConnectionState",
+            "iceGatheringState",
+            "signalingState",
+        ):
+            self.assertIn(field, demo)
+            self.assertIn(field, web)
+        self.assertIn("STARTUP_ERROR_TYPES", web)
+        self.assertIn("failStartup(value)", web)
+        self.assertIn("Bridgefu WebRTC start failed e=", web)
+        self.assertIn("QUALIFICATION_STUN_URLS", web)
+        self.assertIn("l4s=${value.iceCandidateSummary.udpIpv4Srflx}", web)
+        self.assertIn("iceCandidateSummary", web)
+        self.assertIn("remoteIceCandidateSummary", web)
+        self.assertIn("statsRemoteCandidateSummary", web)
+        self.assertIn("candidatePairSummary", web)
+        self.assertIn("statsSamples", web)
+        self.assertIn("setInterval(() => void sampleStats(), 100)", web)
+        self.assertIn("remoteCandidateAssociationSummary", web)
+        self.assertIn("localDescriptionSummary", web)
+        self.assertIn("remoteDescriptionSummary", web)
+        self.assertIn("transceiverSummary", web)
+        self.assertIn("uniqueIceUfrag", web)
+        self.assertIn("bundleMids", web)
+        self.assertIn("mid=${value.remoteCandidateAssociationSummary", web)
+        self.assertIn("rd=${value.remoteDescriptionSummary", web)
+        self.assertIn("r4h=${value.remoteIceCandidateSummary", web)
+        self.assertIn("pair=${value.candidatePairSummary", web)
+        self.assertNotIn("sdp:", web.split("function failStartup", 1)[1])
 
     def test_connect_available_is_selected_before_either_source_starts(self):
         controller = (QUALIFICATION / "controller.py").read_text()
@@ -486,12 +669,33 @@ class QualificationAssetTests(unittest.TestCase):
         )[0]
         self.assertLess(
             web.index("ensure_connect_agent_available"),
-            web.index("vapi-web-playwright.mjs"),
+            web.index("bridgefu-web-playwright.mjs"),
         )
         self.assertLess(
             sip.index("ensure_connect_agent_available"),
             sip.index('"send-command"'),
         )
+
+    def test_web_smoke_preserves_both_browser_failure_diagnostics(self):
+        controller = (QUALIFICATION / "controller.py").read_text()
+        web = controller.split("    def web_smoke(", 1)[1].split(
+            "    def cleanup_sip_transients(", 1
+        )[0]
+        self.assertIn("browser_errors: list[str] = []", web)
+        self.assertIn("Bridgefu Web SDK smoke source", web)
+        self.assertIn("Amazon Connect Web smoke observer", web)
+        self.assertIn('QualificationError("; ".join(browser_errors))', web)
+
+        agent = (
+            QUALIFICATION / "browser" / "agent-workspace-playwright.mjs"
+        ).read_text()
+        for diagnostic in (
+            "received_packets=",
+            "received_bytes=",
+            "active_frames=",
+            "max_rms=",
+        ):
+            self.assertIn(diagnostic, agent)
 
 
 if __name__ == "__main__":

@@ -35,11 +35,11 @@ if ! cargo metadata --locked --format-version 1 \
     [.packages[] | select(.name | startswith("rvoip"))] as $rvoip |
     ($rvoip | length > 0) and
     ([$rvoip[] | select(
-      .version != "0.3.7" or
+      .version != "0.3.8" or
       (.source // "") != "registry+https://github.com/rust-lang/crates.io-index"
     )] | length == 0)
   ' >/dev/null; then
-  echo "every rvoip package must be crates.io version 0.3.7" >&2
+  echo "every rvoip package must be crates.io version 0.3.8" >&2
   exit 1
 fi
 
@@ -80,5 +80,5 @@ sudo rm -rf /var/cache/dnf /root/.cargo /home/ec2-user/.cargo
 sudo tee /etc/bridgefu-image-release >/dev/null <<EOF
 release=$BRIDGEFU_RELEASE_VERSION
 bridgefu_commit=$BRIDGEFU_COMMIT
-rvoip_version=0.3.7
+rvoip_version=0.3.8
 EOF

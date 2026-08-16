@@ -290,6 +290,7 @@ def main() -> int:
         build_lambdas(root, lambda_output)
         replacements = {
             "RELEASE_VERSION": args.version,
+            "RELEASE_PREFIX": release_prefix,
             "NESTED_TEMPLATE_BASE_URL": (
                 f"{args.public_base_url.rstrip('/')}/{release_prefix}/"
                 f"{args.version}/cloudformation"
@@ -390,7 +391,7 @@ def main() -> int:
                 "templateURL": template_url,
                 "stackName": "bridgefu-vapi-connect",
                 "param_DeploymentId": "support",
-                "param_InstanceType": "t4g.large",
+                "param_InstanceType": "c7g.2xlarge",
             }
         )
         quick_create = {

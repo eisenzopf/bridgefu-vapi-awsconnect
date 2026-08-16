@@ -4,7 +4,7 @@
 //! from Bridgefu's public TLS port to this observer's separate local listener;
 //! Bridgefu and its control plane remain running. The observer terminates the
 //! same TLS posture, frames and parses the decrypted message through exact
-//! crates.io `rvoip-sip-core = 0.3.7`, emits a deliberately lossy summary, and
+//! crates.io `rvoip-sip-core = 0.3.8`, emits a deliberately lossy summary, and
 //! exits. It never logs or persists raw SIP, SDP, addresses, identifiers, or
 //! key material.
 

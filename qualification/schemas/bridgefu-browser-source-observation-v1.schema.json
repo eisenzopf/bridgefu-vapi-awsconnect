@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://bridgefu.dev/recipes/vapi-amazon-connect-screen-pop/qualification/vapi-source-observation-v1.schema.json",
-  "title": "Bridgefu controlled Vapi browser source observation",
+  "$id": "https://bridgefu.dev/recipes/vapi-amazon-connect-screen-pop/qualification/bridgefu-browser-source-observation-v1.schema.json",
+  "title": "Bridgefu controlled WebRTC browser source observation",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -9,6 +9,7 @@
     "producer",
     "producer_revision_sha256",
     "site_bundle_sha256",
+    "browser_sdk_name",
     "browser_sdk_version",
     "execution_id",
     "scenario_id",
@@ -16,30 +17,31 @@
     "correlation_fingerprint",
     "source_call_fingerprint",
     "observed_at",
-    "vapi",
+    "bridgefu",
     "media",
     "hangup",
     "redacted"
   ],
   "properties": {
     "schema_version": {"const": 1},
-    "producer": {"const": "bridgefu-vapi-web-playwright@1"},
+    "producer": {"const": "bridgefu-webrtc-browser-playwright@1"},
     "producer_revision_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "site_bundle_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "browser_sdk_version": {"const": "2.5.2"},
+    "browser_sdk_name": {"const": "@bridgefu/webrtc-browser"},
+    "browser_sdk_version": {"const": "0.1.0"},
     "execution_id": {"type": "string", "pattern": "^bfq-[a-z0-9-]{4,28}$"},
-    "scenario_id": {"const": "vapi-web-transfer"},
+    "scenario_id": {"const": "bridgefu-web-sdk-handoff"},
     "hangup_origin": {"enum": ["source", "agent"]},
     "correlation_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{12}$"},
     "source_call_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{12}$"},
     "observed_at": {"type": "string", "format": "date-time"},
-    "vapi": {
+    "bridgefu": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["web_call_started", "transfer_trigger_sent", "call_end_observed"],
+      "required": ["webrtc_call_started", "server_handoff_triggered", "call_end_observed"],
       "properties": {
-        "web_call_started": {"const": true},
-        "transfer_trigger_sent": {"const": true},
+        "webrtc_call_started": {"const": true},
+        "server_handoff_triggered": {"const": true},
         "call_end_observed": {"const": true}
       }
     },
@@ -61,7 +63,7 @@
         "security": {"const": "srtp"},
         "source_marker_sent_at_ms": {
           "type": "array",
-          "minItems": 5,
+          "minItems": 1,
           "maxItems": 32,
           "items": {"type": "integer", "minimum": 1}
         },
@@ -73,12 +75,12 @@
         },
         "agent_marker_observed_at_ms": {
           "type": "array",
-          "minItems": 3,
+          "minItems": 1,
           "maxItems": 16,
           "items": {"type": "integer", "minimum": 1}
         },
         "source_to_agent_marker_frames_sent": {"type": "integer", "minimum": 5},
-        "agent_to_source_marker_frames": {"type": "integer", "minimum": 3},
+        "agent_to_source_marker_frames": {"type": "integer", "minimum": 50},
         "dtmf_agent_to_source_observed": {"const": true}
       }
     },

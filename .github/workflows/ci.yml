@@ -22,7 +22,7 @@ jobs:
           cargo metadata --locked --format-version 1 \
             --manifest-path qualification/sdp-observer/Cargo.toml \
             | jq -e '.packages[] | select(.name == "rvoip-sip-core") |
-              .version == "0.3.7" and
+              .version == "0.3.8" and
               .source == "registry+https://github.com/rust-lang/crates.io-index"'
 
   qualification-client:
@@ -45,12 +45,12 @@ jobs:
               select(.name == "bridgefu-direct-secure-probe") |
               .dependencies[] |
               select(.name == "rvoip-sip" and
-                .req == "=0.3.7" and
+                .req == "=0.3.8" and
                 .source == "registry+https://github.com/rust-lang/crates.io-index" and
                 .uses_default_features == false)] | length) == 1 and
             ([.packages[] |
               select(.name == "rvoip-sip" and
-                .version == "0.3.7" and
+                .version == "0.3.8" and
                 .source == "registry+https://github.com/rust-lang/crates.io-index")] |
               length) == 1' <<<"$metadata"
       - name: Build and launch the static release qualification clients
@@ -72,13 +72,21 @@ jobs:
             file "$binary" | grep -F 'statically linked'
             "$binary" --help >/dev/null
           done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qualification-native-clients-${{ github.sha }}
+          path: |
+            qualification/sip-client/target/aarch64-unknown-linux-musl/release/bridgefu-vapi-sip-smoke
+            qualification/direct-secure-probe/target/aarch64-unknown-linux-musl/release/bridgefu-direct-secure-probe
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/setup-node@v4
         with: {node-version: '22', cache: npm, cache-dependency-path: qualification/package-lock.json}
       - name: Check browser smoke harnesses
         run: |
           npm --prefix qualification ci --ignore-scripts
           node --check qualification/browser/agent-workspace-playwright.mjs
-          node --check qualification/browser/vapi-web-playwright.mjs
+          node --check qualification/browser/bridgefu-web-playwright.mjs
 
   validate:
     runs-on: ubuntu-latest
@@ -94,7 +102,27 @@ jobs:
           'cfn-lint>=1.30,<2'
           'ruff>=0.12,<1'
           -r qualification/requirements-runner.txt
+      - name: Checkout the exact Bridgefu source used by the SDK bundle
+        run: |
+          set -euo pipefail
+          repository="$(jq -r .repository bridgefu.lock.json)"
+          commit="$(jq -r .commit bridgefu.lock.json)"
+          git clone --filter=blob:none --no-checkout "$repository" target/pinned-bridgefu
+          git -C target/pinned-bridgefu checkout --detach "$commit"
+          test "$(sha256sum target/pinned-bridgefu/Cargo.lock | awk '{print $1}')" = \
+            "$(jq -r .cargo_lock_sha256 bridgefu.lock.json)"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: target/pinned-bridgefu/sdk/typescript/package-lock.json
+      - name: Test the exact pinned Bridgefu browser SDK
+        run: |
+          npm --prefix target/pinned-bridgefu/sdk/typescript ci --ignore-scripts
+          npm --prefix target/pinned-bridgefu/sdk/typescript test
       - name: Unit tests and static checks
+        env:
+          BRIDGEFU_CHECKOUT: target/pinned-bridgefu
         run: |
           python -m unittest discover -s tests/unit -v
           ruff check .

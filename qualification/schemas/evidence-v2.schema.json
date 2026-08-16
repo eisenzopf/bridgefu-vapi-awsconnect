@@ -4,7 +4,7 @@
   "title": "Bridgefu secure preflight and Vapi to Amazon Connect release evidence",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "release", "execution_id", "region", "started_at", "ended_at", "bridgefu_commit", "secure_preflight", "scenarios", "teardown", "redacted"],
+  "required": ["schema_version", "release", "execution_id", "region", "started_at", "ended_at", "bridgefu_commit", "secure_preflight", "database_resets", "vapi_provisioning_resilience", "scenarios", "teardown", "redacted"],
   "properties": {
     "schema_version": {"const": 2},
     "release": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$"},
@@ -81,6 +81,31 @@
         "passed": {"const": true}
       }
     },
+    "database_resets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["direct-secure-preflight", "bridgefu-web-sdk-handoff", "vapi-sip-transfer"],
+      "properties": {
+        "direct-secure-preflight": {"allOf": [{"$ref": "#/$defs/databaseReset"}, {"properties": {"stage": {"const": "direct-secure-preflight"}}}]},
+        "bridgefu-web-sdk-handoff": {"allOf": [{"$ref": "#/$defs/databaseReset"}, {"properties": {"stage": {"const": "bridgefu-web-sdk-handoff"}}}]},
+        "vapi-sip-transfer": {"allOf": [{"$ref": "#/$defs/databaseReset"}, {"properties": {"stage": {"const": "vapi-sip-transfer"}}}]}
+      }
+    },
+    "vapi_provisioning_resilience": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "producer", "ambiguous_create_reconciled", "first_cycle_deleted", "second_cycle_recreated", "exact_owner_resources_present", "redacted", "passed"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "producer": {"const": "bridgefu-vapi-provisioning-resilience@1"},
+        "ambiguous_create_reconciled": {"const": true},
+        "first_cycle_deleted": {"const": true},
+        "second_cycle_recreated": {"const": true},
+        "exact_owner_resources_present": {"const": true},
+        "redacted": {"const": true},
+        "passed": {"const": true}
+      }
+    },
     "scenarios": {
       "type": "array",
       "minItems": 2,
@@ -90,7 +115,7 @@
         "additionalProperties": false,
         "required": ["id", "source_observation_sha256", "agent_observation_sha256", "runtime_security_evidence_sha256", "runtime_security_media_profile", "runtime_security_media_keying", "runtime_security_media_suite", "runtime_security_srtp_negotiated", "checks", "passed"],
         "properties": {
-          "id": {"enum": ["vapi-sip-transfer", "vapi-web-transfer"]},
+          "id": {"enum": ["vapi-sip-transfer", "bridgefu-web-sdk-handoff"]},
           "source_observation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "agent_observation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "runtime_security_evidence_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -101,13 +126,13 @@
           "checks": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["vapi_call_connected", "vapi_transfer_invoked", "handoff_context_stored", "bridgefu_received_correlation_header", "vapi_destination_sips_signaling", "vapi_destination_tls_transport", "vapi_destination_media_profile_allowed", "vapi_destination_media_posture_consistent", "vapi_destination_answered", "amazon_connect_contact_connected", "configured_screen_pop_visible", "audio_source_to_agent", "audio_agent_to_source", "dtmf_source_to_agent", "source_call_ended"],
+            "required": ["vapi_call_connected", "vapi_transfer_invoked", "handoff_context_stored", "bridgefu_received_correlation_header", "vapi_destination_uri_scheme_allowed", "vapi_destination_tls_transport", "vapi_destination_media_profile_allowed", "vapi_destination_media_posture_consistent", "vapi_destination_answered", "amazon_connect_contact_connected", "configured_screen_pop_visible", "audio_source_to_agent", "audio_agent_to_source", "dtmf_source_to_agent", "source_call_ended"],
             "properties": {
               "vapi_call_connected": {"const": true},
               "vapi_transfer_invoked": {"const": true},
               "handoff_context_stored": {"const": true},
               "bridgefu_received_correlation_header": {"const": true},
-              "vapi_destination_sips_signaling": {"const": true},
+              "vapi_destination_uri_scheme_allowed": {"const": true},
               "vapi_destination_tls_transport": {"const": true},
               "vapi_destination_media_profile_allowed": {"const": true},
               "vapi_destination_media_posture_consistent": {"const": true},
@@ -129,7 +154,7 @@
             "then": {"properties": {"checks": {"not": {"required": ["dtmf_agent_to_source"]}}}}
           },
           {
-            "if": {"properties": {"id": {"const": "vapi-web-transfer"}}, "required": ["id"]},
+            "if": {"properties": {"id": {"const": "bridgefu-web-sdk-handoff"}}, "required": ["id"]},
             "then": {"properties": {"checks": {"required": ["dtmf_agent_to_source"]}}}
           },
           {
@@ -144,7 +169,7 @@
       },
       "allOf": [
         {"contains": {"properties": {"id": {"const": "vapi-sip-transfer"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1},
-        {"contains": {"properties": {"id": {"const": "vapi-web-transfer"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1}
+        {"contains": {"properties": {"id": {"const": "bridgefu-web-sdk-handoff"}}, "required": ["id"]}, "minContains": 1, "maxContains": 1}
       ]
     },
     "teardown": {
@@ -162,5 +187,22 @@
       }
     },
     "redacted": {"const": true}
+  },
+  "$defs": {
+    "databaseReset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "producer", "stage", "test_delete_verified", "prior_calls_terminal", "fresh_database", "bridgefu_ready", "redacted"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "producer": {"const": "bridgefu-qualification-database-reset@1"},
+        "stage": {"enum": ["direct-secure-preflight", "bridgefu-web-sdk-handoff", "vapi-sip-transfer"]},
+        "test_delete_verified": {"const": true},
+        "prior_calls_terminal": {"const": true},
+        "fresh_database": {"const": true},
+        "bridgefu_ready": {"const": true},
+        "redacted": {"const": true}
+      }
+    }
   }
 }

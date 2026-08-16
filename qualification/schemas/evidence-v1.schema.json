@@ -22,7 +22,7 @@
         "additionalProperties": false,
         "required": ["id", "source_observation_sha256", "agent_observation_sha256", "checks", "passed"],
         "properties": {
-          "id": {"enum": ["vapi-sip-transfer", "vapi-web-transfer"]},
+          "id": {"enum": ["vapi-sip-transfer", "bridgefu-web-sdk-handoff"]},
           "source_observation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "agent_observation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "checks": {
@@ -47,7 +47,7 @@
         },
         "allOf": [
           {
-            "if": {"properties": {"id": {"const": "vapi-web-transfer"}}},
+            "if": {"properties": {"id": {"const": "bridgefu-web-sdk-handoff"}}},
             "then": {
               "properties": {
                 "checks": {"required": ["dtmf_agent_to_source"]}

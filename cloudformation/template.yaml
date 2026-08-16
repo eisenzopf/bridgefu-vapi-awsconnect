@@ -52,8 +52,8 @@ Parameters:
     Description: Short name used in Bridgefu-owned AWS and Vapi resource names.
   InstanceType:
     Type: String
-    Default: t4g.large
-    AllowedValues: [t4g.medium, t4g.large, t4g.xlarge, c7g.large, c7g.xlarge, m7g.large, m7g.xlarge]
+    Default: c7g.2xlarge
+    AllowedValues: [t4g.medium, t4g.large, t4g.xlarge, t4g.2xlarge, c7g.large, c7g.xlarge, c7g.2xlarge, m7g.large, m7g.xlarge, m7g.2xlarge]
     Description: ARM64 instance size for the single Bridgefu gateway.
   ConnectInstanceArn:
     Type: String
@@ -185,7 +185,7 @@ Resources:
       Parameters:
         DeploymentId: !Ref DeploymentId
         ArtifactBucket: !FindInMap [RegionRelease, !Ref 'AWS::Region', ArtifactBucket]
-        ConfigurationArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/configuration.zip
+        ConfigurationArtifactKey: __RELEASE_PREFIX__/__RELEASE_VERSION__/artifacts/lambda/configuration.zip
         ConfigurationArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', ConfigurationArtifactVersion]
         ConnectInstanceArn: !Ref ConnectInstanceArn
         TargetContactFlowArn: !Ref TargetContactFlowArn
@@ -220,11 +220,11 @@ Resources:
       Parameters:
         DeploymentId: !GetAtt Configuration.Outputs.DeploymentId
         ArtifactBucket: !FindInMap [RegionRelease, !Ref 'AWS::Region', ArtifactBucket]
-        PrepareArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/prepare_handoff.zip
+        PrepareArtifactKey: __RELEASE_PREFIX__/__RELEASE_VERSION__/artifacts/lambda/prepare_handoff.zip
         PrepareArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', HandoffPrepareArtifactVersion]
-        TransferArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/transfer_destination.zip
+        TransferArtifactKey: __RELEASE_PREFIX__/__RELEASE_VERSION__/artifacts/lambda/transfer_destination.zip
         TransferArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', HandoffTransferArtifactVersion]
-        LookupArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/connect_lookup.zip
+        LookupArtifactKey: __RELEASE_PREFIX__/__RELEASE_VERSION__/artifacts/lambda/connect_lookup.zip
         LookupArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', HandoffLookupArtifactVersion]
         BridgefuControlBaseUrl: !Sub
           - 'https://control.${Hostname}'
@@ -306,7 +306,7 @@ Resources:
       Parameters:
         DeploymentId: !GetAtt Configuration.Outputs.DeploymentId
         ArtifactBucket: !FindInMap [RegionRelease, !Ref 'AWS::Region', ArtifactBucket]
-        ProvisionerArtifactKey: releases/__RELEASE_VERSION__/artifacts/lambda/vapi_provisioner.zip
+        ProvisionerArtifactKey: __RELEASE_PREFIX__/__RELEASE_VERSION__/artifacts/lambda/vapi_provisioner.zip
         ProvisionerArtifactVersion: !FindInMap [RegionRelease, !Ref 'AWS::Region', VapiProvisionerArtifactVersion]
         VapiApiKeySecretArn: !Ref VapiApiKeySecretArn
         VapiWebhookSecretArn: !GetAtt HandoffService.Outputs.VapiWebhookSecretArn
@@ -364,8 +364,35 @@ Outputs:
   BridgefuVpcId:
     Description: Dedicated Bridgefu VPC identifier.
     Value: !GetAtt Network.Outputs.VpcId
+  BridgefuPrivateSubnetIds:
+    Description: Private runtime subnet IDs used only by qualification tooling.
+    Value: !GetAtt Network.Outputs.PrivateSubnetIds
+  BridgefuTransferSecurityGroupId:
+    Description: Private control-client security group used only by qualification tooling.
+    Value: !GetAtt Network.Outputs.TransferFunctionSecurityGroupId
+  BridgefuGatewaySecurityGroupId:
+    Description: Runtime ingress security group used only by qualification tooling.
+    Value: !GetAtt Runtime.Outputs.GatewaySecurityGroupId
+  BridgefuGatewayRoleName:
+    Description: Runtime role name used only by qualification tooling for an exact temporary policy.
+    Value: !GetAtt Runtime.Outputs.GatewayRoleName
+  BridgefuPublicIp:
+    Description: Public media address used by qualification WebRTC ICE.
+    Value: !GetAtt Runtime.Outputs.PublicIp
   VapiAssistantId:
     Value: !GetAtt VapiResources.Outputs.AssistantId
+  VapiProvisioningStackId:
+    Value: !GetAtt VapiResources.Outputs.ProvisioningStackId
+  VapiPrepareUrl:
+    Value: !GetAtt VapiResources.Outputs.PrepareUrl
+  VapiTransferUrl:
+    Value: !GetAtt VapiResources.Outputs.TransferUrl
+  VapiModel:
+    Value: !GetAtt VapiResources.Outputs.VapiModel
+  VapiVoiceId:
+    Value: !GetAtt VapiResources.Outputs.VapiVoiceId
+  ScreenPopFieldsJson:
+    Value: !GetAtt VapiResources.Outputs.ScreenPopFieldsJson
   VapiPrepareToolId:
     Value: !GetAtt VapiResources.Outputs.PrepareToolId
   VapiWebhookCredentialId:
@@ -376,6 +403,17 @@ Outputs:
     Value: !GetAtt ConnectIntegration.Outputs.AgentGuideFlowArn
   HandoffTableName:
     Value: !GetAtt HandoffService.Outputs.HandoffTableName
+  HandoffTableArn:
+    Value: !GetAtt HandoffService.Outputs.HandoffTableArn
+  VapiWebhookSecretArn:
+    Description: Secret ARN only; the webhook bearer value is never a stack output.
+    Value: !GetAtt HandoffService.Outputs.VapiWebhookSecretArn
+  VapiIdentityBindingArn:
+    Description: Secret ARN only; the validated Vapi binding is never embedded in a template.
+    Value: !GetAtt HandoffService.Outputs.VapiIdentityBindingArn
+  BridgefuApiBearerSecretArn:
+    Description: Secret ARN only; the Bridgefu control bearer value is never a stack output.
+    Value: !GetAtt HandoffService.Outputs.BridgefuApiBearerSecretArn
   CorrelationKeySecretArn:
     Description: Secret ARN only; the correlation key value is never a stack output.
     Value: !GetAtt HandoffService.Outputs.CorrelationKeySecretArn

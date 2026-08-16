@@ -171,6 +171,8 @@ class ReleaseContractTests(unittest.TestCase):
                     "1.2.3-test",
                     "--versions-file",
                     str(versions_path),
+                    "--release-prefix",
+                    "diagnostics/build-123",
                     "--output",
                     str(output),
                 ],
@@ -183,6 +185,13 @@ class ReleaseContractTests(unittest.TestCase):
             ).read_text()
             encoded = urllib.parse.quote(version_id, safe="")
             self.assertIn(f'ConfigurationArtifactVersion: "{version_id}"', product)
+            self.assertIn(
+                "ConfigurationArtifactKey: "
+                "diagnostics/build-123/1.2.3-test/artifacts/lambda/configuration.zip",
+                product,
+            )
+            self.assertNotIn("ArtifactKey: releases/", product)
+            self.assertIn("/diagnostics/build-123/1.2.3-test/", product)
             self.assertIn(f"configuration.yaml?versionId={encoded}", product)
             self.assertIn(f"disposable-connect.yaml?versionId={encoded}", qualification)
             self.assertIn(
@@ -284,9 +293,43 @@ class ReleaseContractTests(unittest.TestCase):
             self.assertIn(
                 "AllowedValues: [sips_optional_srtp, sips_srtp, sip_rtp]", text
             )
+        for name in ("runtime.yaml", "observability.yaml"):
             self.assertIn(
-                "SecureSip: !Not [!Equals [!Ref SipSecurity, sip_rtp]]", text
+                "SecureSip: !Not [!Equals [!Ref SipSecurity, sip_rtp]]",
+                nested[name],
             )
+
+    def test_web_sdk_smoke_owns_exact_us_vapi_tls_egress(self):
+        qualification = (
+            ROOT / "qualification" / "cloudformation" / "template.yaml"
+        ).read_text()
+        customer_runtime = (
+            ROOT / "cloudformation" / "nested" / "runtime.yaml"
+        ).read_text()
+        for logical_id, next_logical_id, cidr in (
+            (
+                "QualificationVapiTlsEgress1",
+                "QualificationVapiTlsEgress2",
+                "44.229.228.186/32",
+            ),
+            (
+                "QualificationVapiTlsEgress2",
+                "DirectHandoffLogGroup",
+                "44.238.177.138/32",
+            ),
+        ):
+            resource = qualification.split(f"  {logical_id}:\n", 1)[1].split(
+                f"\n  {next_logical_id}:\n", 1
+            )[0]
+            self.assertIn("Type: AWS::EC2::SecurityGroupEgress", resource)
+            self.assertIn(
+                "GroupId: !GetAtt Candidate.Outputs.BridgefuGatewaySecurityGroupId",
+                resource,
+            )
+            self.assertIn("FromPort: 5061", resource)
+            self.assertIn("ToPort: 5061", resource)
+            self.assertIn(f"CidrIp: {cidr}", resource)
+        self.assertNotIn("QualificationVapiTlsEgress", customer_runtime)
 
     def test_release_contains_versioned_quick_create_links_and_no_secrets(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -305,7 +348,7 @@ class ReleaseContractTests(unittest.TestCase):
             output = Path(directory)
             manifest = json.loads((output / "manifest.json").read_text())
             self.assertFalse(manifest["contains_secrets"])
-            self.assertEqual(manifest["bridgefu"]["required_rvoip_version"], "0.3.7")
+            self.assertEqual(manifest["bridgefu"]["required_rvoip_version"], "0.3.8")
             self.assertEqual(
                 set(manifest["supported_regions"]), self.supported_regions()
             )
@@ -316,7 +359,7 @@ class ReleaseContractTests(unittest.TestCase):
             self.assertNotIn("region", urllib.parse.parse_qs(parsed.query))
             query = urllib.parse.parse_qs(parsed.fragment.split("?", 1)[1])
             self.assertEqual(query["stackName"], ["bridgefu-vapi-connect"])
-            self.assertEqual(query["param_InstanceType"], ["t4g.large"])
+            self.assertEqual(query["param_InstanceType"], ["c7g.2xlarge"])
             self.assertIn("/releases/1.2.3-test/", query["templateURL"][0])
 
     def test_deployment_region_uses_aws_console_for_both_us_connect_regions(self):
@@ -440,7 +483,8 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", candidate)
         self.assertIn("packer build", candidate)
         self.assertIn("candidates/qualified/$VERSION/$GITHUB_SHA", candidate)
-        self.assertIn("matrix:\n        region: [us-west-2, us-east-1]", candidate)
+        self.assertIn("for REGION in us-west-2 us-east-1; do", candidate)
+        self.assertNotIn("matrix:\n        region: [us-west-2, us-east-1]", candidate)
         self.assertIn("qualification/controller.py run", candidate)
         self.assertIn("release_objects", candidate)
         self.assertNotIn(
@@ -552,6 +596,33 @@ class ReleaseContractTests(unittest.TestCase):
                 "passed": True,
                 "checks": {name: True for name in secure_required},
             },
+            "database_resets": {
+                stage: {
+                    "schema_version": 1,
+                    "producer": "bridgefu-qualification-database-reset@1",
+                    "stage": stage,
+                    "test_delete_verified": True,
+                    "prior_calls_terminal": True,
+                    "fresh_database": True,
+                    "bridgefu_ready": True,
+                    "redacted": True,
+                }
+                for stage in (
+                    "direct-secure-preflight",
+                    "bridgefu-web-sdk-handoff",
+                    "vapi-sip-transfer",
+                )
+            },
+            "vapi_provisioning_resilience": {
+                "schema_version": 1,
+                "producer": "bridgefu-vapi-provisioning-resilience@1",
+                "ambiguous_create_reconciled": True,
+                "first_cycle_deleted": True,
+                "second_cycle_recreated": True,
+                "exact_owner_resources_present": True,
+                "redacted": True,
+                "passed": True,
+            },
             "scenarios": [
                 {
                     "id": "vapi-sip-transfer",
@@ -559,7 +630,7 @@ class ReleaseContractTests(unittest.TestCase):
                     "checks": dict(checks),
                 },
                 {
-                    "id": "vapi-web-transfer",
+                    "id": "bridgefu-web-sdk-handoff",
                     "passed": True,
                     "checks": {**checks, "dtmf_agent_to_source": True},
                 },
@@ -595,6 +666,10 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertEqual(evidence_status(evidence), 0)
         for path in (
             ("secure_preflight", "checks", "tls_transport"),
+            (
+                "vapi_provisioning_resilience",
+                "ambiguous_create_reconciled",
+            ),
             ("scenarios", 0, "passed"),
             ("scenarios", 1, "checks", "audio_agent_to_source"),
             ("teardown", "customer_stack_absent"),
@@ -615,7 +690,7 @@ class ReleaseContractTests(unittest.TestCase):
         if computation_match is None:
             self.fail("candidate receipt computation jq filter is missing")
         changed = json.loads(json.dumps(evidence))
-        changed["scenarios"][0]["passed"] = "false"
+        changed["vapi_provisioning_resilience"]["passed"] = "false"
         computed = subprocess.run(  # noqa: S603
             [jq, "-c", computation_match.group(1)],
             input=json.dumps(changed),
@@ -679,7 +754,7 @@ class ReleaseContractTests(unittest.TestCase):
             ".evidence_schema_version == 2",
             ".secure_preflight_passed == true",
             ".required_checks_passed == true",
-            '.scenario_ids == ["vapi-sip-transfer","vapi-web-transfer"]',
+            '.scenario_ids == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"]',
             ".zero_resource_proof == true",
             '.release_objects | type == "array" and length > 0',
         ):
@@ -699,7 +774,7 @@ class ReleaseContractTests(unittest.TestCase):
             "evidence_schema_version": 2,
             "secure_preflight_passed": True,
             "required_checks_passed": True,
-            "scenario_ids": ["vapi-sip-transfer", "vapi-web-transfer"],
+            "scenario_ids": ["bridgefu-web-sdk-handoff", "vapi-sip-transfer"],
             "zero_resource_proof": True,
         }
         receipt = {
@@ -883,6 +958,22 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertNotIn("Resource: '*'", selected_status)
         full_role = policy.split("  QualificationRunnerRole:\n", 1)[1]
         self.assertEqual(full_role.count("Action: connect:PutUserStatus"), 2)
+
+    def test_qualification_runner_updates_only_tagged_generated_secrets(self):
+        policy = (ROOT / "publisher" / "qualification-role.yaml").read_text()
+        inspect = policy.split("- Sid: InspectGeneratedQualificationSecrets", 1)[
+            1
+        ].split("- Sid:", 1)[0]
+        self.assertIn("secret:bridgefu-bfq-*", inspect)
+        self.assertIn("secret:bridgefu/bfq-*", inspect)
+        statement = policy.split(
+            "- Sid: UpdateOnlyTaggedGeneratedQualificationSecrets", 1
+        )[1].split("- Sid:", 1)[0]
+        self.assertIn("Action: secretsmanager:PutSecretValue", statement)
+        self.assertIn("secret:bridgefu/bfq-*", statement)
+        self.assertIn("aws:ResourceTag/ManagedBy: bridgefu-qualification", statement)
+        self.assertNotIn("VapiApiKeySecretArn", statement)
+        self.assertNotIn("Resource: '*'", statement)
 
     def test_test_retention_mode_deletes_vapi_qualification_resources(self):
         root = (ROOT / "cloudformation" / "template.yaml").read_text()

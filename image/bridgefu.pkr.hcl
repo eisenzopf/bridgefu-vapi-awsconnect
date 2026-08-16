@@ -95,7 +95,7 @@ source "amazon-ebs" "bridgefu_arm64" {
     BridgefuCandidateId      = var.candidate_id
     BridgefuRepositoryCommit = var.distribution_repository_commit
     BridgefuRelease          = var.release_version
-    BridgefuRvoipVersion     = "0.3.7"
+    BridgefuRvoipVersion     = "0.3.8"
   }
 
   snapshot_tags = {
@@ -104,7 +104,7 @@ source "amazon-ebs" "bridgefu_arm64" {
     BridgefuCandidateId      = var.candidate_id
     BridgefuRepositoryCommit = var.distribution_repository_commit
     BridgefuRelease          = var.release_version
-    BridgefuRvoipVersion     = "0.3.7"
+    BridgefuRvoipVersion     = "0.3.8"
   }
 }
 

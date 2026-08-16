@@ -24,7 +24,7 @@ def security_event(fingerprint: str, **updates: object) -> dict[str, object]:
         "event": "bridgefu_vapi_destination_security_evidence",
         "correlation_fingerprint": fingerprint,
         "leg": "vapi-to-bridgefu",
-        "uri_scheme": "sips",
+        "uri_scheme": "sip",
         "signaling_transport": "tls",
         "media_profile": "RTP/SAVP",
         "media_keying": "SDES-SRTP",
@@ -82,13 +82,13 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
             "producer": "bridgefu-agent-workspace-playwright@1",
             "mode": "scenario-observer",
             "execution_id": "bfq-test1234",
-            "scenario_id": "vapi-web-transfer",
+            "scenario_id": "bridgefu-web-sdk-handoff",
             "agent_available": True,
             "redacted": True,
         }
         self.assertEqual(
             CONTROLLER.validate_agent_readiness(
-                value, "bfq-test1234", "vapi-web-transfer"
+                value, "bfq-test1234", "bridgefu-web-sdk-handoff"
             ),
             value,
         )
@@ -99,7 +99,7 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
         ):
             with self.assertRaises(CONTROLLER.QualificationError):
                 CONTROLLER.validate_agent_readiness(
-                    changed, "bfq-test1234", "vapi-web-transfer"
+                    changed, "bfq-test1234", "bridgefu-web-sdk-handoff"
                 )
 
     def test_web_source_readiness_requires_exact_call_binding(self) -> None:
@@ -166,6 +166,45 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
             web.index("private_json(trigger"),
         )
 
+    def test_web_handoff_orders_authority_context_and_browser_trigger(self) -> None:
+        text = (QUALIFICATION / "controller.py").read_text(encoding="utf-8")
+        web = text.split("    def _web_smoke(", 1)[1].split(
+            "    def cleanup_sip_transients(", 1
+        )[0]
+        ordered = (
+            "self.install_direct_assistant()",
+            "self.provision_ready_temporary_vapi_phone(",
+            "self.install_web_runtime(",
+            "self.authorize_web_media()",
+            "ensure_connect_agent_available",
+            "self.wait_for_agent_readiness(",
+            "self.create_direct_route(",
+            "self.stage_direct_context(",
+            '"bridgefu-web-playwright.mjs"',
+            "validate_web_source_readiness",
+            "self.wait_for_vapi_call(",
+            "private_json(session_path, session)",
+            "private_json(trigger",
+            "self.verify_scenario(",
+        )
+        positions = [web.index(fragment) for fragment in ordered]
+        self.assertEqual(positions, sorted(positions))
+        self.assertNotIn("handoff_token", web.split("private_json(session_path", 1)[1])
+
+    def test_both_sources_share_the_transfer_prompt_and_data_plane_gate(self) -> None:
+        text = (QUALIFICATION / "controller.py").read_text(encoding="utf-8")
+        web = text.split("    def _web_smoke(", 1)[1].split(
+            "    def cleanup_sip_transients(", 1
+        )[0]
+        sip = text.split("    def _sip_smoke(", 1)[1].split(
+            "    def bind_sip_session_context(", 1
+        )[0]
+        self.assertEqual(CONTROLLER.TRANSFER_REQUEST_SPEECH, "Transfer me please.")
+        self.assertEqual(text.count('"Transfer me please."'), 1)
+        for source in (web, sip):
+            self.assertIn("self.provision_ready_temporary_vapi_phone(", source)
+            self.assertIn("speech = TRANSFER_REQUEST_SPEECH", source)
+
     def test_destination_security_proof_is_single_correlated_runtime_event(
         self,
     ) -> None:
@@ -174,9 +213,10 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
             runtime_logs(fingerprint, security_event(fingerprint)),
             lookup_logs(fingerprint),
             fingerprint,
+            "sips_optional_srtp",
         )
         for name in (
-            "vapi_destination_sips_signaling",
+            "vapi_destination_uri_scheme_allowed",
             "vapi_destination_tls_transport",
             "vapi_destination_media_profile_allowed",
             "vapi_destination_media_posture_consistent",
@@ -207,6 +247,7 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
             ),
             lookup_logs(fingerprint),
             fingerprint,
+            "sips_optional_srtp",
         )
         self.assertEqual(plain["vapi_destination_media_profile"], "RTP/AVP")
         self.assertEqual(plain["vapi_destination_media_keying"], "none")
@@ -226,7 +267,7 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
             ),
             runtime_logs(
                 fingerprint,
-                security_event(fingerprint, uri_scheme="sip"),
+                security_event(fingerprint, uri_scheme="sips"),
             ),
             runtime_logs(
                 fingerprint,
@@ -256,7 +297,10 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
         for runtime in failures:
             with self.assertRaises(CONTROLLER.QualificationError):
                 CONTROLLER.verify_log_evidence(
-                    runtime, lookup_logs(fingerprint), fingerprint
+                    runtime,
+                    lookup_logs(fingerprint),
+                    fingerprint,
+                    "sips_optional_srtp",
                 )
         wrong_message = runtime_logs(fingerprint, security_event(fingerprint))
         wrong_message["events"][1]["message"] = wrong_message["events"][1][
@@ -264,7 +308,10 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
         ].replace("accepted Vapi destination leg", "unexpected tracing message")
         with self.assertRaises(CONTROLLER.QualificationError):
             CONTROLLER.verify_log_evidence(
-                wrong_message, lookup_logs(fingerprint), fingerprint
+                wrong_message,
+                lookup_logs(fingerprint),
+                fingerprint,
+                "sips_optional_srtp",
             )
 
     def test_direct_preflight_event_cannot_substitute_for_scenario_security(
@@ -286,7 +333,10 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
         )
         with self.assertRaises(CONTROLLER.QualificationError):
             CONTROLLER.verify_log_evidence(
-                runtime, lookup_logs(fingerprint), fingerprint
+                runtime,
+                lookup_logs(fingerprint),
+                fingerprint,
+                "sips_optional_srtp",
             )
 
     def test_zero_state_contract_does_not_overclaim_unobserved_resources(self) -> None:
