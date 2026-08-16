@@ -2690,7 +2690,7 @@ and full 226-test Python suite passed.
 
 - rvoip `0.3.8` is published on crates.io with the secure fallback Contact and
   profiled SIP coordinator fixes required by the smoke-tested Bridgefu source.
-- Bridgefu commit `65e1b0760a48db21689ae7931e3d7a3e10bb41b0`
+- Bridgefu commit `71558b26987ac4e24e30c77c49c5cdc8037b09aa`
   preserves the passing `53ef1c7` call-path implementation and pins all 25
   rvoip packages exactly to registry version `0.3.8`. Its committed
   `Cargo.lock` SHA-256 is
@@ -2698,6 +2698,12 @@ and full 226-test Python suite passed.
 - The Bridgefu local gate passed registry-source verification, strict Clippy,
   all-target tests, credential-free runtime smoke, release-image policy tests,
   config and Compose validation, shell checks, and an optimized release build.
+- The first Linux CI pass exposed a platform-dependent test defect rather than
+  a runtime defect: the metric-inventory test concatenated Rust files in
+  filesystem iteration order before scanning them. Bridgefu now scans each
+  source file independently and includes an order-independence regression.
+  The previously failing release-image assertion was also updated from the
+  stale `0.3.7` label to `0.3.8`.
 - The AWS distribution now pins that exact remotely reachable Bridgefu commit
   and lock digest. Its SIP smoke client, SDP observer, and direct secure probe
   are also repinned to exact crates.io rvoip `0.3.8`; their machine-readable
