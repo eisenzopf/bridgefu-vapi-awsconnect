@@ -2718,3 +2718,14 @@ and full 226-test Python suite passed.
   candidate or publication is authorized until those checks pass, Bridgefu is
   merged, and the distribution lock is repinned to the final Bridgefu `main`
   commit.
+- GitHub CI run `31963835122` passed the exact Bridgefu commit above: Linux
+  infrastructure and release-image policy, strict Clippy, all-target Rust
+  tests, runtime/conformance checks, and native AMD64 and ARM64 image builds.
+  GitHub CI run `31963881689` passed distribution commit
+  `19b7097cb4adb717ff03be82c25746038c9112f6`: deterministic packaging,
+  CloudFormation and Packer validation, the SDP observer, both exact rvoip
+  qualification clients, static ARM64 launch checks, and browser harness
+  syntax. The next permitted step is review and merge of Bridgefu PR 4; after
+  that merge, this repository must repin the final Bridgefu `main` commit and
+  rerun its distribution gate before PR 26 can merge. A candidate remains
+  unauthorized.
