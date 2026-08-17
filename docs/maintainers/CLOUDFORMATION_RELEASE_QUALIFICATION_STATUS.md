@@ -25,10 +25,10 @@ Last updated: 2026-08-17 (America/Los_Angeles)
 
 ## Current summary
 
-The previous two private candidates are retired. Their failures occurred before
-customer publication and did not disprove the two call paths: one failed at the
-exact Bridgefu checkout boundary and the next failed because the deployed
-qualification IAM role was older than the repository contract.
+The prior candidates are retired. The latest `0.1.22` attempt passed the repaired
+release-control IAM boundary and compiled the exact Bridgefu v0.9.0/rvoip 0.3.8
+runtime, but failed before AMI creation while verifying the pinned CloudWatch
+Agent package. Neither regional qualification ran. Recovery completed.
 
 Both retained Oregon smoke paths had already passed on the Bridgefu/rvoip 0.3.8
 runtime before those candidate-control failures:
@@ -41,13 +41,15 @@ Bridgefu Web SDK → Vapi → Bridgefu → Amazon Connect
 Those retained passes are diagnostic evidence, not a substitute for fresh,
 immutable, two-region release qualification.
 
-Work is currently stopped before another candidate. The release-control audit
-against `origin/codex/recipe-first-production` has produced one combined
-worktree, including corrected public documentation, alarm runbooks, evidence
-ignore boundaries, and a single fail-closed local preflight. The complete local
-preflight has passed on that combined tree. Remote template validation,
-final staged-source hygiene, merge, and the persistent IAM update still precede
-any candidate run.
+Work is stopped at the failed AMI-build gate. The exact cause is reproduced on
+the ARM64 Amazon Linux 2023 build OS: `gnupg2-minimal` provides `gpg` but omits
+`gpg-agent`; importing the pinned public key imports it and then exits 2 when the
+missing agent cannot start. `set -e` stopped provisioning, while stderr
+redirection hid the diagnostic. The local correction uses the same minimal
+package to dearmor the SHA-pinned public key and verifies the detached signature
+through an explicit keyring with `--no-autostart`. That exact flow passes on the
+build OS, and the complete local preflight passes on the corrected tree. The fix
+must still pass protected-main CI before another candidate is permitted.
 
 ## Exact source under evaluation
 
@@ -64,7 +66,8 @@ any candidate run.
 ### AWS distribution
 
 - Repository: `bridgefu-vapi-awsconnect`
-- Audit branch base: `9bf6e85a7b82ba140cc7177ff419c51d786b6306`
+- Current protected-main release-control commit:
+  `135a78d50039de4c5126b471c5e18caef0000b80`
 - Target branch: `origin/main`
 - Next eligible version: `0.1.22`, only after every pre-candidate gate below
   passes and the exact audited commit is merged to `origin/main`.
@@ -76,10 +79,11 @@ any candidate run.
 | Recipe-first reconciliation | PASSED | Applicable safeguards are preserved and obsolete branch scope is explicitly rejected |
 | Secret and repository hygiene | PASSED | History, working-tree, and exact staged-source scans pass with only reviewed synthetic test fixtures |
 | Local contract and static gates | PASSED | Complete fail-closed preflight passed on the final combined worktree |
-| Exact merged-main CI | PASSED | All four required checks passed on merge commit `26706683b3c92c1a735fc09e5171975d27025ff9` |
+| Exact merged-main CI | PASSED | All four required checks passed on current protected-main commit `135a78d50039de4c5126b471c5e18caef0000b80` |
 | Retained diagnostic cleanup | PASSED | The exact Oregon `TestDelete` root is absent and its Vapi, ACM, S3, and direct resource checks pass |
 | Persistent IAM control plane | PASSED | Reviewed, no-replacement role-stack changes deployed and reverified |
 | Exact remote template validation | PASSED | All ten exact rendered templates passed AWS validation in both supported regions (20/20) |
+| Private candidate AMI build | FAILED | Replace the agent-dependent GPG import, pass exact build-OS regression and protected-main CI, then build both private AMIs |
 | Fresh Oregon qualification | NOT STARTED | Direct secure preflight and both Vapi smoke paths pass, then zero proof |
 | Fresh Virginia qualification | NOT STARTED | Same immutable bits and checks pass only after Oregon |
 | Candidate sealing | NOT STARTED | Signed dual-region evidence and zero-resource receipts |
@@ -119,6 +123,16 @@ Local gate evidence on 2026-08-17:
   family while the v5 policy predicted the untruncated stack-name family. The
   v6 contract corrects only that read-only resource ARN and adds a regression;
   no candidate or smoke infrastructure was created by the failed attempt.
+- the v6 correction was merged, exact-main CI passed, the publisher stack was
+  updated without replacement, its Original template matched source, drift was
+  `IN_SYNC`, and live IAM simulation plus the next candidate proved the formerly
+  denied CandidateBuilder self-audit now passes;
+- that next candidate compiled the exact runtime and then stopped at the pinned
+  CloudWatch Agent public-key import. Reproduction on the exact build OS proved
+  the missing `gpg-agent`/exit-2 behavior and proved that dearmor plus an explicit
+  no-autostart keyring validates the same key fingerprint and detached signature.
+  Packer created no AMI and cleaned its source instance, temporary security
+  group, and key pair; the release reaper completed successfully.
 
 ## Audit safeguards incorporated in the worktree
 
@@ -258,8 +272,7 @@ AWS authority.
 
 ## Next permitted action
 
-Commit the small readiness-ledger and deterministic bucket-verifier correction,
-push it through the protected `main` branch, and require all four exact-commit
-checks to pass. Only then may the new private `0.1.22` candidate begin; no
-publication is permitted before both regional qualifications and signed receipt
-review pass.
+Merge the locally passing CloudWatch Agent verification correction through
+protected `main` and require all four exact-commit checks. Reconfirm version
+vacancy and zero active mutation, then start one fresh private `0.1.22` candidate.
+No regional qualification or publication is permitted until that AMI gate passes.

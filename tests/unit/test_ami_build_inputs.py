@@ -98,7 +98,13 @@ class AmiBuildInputTests(unittest.TestCase):
         self.assertNotIn("most_recent", packer)
         self.assertIn("image/build-inputs.json", packer)
         self.assertIn("amazon-cloudwatch-agent.rpm.sig", install)
-        self.assertIn("gpg --batch --verify", install)
+        self.assertIn("gpg --batch --no-autostart", install)
+        self.assertIn("--no-default-keyring", install)
+        self.assertIn("--dearmor", install)
+        self.assertNotIn("gpg --batch --import", install)
+        self.assertIn(
+            "CloudWatch Agent detached signature verification failed", install
+        )
         self.assertIn("image-rpm-inventory.tsv", install)
         for workflow, platform in (
             (candidate, "linux_arm64"),
