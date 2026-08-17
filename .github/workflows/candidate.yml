@@ -529,6 +529,15 @@ jobs:
           cache-dependency-path: qualification/package-lock.json
       - uses: actions/download-artifact@v4
         with: {name: private-release-candidate, path: target/candidate}
+      - name: Checkout and reverify the exact Bridgefu source used by the AMI and SDK
+        run: |
+          repository="$(jq -r .repository bridgefu.lock.json)"
+          commit="$(jq -r .commit bridgefu.lock.json)"
+          git clone --filter=blob:none --no-checkout "$repository" target/pinned-bridgefu
+          git -C target/pinned-bridgefu checkout --detach "$commit"
+          test "$(git -C target/pinned-bridgefu rev-parse HEAD)" = "$commit"
+          test "$(shasum -a 256 target/pinned-bridgefu/Cargo.lock | awk '{print $1}')" = \
+            "$(jq -r .cargo_lock_sha256 bridgefu.lock.json)"
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_QUALIFICATION_ROLE_ARN }}
@@ -548,12 +557,6 @@ jobs:
           python -m pip install -r qualification/requirements-runner.txt
           npm --prefix qualification ci --ignore-scripts
           PLAYWRIGHT_BROWSERS_PATH=0 npm --prefix qualification exec playwright install --with-deps chromium
-      - name: Reverify the exact Bridgefu source used by the AMI and SDK
-        run: |
-          commit="$(jq -r .commit bridgefu.lock.json)"
-          test "$(git -C target/pinned-bridgefu rev-parse HEAD)" = "$commit"
-          test "$(shasum -a 256 target/pinned-bridgefu/Cargo.lock | awk '{print $1}')" = \
-            "$(jq -r .cargo_lock_sha256 bridgefu.lock.json)"
       - name: Run both live smoke paths and prove teardown
         env:
           VERSION: ${{ needs.build-private-candidate.outputs.version }}

@@ -2735,3 +2735,33 @@ and full 226-test Python suite passed.
   review and merge of distribution PR 26. A candidate, infrastructure
   deployment, or publication remains unauthorized until that merge is
   complete and separately requested.
+
+### 2026-08-16 — Private v0.1.20 candidate stopped before deployment
+
+- Distribution PR 26 merged as exact `main` commit
+  `4761901c6321f4ffa1237a3cc24176f20bb8d3f0`, and the owner authorized a
+  fresh sequential two-region private qualification as version `0.1.20`.
+- Candidate run `31977889732` successfully built the exact private ARM64 AMI
+  in Oregon (`ami-043f3170d1bab8263`), copied it privately to Virginia
+  (`ami-0ea0af420a8bf06bc`), built the immutable qualification clients, staged
+  exact versioned release objects, and remotely validated both regional root
+  templates.
+- The live job then failed before creating any CloudFormation, Vapi, Connect,
+  or smoke resource. Its fresh runner referenced `target/pinned-bridgefu`, a
+  checkout that had existed only in the earlier build job and was not part of
+  the downloaded candidate artifact. The exact error was
+  `fatal: cannot change to 'target/pinned-bridgefu': No such file or directory`.
+- This is a workflow job-boundary defect, not an AMI, CloudFormation, Vapi,
+  Bridgefu, or smoke failure. The recovery workflow owns removal of every
+  failed-candidate AMI, snapshot, and S3 object version. Version `0.1.20` is
+  permanently failed and will not be reused.
+- The qualification job now clones the exact repository and detached commit
+  from `bridgefu.lock.json`, verifies the commit and Cargo.lock digest, and
+  performs that proof before assuming AWS qualification credentials. A unit
+  regression extracts the fresh job and requires the clone and both checks to
+  precede AWS authentication and smoke execution.
+- After the recovery workflow proves cleanup and the corrected branch passes
+  local and GitHub CI, the next permitted candidate is `0.1.21`. No release or
+  customer-visible `latest` pointer may be created until Oregon and then
+  Virginia pass from those exact private bits and the signed receipt is
+  reviewed.
