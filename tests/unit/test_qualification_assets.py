@@ -371,6 +371,28 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("modify-image-attribute", publication)
         self.assertNotIn("packer build", publication)
 
+    def test_candidate_requires_deployed_iam_contract_before_mutation(self):
+        candidate = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
+        publisher = (ROOT / "publisher" / "oidc-role.yaml").read_text()
+        qualification = (ROOT / "publisher" / "qualification-role.yaml").read_text()
+
+        credentials = candidate.index(
+            "role-to-assume: ${{ vars.AWS_CANDIDATE_ROLE_ARN }}"
+        )
+        contract = candidate.index("Verify the deployed release-control IAM contract")
+        mutation = candidate.index("Journal ownership and prove the version is unused")
+        self.assertLess(credentials, contract)
+        self.assertLess(contract, mutation)
+        self.assertIn("PublisherPolicyContractVersion", candidate)
+        self.assertIn("2026-08-17-direct-vapi-recovery-v1", candidate)
+        self.assertIn("QualificationPolicyContractVersion", candidate)
+        self.assertIn("2026-08-17-direct-vapi-identity-v1", candidate)
+
+        self.assertIn("VerifyDeployedReleaseControlPlaneContract", publisher)
+        self.assertIn("Action: cloudformation:DescribeStacks", publisher)
+        self.assertIn("PublisherPolicyContractVersion:", publisher)
+        self.assertIn("QualificationPolicyContractVersion:", qualification)
+
     def test_live_workflows_install_the_exact_session_manager_plugin(self):
         version = "1.2.835.0"
         digest = "7c6dcad12518571cc7959a713e6a8ae1bdf6ed66fd9bee37dc189e39ca58ae03"

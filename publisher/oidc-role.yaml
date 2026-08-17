@@ -109,6 +109,14 @@ Resources:
                 Effect: Allow
                 Action: cloudformation:ValidateTemplate
                 Resource: '*'
+              - Sid: VerifyDeployedReleaseControlPlaneContract
+                Effect: Allow
+                Action: cloudformation:DescribeStacks
+                Resource:
+                  - !Sub >-
+                    arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/bridgefu-vapi-awsconnect-publisher/*
+                  - !Sub >-
+                    arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/bridgefu-vapi-awsconnect-qualification/*
               - Effect: Allow
                 Action:
                   - ec2:AssociateIamInstanceProfile
@@ -406,3 +414,5 @@ Outputs:
   PublisherRoleArn: {Value: !GetAtt PublisherRole.Arn}
   RecoveryRoleArn: {Value: !GetAtt RecoveryRole.Arn}
   SigningKeyArn: {Value: !GetAtt SigningKey.Arn}
+  PublisherPolicyContractVersion:
+    Value: 2026-08-17-direct-vapi-recovery-v1

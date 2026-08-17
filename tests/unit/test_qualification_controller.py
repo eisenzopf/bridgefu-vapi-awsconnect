@@ -2746,6 +2746,43 @@ class QualificationControllerTests(unittest.TestCase):
             {"password": secret},
         )
 
+    def test_post_deploy_iam_contract_proves_exact_unbound_secret_write(self):
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.outputs = {
+            "DirectVapiIdentityBindingArn": "arn:aws:secretsmanager:direct"
+        }
+        controller.aws = mock.Mock()
+        controller.aws.secret.side_effect = [
+            '{"status":"unbound"}',
+            '{"status":"unbound"}',
+        ]
+        controller.put_secret_json = mock.Mock()
+
+        controller.verify_post_deploy_iam_contract()
+
+        controller.put_secret_json.assert_called_once_with(
+            "arn:aws:secretsmanager:direct", {"status": "unbound"}
+        )
+        self.assertEqual(controller.aws.secret.call_count, 2)
+
+    def test_post_deploy_iam_contract_fails_before_overwriting_bound_secret(self):
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.outputs = {
+            "DirectVapiIdentityBindingArn": "arn:aws:secretsmanager:direct"
+        }
+        controller.aws = mock.Mock()
+        controller.aws.secret.return_value = (
+            '{"status":"bound","organization_id":"org","assistant_id":"assistant"}'
+        )
+        controller.put_secret_json = mock.Mock()
+
+        with self.assertRaisesRegex(
+            CONTROLLER.QualificationError, "contract secret is not unbound"
+        ):
+            controller.verify_post_deploy_iam_contract()
+
+        controller.put_secret_json.assert_not_called()
+
     def test_qualification_tool_schema_uses_the_screen_pop_order(self):
         schema = CONTROLLER.qualification_field_schema()
         self.assertEqual(schema["required"], list(CONTROLLER.SCREEN_POP_KEYS))

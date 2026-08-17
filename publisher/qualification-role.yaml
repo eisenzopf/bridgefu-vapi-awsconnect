@@ -249,3 +249,5 @@ Outputs:
     Value: !GetAtt QualificationRunnerRole.Arn
   QualificationCloudFormationServiceRoleArn:
     Value: !GetAtt QualificationCloudFormationServiceRole.Arn
+  QualificationPolicyContractVersion:
+    Value: 2026-08-17-direct-vapi-identity-v1
