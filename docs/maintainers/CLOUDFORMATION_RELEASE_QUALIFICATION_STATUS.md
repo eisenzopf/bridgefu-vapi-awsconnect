@@ -2802,3 +2802,21 @@ and full 226-test Python suite passed.
 - `0.1.21` is permanently failed and will not be reused. Its rerun recovery
   must finish and independent two-region zero-resource checks must pass before
   authorizing `0.1.22`.
+
+### 2026-08-17 — v0.1.21 recovery and independent zero proof passed
+
+- Recovery run `31986626652` completed successfully. It removed the failed
+  candidate's private AMIs, snapshots, versioned S3 artifacts, temporary Vapi
+  resources, and the Oregon qualification environment.
+- Independent read-only verification found no remaining v0.1.21 qualification
+  stacks, disposable Connect instance, candidate AMIs or snapshots, versioned
+  objects or delete markers under the exact candidate/release/qualification
+  prefixes, public validation records, generated secrets, or tagged VPCs in
+  either supported region.
+- Prevention commit `5fd7497863a7f4053f40119c703bf235cb26a6e5` is under
+  review in PR 28. Local gates and all three GitHub jobs passed: `validate`,
+  `sdp-diagnostics`, and the static ARM64 `qualification-client` build and
+  launch checks.
+- `0.1.22` remains unauthorized until PR 28 is completely green, merged to
+  `main`, and the persistent IAM stacks are redeployed from that exact merged
+  commit so their policy-contract outputs can be verified.
