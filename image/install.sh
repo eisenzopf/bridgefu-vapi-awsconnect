@@ -102,14 +102,29 @@ printf '%s  %s\n' "$cloudwatch_key_sha256" \
   "$build_root/amazon-cloudwatch-agent.gpg" | sha256sum --check --strict
 cloudwatch_gnupg="$build_root/cloudwatch-gnupg"
 install -d -m 0700 "$cloudwatch_gnupg"
-GNUPGHOME="$cloudwatch_gnupg" gpg --batch --import \
-  "$build_root/amazon-cloudwatch-agent.gpg" >/dev/null 2>&1
-test "$(GNUPGHOME="$cloudwatch_gnupg" gpg --batch --with-colons \
-  --fingerprint | awk -F: '$1 == "fpr" {print $10; exit}')" = \
-  "$cloudwatch_fingerprint"
-GNUPGHOME="$cloudwatch_gnupg" gpg --batch --verify \
+cloudwatch_keyring="$cloudwatch_gnupg/cloudwatch-agent.gpg"
+if ! GNUPGHOME="$cloudwatch_gnupg" gpg --batch --no-autostart --yes \
+  --dearmor --output "$cloudwatch_keyring" \
+  "$build_root/amazon-cloudwatch-agent.gpg" >/dev/null 2>&1; then
+  echo "CloudWatch Agent signing key decoding failed" >&2
+  exit 1
+fi
+observed_cloudwatch_fingerprint="$(
+  GNUPGHOME="$cloudwatch_gnupg" gpg --batch --no-autostart \
+    --no-default-keyring --keyring "$cloudwatch_keyring" --with-colons \
+    --fingerprint | awk -F: '$1 == "fpr" {print $10}'
+)"
+if test "$observed_cloudwatch_fingerprint" != "$cloudwatch_fingerprint"; then
+  echo "CloudWatch Agent signing key fingerprint mismatch" >&2
+  exit 1
+fi
+if ! GNUPGHOME="$cloudwatch_gnupg" gpg --batch --no-autostart \
+  --no-default-keyring --keyring "$cloudwatch_keyring" --verify \
   "$build_root/amazon-cloudwatch-agent.rpm.sig" \
-  "$build_root/amazon-cloudwatch-agent.rpm" >/dev/null 2>&1
+  "$build_root/amazon-cloudwatch-agent.rpm" >/dev/null 2>&1; then
+  echo "CloudWatch Agent detached signature verification failed" >&2
+  exit 1
+fi
 sudo rpm -U "$build_root/amazon-cloudwatch-agent.rpm"
 
 sudo systemctl daemon-reload
