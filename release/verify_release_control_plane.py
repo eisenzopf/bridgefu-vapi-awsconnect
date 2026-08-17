@@ -264,7 +264,7 @@ def verify(args: argparse.Namespace, cli: AwsCli) -> dict[str, Any]:
         "qualification outputs",
     )
     if publisher_outputs.get("PublisherPolicyContractVersion") != (
-        "2026-08-17-bound-release-control-plane-v5"
+        "2026-08-17-bound-release-control-plane-v6"
     ) or qualification_outputs.get("QualificationPolicyContractVersion") != (
         "2026-08-17-bound-qualification-control-plane-v4"
     ):

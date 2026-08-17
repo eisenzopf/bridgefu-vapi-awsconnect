@@ -398,7 +398,7 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("release/verify_release_buckets.py", candidate)
         verifier = (ROOT / "release" / "verify_release_control_plane.py").read_text()
         self.assertIn("PublisherPolicyContractVersion", verifier)
-        self.assertIn("2026-08-17-bound-release-control-plane-v5", verifier)
+        self.assertIn("2026-08-17-bound-release-control-plane-v6", verifier)
         self.assertIn("QualificationPolicyContractVersion", verifier)
         self.assertIn("2026-08-17-bound-qualification-control-plane-v4", verifier)
         self.assertIn('"cloudformation",\n        "get-template"', verifier)
@@ -420,6 +420,14 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("ReapOnlyOwnedReleaseAttempts", verifier)
         self.assertIn("DisposableQualificationOrchestration", verifier)
         self.assertIn("ReadExactDeployedReleaseRoles", publisher)
+        self.assertIn(
+            "role/bridgefu-vapi-awsconnect-publi-CandidateBuilderRole-*",
+            publisher,
+        )
+        self.assertNotIn(
+            "role/${AWS::StackName}-CandidateBuilderRole-*",
+            publisher,
+        )
         self.assertIn("- iam:GetRolePolicy", publisher)
         self.assertIn("- iam:GetRole", publisher)
         self.assertIn("- iam:ListAttachedRolePolicies", publisher)
