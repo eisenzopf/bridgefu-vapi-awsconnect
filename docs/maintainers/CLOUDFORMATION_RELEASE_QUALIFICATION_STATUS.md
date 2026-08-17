@@ -103,7 +103,7 @@ Local gate evidence on 2026-08-17:
   templates in `us-west-2` and all ten in `us-east-1` (20/20), using the same
   bytes produced by the passing deterministic package gate.
 - push-triggered CI passed all four required checks on exact merged-main commit
-  `26706683b3c92c1a735fc09e5171975d27025ff9`.
+  `c542e3f7edb9be706c316b318b9ac14be21ba138`.
 - the retained Oregon diagnostic root and its companion direct-handoff stack
   were deleted; direct service inventory proved zero CloudFormation, Vapi,
   Connect, EC2/VPC, EBS, Lambda, API Gateway, DynamoDB, Secrets Manager, IAM,
@@ -112,6 +112,13 @@ Local gate evidence on 2026-08-17:
   reviewed in-place change sets with zero replacement or removal, their exact
   v5/v4 templates and critical policies passed verification, all expected
   GitHub environment bindings matched, and both stacks report `IN_SYNC`.
+- private candidate `0.1.22` stopped before AMI creation or qualification when
+  its release-control self-audit proved that `CandidateBuilderRole` could not
+  call read-only `iam:GetRole` on itself. CloudFormation had truncated the
+  generated physical role name to the canonical `...-publi-CandidateBuilderRole-*`
+  family while the v5 policy predicted the untruncated stack-name family. The
+  v6 contract corrects only that read-only resource ARN and adds a regression;
+  no candidate or smoke infrastructure was created by the failed attempt.
 
 ## Audit safeguards incorporated in the worktree
 

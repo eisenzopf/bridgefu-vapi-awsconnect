@@ -138,8 +138,11 @@ Resources:
                   - iam:ListAttachedRolePolicies
                   - iam:ListRolePolicies
                 Resource:
+                  # CloudFormation truncates this generated physical role name
+                  # before appending the logical ID and random suffix. Keep the
+                  # read-only self-audit scoped to that exact generated family.
                   - !Sub >-
-                    arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${AWS::StackName}-CandidateBuilderRole-*
+                    arn:${AWS::Partition}:iam::${AWS::AccountId}:role/bridgefu-vapi-awsconnect-publi-CandidateBuilderRole-*
                   - !Sub >-
                     arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${AWS::StackName}-PublisherRole-*
                   - !Sub >-
@@ -499,4 +502,4 @@ Outputs:
   RecoveryRoleArn: {Value: !GetAtt RecoveryRole.Arn}
   SigningKeyArn: {Value: !GetAtt SigningKey.Arn}
   PublisherPolicyContractVersion:
-    Value: 2026-08-17-bound-release-control-plane-v5
+    Value: 2026-08-17-bound-release-control-plane-v6

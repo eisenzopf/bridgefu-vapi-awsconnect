@@ -185,7 +185,7 @@ No item below is recorded as passed by this reconciliation.
    commit. Do not hand-edit role policies.
 3. Verify the deployed original templates equal the repository bytes, the
    publisher output is
-   `PublisherPolicyContractVersion=2026-08-17-bound-release-control-plane-v5`,
+   `PublisherPolicyContractVersion=2026-08-17-bound-release-control-plane-v6`,
    and the qualification output is
    `QualificationPolicyContractVersion=2026-08-17-bound-qualification-control-plane-v4`.
 4. Verify `RecoveryRole` and `QualificationRunnerRole` are `IN_SYNC`, each has
