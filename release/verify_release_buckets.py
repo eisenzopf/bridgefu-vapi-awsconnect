@@ -158,6 +158,8 @@ def verify(args: argparse.Namespace, cli: AwsCli) -> dict[str, Any]:
         "get-public-access-block",
         "--account-id",
         account,
+        "--region",
+        "us-east-1",
         absent_ok=True,
     )
     account_configuration = (
