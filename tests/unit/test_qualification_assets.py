@@ -215,6 +215,33 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("packer build", build)
         self.assertLess(build.index("mkdir -p target"), build.index("packer build"))
 
+    def test_fresh_qualification_job_checks_out_pinned_bridgefu_before_aws(self):
+        workflow = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
+        qualification = workflow.split("  qualify-regions-sequentially:\n", 1)[1].split(
+            "\n  seal-qualified-receipt:", 1
+        )[0]
+        checkout = qualification.index(
+            "Checkout and reverify the exact Bridgefu source used by the AMI and SDK"
+        )
+        credentials = qualification.index("aws-actions/configure-aws-credentials@v4")
+        smoke = qualification.index("Run both live smoke paths and prove teardown")
+        self.assertLess(checkout, credentials)
+        self.assertLess(credentials, smoke)
+        checkout_block = qualification[checkout:credentials]
+        self.assertIn(
+            'git clone --filter=blob:none --no-checkout "$repository" '
+            "target/pinned-bridgefu",
+            checkout_block,
+        )
+        self.assertIn(
+            'git -C target/pinned-bridgefu checkout --detach "$commit"',
+            checkout_block,
+        )
+        self.assertIn(
+            'git -C target/pinned-bridgefu rev-parse HEAD', checkout_block
+        )
+        self.assertIn("target/pinned-bridgefu/Cargo.lock", checkout_block)
+
     def test_static_sip_client_links_opus_dependencies_and_launches_in_ci(self):
         workflows = [
             (ROOT / ".github" / "workflows" / name).read_text()
