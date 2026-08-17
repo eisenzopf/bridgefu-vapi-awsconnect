@@ -88,10 +88,20 @@ Resources:
                     s3:prefix:
                       - candidates/*
                       - releases/*
-              - Sid: InspectCandidateBucketVersioning
+              - Sid: InspectCandidateBucketControlPlane
                 Effect: Allow
-                Action: s3:GetBucketVersioning
+                Action:
+                  - s3:GetBucketOwnershipControls
+                  - s3:GetBucketLocation
+                  - s3:GetBucketPolicy
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:GetBucketVersioning
+                  - s3:GetEncryptionConfiguration
                 Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*'
+              - Sid: InspectAccountPublicAccessBlock
+                Effect: Allow
+                Action: s3:GetAccountPublicAccessBlock
+                Resource: '*'
               - Sid: ManagePrivateCandidateObjects
                 Effect: Allow
                 Action:
@@ -111,12 +121,33 @@ Resources:
                 Resource: '*'
               - Sid: VerifyDeployedReleaseControlPlaneContract
                 Effect: Allow
-                Action: cloudformation:DescribeStacks
+                Action:
+                  - cloudformation:DetectStackResourceDrift
+                  - cloudformation:DescribeStacks
+                  - cloudformation:GetTemplate
                 Resource:
                   - !Sub >-
                     arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/bridgefu-vapi-awsconnect-publisher/*
                   - !Sub >-
                     arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/bridgefu-vapi-awsconnect-qualification/*
+              - Sid: ReadExactDeployedReleaseRoles
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListRolePolicies
+                Resource:
+                  - !Sub >-
+                    arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${AWS::StackName}-CandidateBuilderRole-*
+                  - !Sub >-
+                    arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${AWS::StackName}-PublisherRole-*
+                  - !Sub >-
+                    arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${AWS::StackName}-RecoveryRole-*
+                  - !Sub >-
+                    arn:${AWS::Partition}:iam::${AWS::AccountId}:role/bridgefu-vapi-awsconnect-qualification-runner
+                  - !Sub >-
+                    arn:${AWS::Partition}:iam::${AWS::AccountId}:role/bridgefu-vapi-awsconnect-qualification-cloudformation
               - Effect: Allow
                 Action:
                   - ec2:AssociateIamInstanceProfile
@@ -146,6 +177,7 @@ Resources:
   PublisherRole:
     Type: AWS::IAM::Role
     Properties:
+      MaxSessionDuration: 10800
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -177,10 +209,40 @@ Resources:
                       - candidates/publications/*
                       - releases/*
                       - latest/*
-              - Sid: InspectPublicationBucketVersioning
+              - Sid: InspectPublicationBucketControlPlane
                 Effect: Allow
-                Action: s3:GetBucketVersioning
+                Action:
+                  - s3:GetBucketOwnershipControls
+                  - s3:GetBucketLocation
+                  - s3:GetBucketPolicy
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:GetBucketVersioning
+                  - s3:GetEncryptionConfiguration
                 Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*'
+              - Sid: InspectPublicationAccountPublicAccessBlock
+                Effect: Allow
+                Action: s3:GetAccountPublicAccessBlock
+                Resource: '*'
+              - Sid: VerifyPublisherControlPlaneContract
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:GetTemplate
+                  - cloudformation:DetectStackResourceDrift
+                Resource:
+                  - !Sub >-
+                    arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/bridgefu-vapi-awsconnect-publisher/*
+                  - !Sub >-
+                    arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/bridgefu-vapi-awsconnect-qualification/*
+              - Sid: ReadExactPublisherRole
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListRolePolicies
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${AWS::StackName}-PublisherRole-*
               - Sid: ReadQualifiedCandidate
                 Effect: Allow
                 Action:
@@ -207,6 +269,7 @@ Resources:
                   - s3:GetObjectVersion
                   - s3:PutObject
                   - s3:PutObjectTagging
+                  - s3:PutObjectVersionTagging
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*/qualification/receipt.json'
                   - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucketPrefix}-*/releases/*/qualification/receipt.sig'
@@ -246,6 +309,7 @@ Resources:
   RecoveryRole:
     Type: AWS::IAM::Role
     Properties:
+      MaxSessionDuration: 10800
       Description: >-
         Cancellation-safe cleanup only. Bind this role to a release-recovery
         GitHub environment with no required reviewers.
@@ -343,6 +407,26 @@ Resources:
                 Effect: Allow
                 Action: kms:Verify
                 Resource: !GetAtt SigningKey.Arn
+              - Sid: VerifyRecoveryControlPlaneContract
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:GetTemplate
+                  - cloudformation:DetectStackResourceDrift
+                Resource:
+                  - !Sub >-
+                    arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/bridgefu-vapi-awsconnect-publisher/*
+                  - !Sub >-
+                    arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/bridgefu-vapi-awsconnect-qualification/*
+              - Sid: ReadExactRecoveryRole
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListRolePolicies
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${AWS::StackName}-RecoveryRole-*
               - Sid: ReadExactRegionalVapiKeysForOrphanCleanup
                 Effect: Allow
                 Action: secretsmanager:GetSecretValue
@@ -415,4 +499,4 @@ Outputs:
   RecoveryRoleArn: {Value: !GetAtt RecoveryRole.Arn}
   SigningKeyArn: {Value: !GetAtt SigningKey.Arn}
   PublisherPolicyContractVersion:
-    Value: 2026-08-17-direct-vapi-recovery-v1
+    Value: 2026-08-17-bound-release-control-plane-v5

@@ -9,10 +9,26 @@ permissions:
   contents: read
 
 jobs:
-  sdp-diagnostics:
-    runs-on: ubuntu-latest
+  secret-scan:
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan the complete Git history for credentials
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/repo:ro" -w /repo \
+            zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git /repo --gitleaks-ignore-path /repo/.gitleaksignore \
+            --redact=100 --no-banner --timeout 300
+
+  sdp-diagnostics:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Test the qualification-only crates.io rvoip SDP observer
         run: |
           cargo fmt --manifest-path qualification/sdp-observer/Cargo.toml -- --check
@@ -28,7 +44,7 @@ jobs:
   qualification-client:
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Test crates.io rvoip SIP smoke client
         run: cargo test --locked --manifest-path qualification/sip-client/Cargo.toml
       - name: Test the exact crates.io rvoip direct secure probe
@@ -72,7 +88,7 @@ jobs:
             file "$binary" | grep -F 'statically linked'
             "$binary" --help >/dev/null
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: qualification-native-clients-${{ github.sha }}
           path: |
@@ -80,7 +96,7 @@ jobs:
             qualification/direct-secure-probe/target/aarch64-unknown-linux-musl/release/bridgefu-direct-secure-probe
           if-no-files-found: error
           retention-days: 7
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: {node-version: '22', cache: npm, cache-dependency-path: qualification/package-lock.json}
       - name: Check browser smoke harnesses
         run: |
@@ -89,19 +105,33 @@ jobs:
           node --check qualification/browser/bridgefu-web-playwright.mjs
 
   validate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with: {python-version: '3.12'}
-      - uses: hashicorp/setup-packer@main
+      - uses: hashicorp/setup-packer@1aa358be5cf73883762b302a3a03abd66e75b232 # v3.1.0
         with: {version: '1.12.0'}
       - name: Install validation tools
-        run: >-
-          pip install
-          'cfn-lint>=1.30,<2'
-          'ruff>=0.12,<1'
-          -r qualification/requirements-runner.txt
+        run: |
+          set -euo pipefail
+          python -m pip install --require-hashes \
+            -r release/requirements-validation.lock
+      - name: Validate GitHub Actions workflows with pinned actionlint
+        run: |
+          set -euo pipefail
+          version=1.7.7
+          archive="actionlint_${version}_linux_amd64.tar.gz"
+          curl --fail --location --silent --show-error --proto '=https' \
+            --tlsv1.2 \
+            "https://github.com/rhysd/actionlint/releases/download/v${version}/${archive}" \
+            --output "/tmp/$archive"
+          printf '%s  %s\n' \
+            023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757 \
+            "/tmp/$archive" | sha256sum --check --strict
+          tar -xzf "/tmp/$archive" -C /tmp actionlint
+          test "$(/tmp/actionlint -version | head -1)" = "$version"
+          /tmp/actionlint
       - name: Checkout the exact Bridgefu source used by the SDK bundle
         run: |
           set -euo pipefail
@@ -111,7 +141,7 @@ jobs:
           git -C target/pinned-bridgefu checkout --detach "$commit"
           test "$(sha256sum target/pinned-bridgefu/Cargo.lock | awk '{print $1}')" = \
             "$(jq -r .cargo_lock_sha256 bridgefu.lock.json)"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
           cache: npm
@@ -128,7 +158,8 @@ jobs:
           ruff check .
           shellcheck image/install.sh image/runtime/bootstrap.sh \
             image/runtime/bridgefu-load-secrets image/runtime/bridgefu-cert-refresh \
-            image/runtime/bridgefu-cert-reload image/runtime/bridgefu-run
+            image/runtime/bridgefu-cert-reload image/runtime/bridgefu-run \
+            release/reap_qualification.sh
       - name: Deterministic packaging
         run: |
           python release/build_release.py --version 0.1.0-dev --output target/release-a
@@ -143,10 +174,44 @@ jobs:
           publisher/*.yaml
       - name: Packer validation
         run: |
+          set -euo pipefail
           bridgefu_commit="$(jq -r .commit bridgefu.lock.json)"
           bridgefu_lock="$(jq -r .cargo_lock_sha256 bridgefu.lock.json)"
+          test "$(packer version | sed -n 's/^Packer v//p' | head -1)" = 1.12.0
+          python release/ami_build_inputs.py --inputs image/build-inputs.json \
+            > target/ami-build-input-verification.json
+          jq -e '.schema_version == 1 and .verified == true and
+            .redacted == true and
+            (.source_ami_id | test("^ami-[0-9a-f]{17}$"))' \
+            target/ami-build-input-verification.json >/dev/null
+          source_base_ami="$(jq -r .source_ami.id image/build-inputs.json)"
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
+          packer_plugin_version="$(jq -r .packer.amazon_plugin_version \
+            image/build-inputs.json)"
+          test "$packer_plugin_version" = 1.3.9
+          packer_plugin_platform=linux_amd64
+          packer_plugin_archive=target/packer-plugin-amazon.zip
+          packer_plugin_binary="packer-plugin-amazon_v${packer_plugin_version}_x5.0_${packer_plugin_platform}"
+          packer_plugin_sha256="$(jq -r \
+            ".packer.amazon_plugin_zip_sha256.${packer_plugin_platform}" \
+            image/build-inputs.json)"
+          [[ "$packer_plugin_sha256" =~ ^[0-9a-f]{64}$ ]]
+          curl --fail --location --silent --show-error --proto '=https' \
+            --tlsv1.2 \
+            "https://github.com/hashicorp/packer-plugin-amazon/releases/download/v${packer_plugin_version}/${packer_plugin_binary}.zip" \
+            --output "$packer_plugin_archive"
+          printf '%s  %s\n' "$packer_plugin_sha256" "$packer_plugin_archive" | \
+            sha256sum --check --strict
+          unzip -q "$packer_plugin_archive" "$packer_plugin_binary" -d target
+          chmod 0700 "target/$packer_plugin_binary"
+          packer plugins install --path "target/$packer_plugin_binary" \
+            github.com/hashicorp/amazon
+          test "$(packer plugins installed | \
+            grep -Ec "/${packer_plugin_binary}$")" = 1
           packer init image/bridgefu.pkr.hcl
           packer validate \
+            -var source_ami_id="$source_base_ami" \
             -var bridgefu_commit="$bridgefu_commit" \
             -var bridgefu_cargo_lock_sha256="$bridgefu_lock" \
             -var candidate_id=candidate-0.1.0-dev-ci-validation \

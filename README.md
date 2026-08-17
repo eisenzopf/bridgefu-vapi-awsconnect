@@ -8,7 +8,7 @@ of caller details you chose to collect.
 flowchart LR
     V["New Vapi template assistant"] -->|"Store context"| L["AWS Lambda"]
     L --> D["DynamoDB"]
-    V -->|"SIPS transfer; SRTP preferred"| B["Bridgefu EC2"]
+    V -->|"SIP over TLS; SRTP preferred"| B["Bridgefu EC2"]
     B --> C["Amazon Connect"]
     C -->|"Correlation lookup"| D
     C --> A["Agent screen pop"]
@@ -46,5 +46,6 @@ correlation header in its SIP INVITE; Bridgefu passes it to Connect; the
 Connect lookup Lambda reads DynamoDB and populates the agent screen. The model
 never sees credentials, the correlation ID, or the one-time SIP route.
 
-See [operations](docs/operations.md) for monitoring, updates, retention, and
-removal. Maintainers should begin with [the release guide](docs/maintainers/release.md).
+See [operations](docs/operations.md) and the [alarm runbooks](runbooks/README.md)
+for monitoring, recovery, updates, retention, and removal. Maintainers should
+begin with [the release guide](docs/maintainers/release.md).

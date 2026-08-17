@@ -13,6 +13,7 @@ import tempfile
 import urllib.parse
 from pathlib import Path
 
+from ami_build_inputs import load as load_ami_build_inputs
 from build_lambdas import build as build_lambdas
 
 VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$")
@@ -210,6 +211,14 @@ def verify_existing_release(
             raise SystemExit(f"release artifact is missing: {relative}")
         if digest(path) != expected_digest or path.stat().st_size != expected_size:
             raise SystemExit(f"release artifact digest mismatch: {relative}")
+    if "ami-build-inputs.json" not in seen:
+        raise SystemExit("release manifest omits the AMI build input artifact")
+    try:
+        bound_ami_inputs = load_ami_build_inputs(output / "ami-build-inputs.json")
+    except (OSError, ValueError) as error:
+        raise SystemExit("release AMI build inputs are invalid") from error
+    if manifest.get("ami_build_inputs") != bound_ami_inputs:
+        raise SystemExit("release manifest AMI build inputs do not match the artifact")
     return manifest
 
 
@@ -365,6 +374,10 @@ def main() -> int:
                 replacements,
             )
         shutil.copyfile(root / "bridgefu.lock.json", staging / "bridgefu.lock.json")
+        ami_build_inputs = load_ami_build_inputs(root / "image" / "build-inputs.json")
+        (staging / "ami-build-inputs.json").write_text(
+            json.dumps(ami_build_inputs, indent=2, sort_keys=True) + "\n"
+        )
         if args.render_phase != "complete":
             (staging / OUTPUT_MARKER).write_text("generated release output\n")
             if output.exists():
@@ -419,6 +432,7 @@ def main() -> int:
             "version": args.version,
             "supported_regions": region_release,
             "bridgefu": lock,
+            "ami_build_inputs": ami_build_inputs,
             "object_versions": object_versions,
             "artifacts": inventory,
             "contains_secrets": False,

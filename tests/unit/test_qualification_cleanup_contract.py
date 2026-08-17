@@ -26,9 +26,200 @@ class ProbeRunner:
 
 
 class QualificationCleanupContractTests(unittest.TestCase):
+    def test_unexecuted_nested_review_uses_exact_delete_change_set(self):
+        root_change_set = (
+            "arn:aws:cloudformation:us-west-2:123456789012:"
+            "changeSet/bridgefu-bfq-test1234-review/change-1234"
+        )
+        root_stack = (
+            "arn:aws:cloudformation:us-west-2:123456789012:"
+            "stack/bridgefu-bfq-test1234/stack-1234"
+        )
+        child_change_set = (
+            "arn:aws:cloudformation:us-west-2:123456789012:"
+            "changeSet/child-review/change-5678"
+        )
+        child_stack = (
+            "arn:aws:cloudformation:us-west-2:123456789012:"
+            "stack/child-review/stack-5678"
+        )
+
+        class Aws:
+            def __init__(self):
+                self.deleted = False
+                self.text_calls = []
+
+            def json(self, arguments, timeout=120):
+                self.assert_timeout = timeout
+                if arguments[:2] == ["cloudformation", "describe-stacks"]:
+                    return {
+                        "Stacks": [
+                            {
+                                "StackId": root_stack,
+                                "StackName": "bridgefu-bfq-test1234",
+                                "StackStatus": "REVIEW_IN_PROGRESS",
+                            }
+                        ]
+                    }
+                if arguments[:2] == ["cloudformation", "describe-change-set"]:
+                    return {
+                        "ChangeSetId": root_change_set,
+                        "StackId": root_stack,
+                        "ParentChangeSetId": None,
+                        "RootChangeSetId": None,
+                        "ExecutionStatus": "AVAILABLE",
+                        "Status": "CREATE_COMPLETE",
+                        "IncludeNestedStacks": True,
+                    }
+                raise AssertionError(arguments)
+
+            def text(self, arguments, timeout=900):
+                self.text_calls.append((arguments, timeout))
+                self.deleted = True
+                return ""
+
+            def exists(self, arguments):
+                if not self.deleted or arguments[1] not in {
+                    "describe-stacks",
+                    "describe-change-set",
+                }:
+                    raise AssertionError(arguments)
+                return False
+
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.args = SimpleNamespace(
+            execution_id="bfq-test1234",
+            region="us-west-2",
+            expected_account_id="123456789012",
+        )
+        controller.stack_name = "bridgefu-bfq-test1234"
+        controller.root_change_set_arn = root_change_set
+        controller.reviewed_change_set_arns = (root_change_set, child_change_set)
+        controller.reviewed_stack_ids = (root_stack, child_stack)
+        controller.aws = Aws()
+
+        self.assertTrue(controller.delete_unexecuted_change_set_hierarchy(root_stack))
+        self.assertEqual(
+            controller.aws.text_calls,
+            [
+                (
+                    [
+                        "cloudformation",
+                        "delete-change-set",
+                        "--change-set-name",
+                        root_change_set,
+                    ],
+                    180,
+                )
+            ],
+        )
+
+    def test_partial_outputs_track_versioned_acm_journal_bucket(self):
+        output = Path(CONTROLLER.tempfile.mkdtemp(prefix="acm-journal-test-"))
+        root_stack = (
+            "arn:aws:cloudformation:us-west-2:123456789012:"
+            "stack/bridgefu-bfq-test1234/stack-1234"
+        )
+        journal = {
+            "schema_version": 1,
+            "producer": CONTROLLER.ACM_OWNERSHIP_PRODUCER,
+            "execution_id": "bfq-test1234",
+            "region": "us-west-2",
+            "public_hosted_zone_id": "Z123",
+            "certificate_arn": (
+                "arn:aws:acm:us-west-2:123456789012:certificate/abc-123"
+            ),
+            "record_sets": [],
+            "ownership_sha256": "a" * 64,
+            "created_at": "2026-08-16T20:00:00Z",
+            "redacted": True,
+        }
+
+        class Aws:
+            def json(self, arguments, timeout=120):
+                if arguments[:2] == ["cloudformation", "describe-stacks"]:
+                    return {
+                        "Stacks": [
+                            {
+                                "StackId": root_stack,
+                                "StackStatus": "CREATE_FAILED",
+                            }
+                        ]
+                    }
+                if arguments[:2] == ["s3api", "put-object"]:
+                    self.put_arguments = arguments
+                    return {"VersionId": "journal-version-1", "ETag": "redacted"}
+                raise AssertionError(arguments)
+
+        try:
+            controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+            controller.args = SimpleNamespace(
+                execution_id="bfq-test1234",
+                region="us-west-2",
+                hosted_zone_id="Z123",
+                hosted_zone_name="example.com",
+                output=output,
+            )
+            controller.created_stack = True
+            controller.change_set_execution_attempted = True
+            controller.stack_id = root_stack
+            controller.stack_name = "bridgefu-bfq-test1234"
+            controller.outputs = {}
+            controller.acm_validation_discovery_complete = False
+            controller.acm_validation_journal = None
+            controller.acm_validation_journal_object = None
+            controller.acm_validation_journal_bucket = None
+            controller.acm_validation_journal_key = None
+            controller.acm_validation_journal_version_id = None
+            controller.aws = Aws()
+            with (
+                mock.patch.object(
+                    controller, "resolve_existing_stack_id", return_value=root_stack
+                ),
+                mock.patch.object(
+                    CONTROLLER,
+                    "discover_acm_validation_ownership",
+                    return_value=journal,
+                ),
+                mock.patch.object(
+                    CONTROLLER,
+                    "discover_stack_output",
+                    return_value="bridgefu-artifacts-test",
+                ),
+            ):
+                controller.ensure_acm_validation_journal()
+
+            self.assertEqual(
+                controller.outputs["ArtifactBucket"], "bridgefu-artifacts-test"
+            )
+            self.assertEqual(
+                controller.acm_validation_journal_bucket,
+                "bridgefu-artifacts-test",
+            )
+            self.assertEqual(
+                controller.acm_validation_journal_key,
+                "qualification/bfq-test1234/ownership/acm-validation-records.json",
+            )
+            self.assertEqual(
+                controller.acm_validation_journal_version_id,
+                "journal-version-1",
+            )
+            controller.outputs = {}
+            self.assertEqual(
+                controller.qualification_artifact_bucket(),
+                "bridgefu-artifacts-test",
+            )
+        finally:
+            CONTROLLER.shutil.rmtree(output, ignore_errors=True)
+
     def test_acm_zero_result_is_not_final_while_stack_is_in_progress(self):
         controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
         controller.created_stack = True
+        controller.change_set_execution_attempted = True
+        controller.stack_id = (
+            "arn:aws:cloudformation:us-west-2:123456789012:"
+            "stack/bridgefu-bfq-test1234/01234567-89ab-cdef-0123-456789abcdef"
+        )
         controller.acm_validation_discovery_complete = False
         controller.stack_name = "bridgefu-bfq-test1234"
         controller.outputs = {}
@@ -207,9 +398,7 @@ class QualificationCleanupContractTests(unittest.TestCase):
                 value = super().json(arguments, timeout)
                 if arguments[:2] == ["acm", "list-tags-for-certificate"]:
                     value["Tags"] = [
-                        item
-                        for item in value["Tags"]
-                        if item["Key"] != "ManagedBy"
+                        item for item in value["Tags"] if item["Key"] != "ManagedBy"
                     ] + [{"Key": "ManagedBy", "Value": "bridgefu-qualification"}]
                 return value
 

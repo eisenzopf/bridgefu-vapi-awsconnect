@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bridgefu.dev/vapi-awsconnect/qualification/preflight-v1.schema.json",
+  "title": "Qualification pre-mutation identity, DNS, AMI, and capacity proof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "producer", "execution_id", "region", "runtime_image_fingerprint", "runtime_image_sha256", "instance_type", "vcpus", "memory_mib", "checks", "passed", "redacted"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "producer": {"const": "bridgefu-qualification-preflight@1"},
+    "execution_id": {"type": "string", "pattern": "^bfq-[a-z0-9-]{4,28}$"},
+    "region": {"enum": ["us-west-2", "us-east-1"]},
+    "runtime_image_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{12}$"},
+    "runtime_image_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "instance_type": {"type": "string", "pattern": "^[a-z0-9.]{3,32}$"},
+    "vcpus": {"type": "integer", "minimum": 1, "maximum": 256},
+    "memory_mib": {"type": "integer", "minimum": 1, "maximum": 2097152},
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["active_account_exact", "cloudformation_role_account_exact", "vapi_secret_account_region_exact", "public_hosted_zone_exact", "public_delegation_exact", "dns_names_vacant", "candidate_ami_exact", "instance_offering_available", "vpcs", "internet_gateways", "elastic_ips", "connect_instances", "standard_vcpus"],
+      "properties": {
+        "active_account_exact": {"const": true},
+        "cloudformation_role_account_exact": {"const": true},
+        "vapi_secret_account_region_exact": {"const": true},
+        "public_hosted_zone_exact": {"const": true},
+        "public_delegation_exact": {"const": true},
+        "dns_names_vacant": {"const": true},
+        "candidate_ami_exact": {"const": true},
+        "instance_offering_available": {"const": true},
+        "vpcs": {"const": true},
+        "internet_gateways": {"const": true},
+        "elastic_ips": {"const": true},
+        "connect_instances": {"const": true},
+        "standard_vcpus": {"const": true}
+      }
+    },
+    "passed": {"const": true},
+    "redacted": {"const": true}
+  }
+}

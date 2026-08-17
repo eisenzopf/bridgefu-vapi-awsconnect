@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bridgefu.dev/vapi-awsconnect/qualification/runtime-deployment-v1.schema.json",
+  "title": "Exact deployed Bridgefu runtime proof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "producer", "execution_id", "region", "runtime_image_sha256", "instance_id_fingerprint", "instance_type", "architecture", "availability_zone", "checks", "passed", "redacted"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "producer": {"const": "bridgefu-runtime-deployment@1"},
+    "execution_id": {"type": "string", "pattern": "^bfq-[a-z0-9-]{4,28}$"},
+    "region": {"enum": ["us-west-2", "us-east-1"]},
+    "runtime_image_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "instance_id_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+    "instance_type": {"type": "string", "pattern": "^[a-z0-9.]{3,32}$"},
+    "architecture": {"const": "arm64"},
+    "availability_zone": {"type": "string", "pattern": "^us-(east|west)-[12][a-z]$"},
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instance_id_exact", "candidate_ami_exact", "instance_type_exact", "architecture_arm64", "running", "ownership_tags_exact"],
+      "properties": {
+        "instance_id_exact": {"const": true},
+        "candidate_ami_exact": {"const": true},
+        "instance_type_exact": {"const": true},
+        "architecture_arm64": {"const": true},
+        "running": {"const": true},
+        "ownership_tags_exact": {"const": true}
+      }
+    },
+    "passed": {"const": true},
+    "redacted": {"const": true}
+  }
+}

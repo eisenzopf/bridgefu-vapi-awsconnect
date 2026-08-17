@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   Bridgefu Starter runtime: one SSM-managed EC2 media gateway with a direct EIP,
-  optional exportable ACM certificate automation for SIPS/SRTP, encrypted
+  optional exportable ACM certificate automation for TLS SIP and SRTP, encrypted
   durable storage, private control, backups, and CloudWatch collection. The
   nonproduction SIP/RTP path creates no public DNS record or ACM certificate.
 
@@ -122,7 +122,7 @@ Rules:
     RuleCondition: !Not [!Equals [!Ref SipSecurity, sip_rtp]]
     Assertions:
       - Assert: !Not [!Equals [!Ref PublicHostedZoneId, none]]
-        AssertDescription: SIPS requires a public Route 53 hosted zone and hostname.
+        AssertDescription: TLS SIP signaling requires a public Route 53 hosted zone and hostname.
   ClearSipIsTestOnly:
     RuleCondition: !Equals [!Ref SipSecurity, sip_rtp]
     Assertions:
@@ -192,7 +192,7 @@ Resources:
       FromPort: 5061
       ToPort: 5061
       CidrIp: !Ref VapiSignalingCidr1
-      Description: Vapi SIPS signaling 1
+      Description: Vapi TLS SIP signaling 1
 
   SecureSipIngress2:
     Type: AWS::EC2::SecurityGroupIngress
@@ -203,7 +203,7 @@ Resources:
       FromPort: 5061
       ToPort: 5061
       CidrIp: !Ref VapiSignalingCidr2
-      Description: Vapi SIPS signaling 2
+      Description: Vapi TLS SIP signaling 2
 
   SecureSipIngress3:
     Type: AWS::EC2::SecurityGroupIngress
@@ -214,7 +214,7 @@ Resources:
       FromPort: 5061
       ToPort: 5061
       CidrIp: !Ref VapiSignalingCidr3
-      Description: Optional Vapi SIPS signaling 3
+      Description: Optional Vapi TLS SIP signaling 3
 
   SecureSipIngress4:
     Type: AWS::EC2::SecurityGroupIngress
@@ -225,7 +225,7 @@ Resources:
       FromPort: 5061
       ToPort: 5061
       CidrIp: !Ref VapiSignalingCidr4
-      Description: Optional Vapi SIPS signaling 4
+      Description: Optional Vapi TLS SIP signaling 4
 
   ClearSipTcpIngress1:
     Type: AWS::EC2::SecurityGroupIngress

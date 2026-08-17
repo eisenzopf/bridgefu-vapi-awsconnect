@@ -1,0 +1,29 @@
+{
+  "schema": "bridgefu-ami-build-inputs/v1",
+  "packer": {
+    "amazon_plugin_version": "1.3.9",
+    "amazon_plugin_zip_sha256": {
+      "darwin_arm64": "69fd7a75545eb851574dd14191c8a80cf68d5c80555a346475e271df3133a43e",
+      "linux_amd64": "c4de5f441958d02ca2a6efa6d156e3a2a8c2f556b68f7fd1832e53c90d1e605d",
+      "linux_arm64": "432e03b0f59ec816671bcba7fd219966ab27d309a5558ddbb4abad9329438891"
+    },
+    "core_version": "1.12.0"
+  },
+  "source_ami": {
+    "architecture": "arm64",
+    "id": "ami-098176c88d53db397",
+    "name": "al2023-ami-2023.12.20260803.3-kernel-6.1-arm64",
+    "owner_id": "137112412989",
+    "region": "us-west-2"
+  },
+  "cloudwatch_agent": {
+    "gpg_fingerprint": "937616F3450B7D806CBD9725D58167303B789C72",
+    "gpg_material_sha256": "eff4d11ce021a8419119e499bf7bc4a2ec6946672ba251f6ebdc3d719e29778e",
+    "key_url": "https://amazoncloudwatch-agent.s3.amazonaws.com/assets/amazon-cloudwatch-agent.gpg",
+    "package_sha256": "5c7ed36ccf475698695c934798af6be2d8eb33d53b55bc516ec3aa917e20e2da",
+    "package_url": "https://amazoncloudwatch-agent.s3.amazonaws.com/amazon_linux/arm64/1.300071.0b1720/amazon-cloudwatch-agent.rpm",
+    "signature_sha256": "f741d7fac7768fc8c78addb10354474b5e846e31c632eb4a5f32c75a007d0339",
+    "signature_url": "https://amazoncloudwatch-agent.s3.amazonaws.com/amazon_linux/arm64/1.300071.0b1720/amazon-cloudwatch-agent.rpm.sig",
+    "version": "1.300071.0b1720"
+  }
+}

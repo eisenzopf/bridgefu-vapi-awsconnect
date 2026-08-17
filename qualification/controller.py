@@ -48,16 +48,31 @@ try:
 except ModuleNotFoundError:  # Imported as a repository module by unit tests.
     from qualification import bridgefu_web_handoff, bridgefu_web_runtime
 
+try:
+    import release_safeguards
+except ModuleNotFoundError:  # Imported as a repository module by unit tests.
+    from qualification import release_safeguards
+
+try:
+    import deployment_review
+except ModuleNotFoundError:  # Imported as a repository module by unit tests.
+    from qualification import deployment_review
+
 ROOT = Path(__file__).resolve().parents[1]
 QUALIFICATION = ROOT / "qualification"
 LAMBDA_COMMON = ROOT / "lambda" / "common"
+RELEASE_TOOLS = ROOT / "release"
 if os.fspath(LAMBDA_COMMON) not in sys.path:
     sys.path.insert(0, os.fspath(LAMBDA_COMMON))
+if os.fspath(RELEASE_TOOLS) not in sys.path:
+    sys.path.insert(0, os.fspath(RELEASE_TOOLS))
 
+import validate_staged_templates  # noqa: E402
 from vapi_provisioning import (  # noqa: E402
     ProvisioningConfig,
     VapiHttpClient,
     VapiProvisioningError,
+    parse_physical_id,
     provision_create,
     provision_delete,
 )
@@ -104,9 +119,26 @@ VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$")
 RESOURCE_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 S3_BUCKET = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
+CFN_STACK_UUID = r"[A-Za-z0-9-]{1,128}"
+CFN_CHANGE_SET_UUID = r"[A-Za-z0-9-]{1,128}"
 WEB_SCENARIO = "bridgefu-web-sdk-handoff"
 SCENARIOS = (WEB_SCENARIO, "vapi-sip-transfer")
 TRANSFER_REQUEST_SPEECH = "Transfer me please."
+QUALIFICATION_SIP_SECURITY = "sips_optional_srtp"
+QUALIFICATION_SCREEN_POP_FIELDS_JSON = (
+    '[{"key":"customer_name","label":"Customer","description":"For automated '
+    'qualification use Bridgefu Synthetic Caller.","type":"choice","required":true,'
+    '"choices":["Bridgefu Synthetic Caller","Alternate Synthetic Caller"]},'
+    '{"key":"issue_summary","label":"Issue","description":"For the SIP-source '
+    'qualification use Qualification SIP transfer source hangup.","type":"choice",'
+    '"required":true,"choices":["Qualification SIP transfer source hangup.",'
+    '"Qualification Bridgefu Web SDK source hangup."]},{"key":"intent","label":'
+    '"Intent","description":"For automated qualification use qualification.",'
+    '"type":"choice","required":true,"choices":["qualification","other"]},'
+    '{"key":"verification_status","label":"Verification","description":"For '
+    'automated qualification use synthetic.","type":"choice","required":true,'
+    '"choices":["synthetic","verified"]}]'
+)
 CONTEXT = {
     "customer_name": "Bridgefu Synthetic Caller",
     "intent": "qualification",
@@ -745,6 +777,74 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def load_sealed_template_catalog(
+    *,
+    staged_objects: Path,
+    template_root: Path,
+    release: str,
+    root_template_url: str,
+) -> tuple[deployment_review.SealedTemplate, ...]:
+    """Load the exact ten locally hashed templates bound to versioned S3 URLs."""
+    parsed_root = urllib.parse.urlsplit(root_template_url)
+    host_suffix = ".s3.us-east-1.amazonaws.com"
+    if (
+        parsed_root.scheme != "https"
+        or not isinstance(parsed_root.hostname, str)
+        or not parsed_root.hostname.endswith(host_suffix)
+    ):
+        raise QualificationError("sealed template root URL is invalid")
+    bucket = parsed_root.hostname.removesuffix(host_suffix)
+    try:
+        records = validate_staged_templates.load_exact_template_records(
+            staged_objects,
+            release_version=release,
+            bucket=bucket,
+        )
+    except validate_staged_templates.StagedTemplateError as error:
+        raise QualificationError("sealed template journal is invalid") from error
+    root = template_root.resolve()
+    if not root.is_dir() or template_root.is_symlink():
+        raise QualificationError("sealed template directory is invalid")
+    catalog: list[deployment_review.SealedTemplate] = []
+    prefix = f"releases/{release}/"
+    for record in records:
+        key = record["key"]
+        if not isinstance(key, str) or not key.startswith(prefix):
+            raise QualificationError("sealed template key is invalid")
+        relative = key.removeprefix(prefix)
+        candidate = root / relative
+        if candidate.is_symlink():
+            raise QualificationError("sealed local template differs from its journal")
+        template = candidate.resolve()
+        if (
+            root not in template.parents
+            or not template.is_file()
+            or template.stat().st_size != record["size_bytes"]
+            or sha256_file(template) != record["sha256"]
+        ):
+            raise QualificationError("sealed local template differs from its journal")
+        try:
+            parsed_template = deployment_review.parse_template_body(
+                template.read_text(encoding="utf-8")
+            )
+        except (
+            OSError,
+            UnicodeDecodeError,
+            deployment_review.DeploymentReviewError,
+        ) as error:
+            raise QualificationError("sealed local template is invalid") from error
+        catalog.append(
+            deployment_review.SealedTemplate(
+                validate_staged_templates.exact_template_url(record),
+                parsed_template,
+            )
+        )
+    urls = {item.url for item in catalog}
+    if len(catalog) != 10 or len(urls) != 10 or root_template_url not in urls:
+        raise QualificationError("sealed template catalog is not exact")
+    return tuple(catalog)
+
+
 def executable_sha256(path: Path) -> str:
     try:
         details = path.lstat()
@@ -948,6 +1048,96 @@ def validate_web_source_readiness(value: Any) -> Mapping[str, Any]:
     ):
         raise QualificationError("Vapi browser readiness timestamp is invalid")
     return value
+
+
+def established_call_window(
+    source: Mapping[str, Any],
+    agent: Mapping[str, Any],
+    session: Mapping[str, Any],
+) -> tuple[dt.datetime, dt.datetime]:
+    """Bind telemetry to the full source session through terminal hangup."""
+    session_started = session.get("started_epoch_ms")
+    source_media = source.get("media")
+    agent_media = agent.get("media")
+    source_hangup = source.get("hangup")
+    agent_hangup = agent.get("hangup")
+    if (
+        type(session_started) is not int
+        or session_started <= 0
+        or not isinstance(source_media, Mapping)
+        or not isinstance(agent_media, Mapping)
+        or not isinstance(source_hangup, Mapping)
+        or not isinstance(agent_hangup, Mapping)
+        or source_hangup.get("cleanup_observed") is not True
+        or agent_hangup.get("cleanup_observed") is not True
+        or not any(
+            source_hangup.get(key) is True
+            for key in (
+                "local_bye_completed",
+                "local_end_completed",
+                "remote_end_observed",
+            )
+        )
+        or not any(
+            agent_hangup.get(key) is True
+            for key in ("local_end_completed", "remote_end_observed")
+        )
+    ):
+        raise QualificationError("established-call telemetry window is invalid")
+
+    observed_at: list[int] = []
+    for observation in (source, agent):
+        value = observation.get("observed_at")
+        if not isinstance(value, str):
+            raise QualificationError("established-call telemetry window is invalid")
+        try:
+            parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise QualificationError(
+                "established-call telemetry window is invalid"
+            ) from error
+        if parsed.tzinfo is None:
+            raise QualificationError("established-call telemetry window is invalid")
+        observed_at.append(int(parsed.timestamp() * 1_000))
+
+    def timestamps(media: Mapping[str, Any]) -> list[int]:
+        result: list[int] = []
+        for key, values in media.items():
+            if not isinstance(key, str) or not key.endswith("_at_ms"):
+                continue
+            if not isinstance(values, list) or any(
+                type(item) is not int for item in values
+            ):
+                raise QualificationError(
+                    "established-call media timestamps are invalid"
+                )
+            result.extend(values)
+        return result
+
+    source_timestamps = timestamps(source_media)
+    agent_timestamps = timestamps(agent_media)
+    if not source_timestamps or not agent_timestamps:
+        raise QualificationError("established-call media timestamps are unavailable")
+    all_timestamps = source_timestamps + agent_timestamps
+    latest_observation = max(observed_at)
+    if any(
+        timestamp < session_started or timestamp > latest_observation + 1_000
+        for timestamp in all_timestamps
+    ):
+        raise QualificationError("established-call media timestamp is out of bounds")
+    started_ms = session_started
+    # Both observations are emitted only after their terminal hangup cleanup
+    # checks complete.  Their later timestamp is therefore the authoritative
+    # end of the active source session, not merely the last media marker.
+    ended_ms = max(observed_at)
+    if not 10_000 <= ended_ms - started_ms <= 600_000:
+        raise QualificationError(
+            "established-call telemetry span is outside its bounds"
+        )
+    return (
+        dt.datetime.fromtimestamp(started_ms / 1_000, tz=dt.UTC),
+        dt.datetime.fromtimestamp(ended_ms / 1_000, tz=dt.UTC),
+    )
 
 
 def direct_cleanup_receipt(
@@ -1232,6 +1422,17 @@ class Aws:
             ("route53", "get-hosted-zone"): {"NoSuchHostedZone"},
             ("connect", "describe-instance"): {"ResourceNotFoundException"},
             ("secretsmanager", "describe-secret"): {"ResourceNotFoundException"},
+            ("dynamodb", "describe-table"): {"ResourceNotFoundException"},
+            ("lambda", "get-function"): {"ResourceNotFoundException"},
+            ("apigatewayv2", "get-api"): {"NotFoundException"},
+            ("acm", "describe-certificate"): {"ResourceNotFoundException"},
+            ("cloudwatch", "get-dashboard"): {"ResourceNotFound"},
+            ("iam", "get-role"): {"NoSuchEntity"},
+            ("iam", "get-policy"): {"NoSuchEntity"},
+            ("iam", "get-instance-profile"): {"NoSuchEntity"},
+            ("sns", "get-topic-attributes"): {"NotFound"},
+            ("backup", "describe-backup-vault"): {"ResourceNotFoundException"},
+            ("backup", "get-backup-plan"): {"ResourceNotFoundException"},
         }
         if code in missing_codes.get(operation, set()):
             return False
@@ -1239,6 +1440,14 @@ class Aws:
             operation == ("cloudformation", "describe-stacks")
             and code == "ValidationError"
             and re.search(r"Stack with id .+ does not exist", error, re.I)
+        ):
+            return False
+        if (
+            operation == ("cloudformation", "describe-change-set")
+            and code == "ValidationError"
+            and re.search(
+                r"(?:ChangeSet|Stack(?: with id)?) .+ does not exist", error, re.I
+            )
         ):
             return False
         raise QualificationError("AWS existence check failed")
@@ -2518,6 +2727,7 @@ def make_session(
     sip_uri: str | None,
     source_call_id: str | None = None,
     correlation_id: str | None = None,
+    source_started_epoch_ms: int | None = None,
 ) -> dict[str, Any]:
     vapi_call_id = call.get("id")
     org_id = call.get("orgId")
@@ -2531,6 +2741,10 @@ def make_session(
     )
     if not re.fullmatch(r"bf1_[A-Za-z0-9_-]{43}", correlation):
         raise QualificationError("smoke correlation identity is invalid")
+    if source_started_epoch_ms is None:
+        source_started_epoch_ms = int(time.time() * 1000)
+    if type(source_started_epoch_ms) is not int or source_started_epoch_ms <= 0:
+        raise QualificationError("smoke source start timestamp is invalid")
     started = (
         call.get("createdAt") if isinstance(call.get("createdAt"), str) else utc_now()
     )
@@ -2558,7 +2772,7 @@ def make_session(
             "reorder_percent": 0,
         },
         "started_at": started,
-        "started_epoch_ms": int(time.time() * 1000),
+        "started_epoch_ms": source_started_epoch_ms,
         "correlation_id": correlation,
         "correlation_fingerprint": sha256_bytes(correlation.encode("ascii"))[:12],
         "source_call_id": effective_source_call_id,
@@ -3017,10 +3231,11 @@ def call_contains_transfer(value: Any, scenario: str = "vapi-sip-transfer") -> b
 
 def create_failure_arguments(retain_on_failure: bool) -> list[str]:
     # The controller owns cleanup. Keeping rollback disabled until it has read
-    # the stack events is what makes a normal failed run diagnosable; the
-    # retain flag controls whether cleanup follows evidence capture.
+    # the stack events is what makes a normal failed run diagnosable. CREATE
+    # change sets express that policy as OnStackFailure=DO_NOTHING; the retain
+    # flag controls whether cleanup follows evidence capture.
     del retain_on_failure
-    return ["--disable-rollback"]
+    return ["--on-stack-failure", "DO_NOTHING"]
 
 
 def collect_cloudformation_failure_events(
@@ -3479,15 +3694,30 @@ class Controller:
         self.web_runtime_secret_written = False
         self.acm_validation_journal: dict[str, Any] | None = None
         self.acm_validation_journal_object: str | None = None
+        self.acm_validation_journal_bucket: str | None = None
+        self.acm_validation_journal_key: str | None = None
+        self.acm_validation_journal_version_id: str | None = None
         self.acm_validation_discovery_complete = False
         self.demo_site: Path | None = None
         self.demo_site_sha256: str | None = None
         self.created_stack = False
+        self.stack_id: str | None = None
+        self.root_change_set_arn: str | None = None
+        self.change_set_execution_attempted = False
+        self.reviewed_change_set_arns: tuple[str, ...] = ()
+        self.reviewed_stack_ids: tuple[str, ...] = ()
+        self.sealed_template_catalog: (
+            tuple[deployment_review.SealedTemplate, ...] | None
+        ) = None
+        self.deployment_review_evidence: dict[str, Any] | None = None
+        self.runtime_deployment_evidence: dict[str, Any] | None = None
         self.processes: list[subprocess.Popen[str]] = []
         self.ssm_commands: list[str] = []
         self.started_at = utc_now()
         self.phase = "initialization"
         self.scenario_evidence: list[dict[str, Any]] = []
+        self.preflight_evidence: dict[str, Any] | None = None
+        self.owned_resource_inventory: dict[str, Any] | None = None
         self.secure_preflight_evidence: dict[str, Any] | None = None
         self.vapi_provisioning_resilience_evidence: dict[str, Any] | None = None
         self.vapi_provisioning_cleanup_required = False
@@ -3506,6 +3736,10 @@ class Controller:
             raise QualificationError("release version or region is invalid")
         if not re.fullmatch(r"[A-Z0-9]{1,64}", self.args.hosted_zone_id):
             raise QualificationError("hosted zone ID is invalid")
+        if not re.fullmatch(r"[0-9]{12}", self.args.expected_account_id):
+            raise QualificationError("expected AWS account ID is invalid")
+        if not re.fullmatch(r"ami-[0-9a-f]{8,17}", self.args.runtime_image_id):
+            raise QualificationError("candidate runtime AMI ID is invalid")
         hosted_zone_name = self.args.hosted_zone_name.rstrip(".").lower()
         if (
             len(hosted_zone_name) > 253
@@ -3534,6 +3768,15 @@ class Controller:
             raise QualificationError("release SIP client binary is unavailable")
         if not isinstance(self.args.demo_site_archive, Path):
             raise QualificationError("demo site archive is unavailable")
+        if (
+            not isinstance(self.args.staged_objects, Path)
+            or not self.args.staged_objects.is_file()
+            or self.args.staged_objects.is_symlink()
+            or not isinstance(self.args.sealed_template_root, Path)
+            or not self.args.sealed_template_root.is_dir()
+            or self.args.sealed_template_root.is_symlink()
+        ):
+            raise QualificationError("sealed template inputs are unavailable")
         if not isinstance(self.args.demo_site_sha256, str) or not SHA256.fullmatch(
             self.args.demo_site_sha256
         ):
@@ -3551,6 +3794,12 @@ class Controller:
             raise QualificationError("pinned Bridgefu checkout is unavailable")
         if shutil.which("session-manager-plugin") is None:
             raise QualificationError("AWS Session Manager plugin is unavailable")
+        self.sealed_template_catalog = load_sealed_template_catalog(
+            staged_objects=self.args.staged_objects,
+            template_root=self.args.sealed_template_root,
+            release=self.args.release,
+            root_template_url=self.args.template_url,
+        )
 
     def preflight(self) -> None:
         if self.aws.exists(
@@ -3565,6 +3814,26 @@ class Controller:
         }
         if f"{self.args.execution_id}-connect" in aliases:
             raise QualificationError("execution Connect instance already exists")
+        hostname = f"{self.args.execution_id}.{self.args.hosted_zone_name.rstrip('.')}"
+        try:
+            self.preflight_evidence = release_safeguards.validate_preflight(
+                self.aws,
+                execution_id=self.args.execution_id,
+                expected_account_id=self.args.expected_account_id,
+                region=self.args.region,
+                cloudformation_role_arn=self.args.cloudformation_role_arn,
+                vapi_secret_arn=self.args.vapi_secret_arn,
+                hosted_zone_id=self.args.hosted_zone_id,
+                hosted_zone_name=self.args.hosted_zone_name,
+                sip_hostname=hostname,
+                runtime_image_id=self.args.runtime_image_id,
+                release=self.args.release,
+                instance_type=self.args.instance_type,
+            )
+        except release_safeguards.SafeguardError as error:
+            raise QualificationError(str(error)) from error
+        validate_schema(self.preflight_evidence, "preflight-v1.schema.json")
+        private_json(self.args.output / "preflight.json", self.preflight_evidence)
 
     def initialize_vapi(self) -> None:
         """Read and bind the Vapi credential only after secure runtime restoration."""
@@ -3716,8 +3985,21 @@ class Controller:
             or getattr(self, "temp_phone_intent_journal_object", None) is not None
             or getattr(self, "temp_phone_request_journal_object", None) is not None
         )
+        inventory = getattr(self, "owned_resource_inventory", None)
+        by_type = (
+            inventory.get("resources_by_type")
+            if isinstance(inventory, Mapping)
+            else None
+        )
+        stack_vapi_resource_exists = bool(
+            by_type.get("Custom::BridgefuVapiResources", [])
+            if isinstance(by_type, Mapping)
+            else []
+        )
         if self.vapi is None and (
-            any(isinstance(item, str) for item in ids) or phone_intent_exists
+            any(isinstance(item, str) for item in ids)
+            or phone_intent_exists
+            or stack_vapi_resource_exists
         ):
             private_key = extract_vapi_key(self.aws.secret(self.args.vapi_secret_arn))
             self.vapi = Vapi(private_key)
@@ -3729,14 +4011,18 @@ class Controller:
         if not self.created_stack:
             self.acm_validation_discovery_complete = True
             return
-        if not self.aws.exists(
-            ["cloudformation", "describe-stacks", "--stack-name", self.stack_name]
-        ):
+        if not getattr(self, "change_set_execution_attempted", False):
+            # REVIEW_IN_PROGRESS has not created the certificate or any public
+            # validation record; cleanup may delete the unexecuted review.
+            self.acm_validation_discovery_complete = True
+            return
+        stack_id = self.resolve_existing_stack_id()
+        if stack_id is None:
             raise QualificationError(
                 "qualification stack disappeared before ACM ownership was sealed"
             )
         description = self.aws.json(
-            ["cloudformation", "describe-stacks", "--stack-name", self.stack_name],
+            ["cloudformation", "describe-stacks", "--stack-name", stack_id],
             timeout=120,
         )
         stacks = description.get("Stacks") if isinstance(description, Mapping) else None
@@ -3754,12 +4040,18 @@ class Controller:
         )
         journal = discover_acm_validation_ownership(
             self.aws,
-            self.stack_name,
+            stack_id,
             self.args.execution_id,
             self.args.hosted_zone_id,
             sip_hostname,
         )
         if journal is None:
+            if stack_status == "REVIEW_IN_PROGRESS":
+                # An unexecuted CREATE change-set has created no certificate or
+                # public validation record.  It is deleted as a change-set
+                # hierarchy during cleanup, even after an ambiguous execute call.
+                self.acm_validation_discovery_complete = True
+                return
             if stack_status.endswith("_IN_PROGRESS"):
                 raise QualificationError(
                     "qualification ACM ownership is not stable while stack changes"
@@ -3767,36 +4059,284 @@ class Controller:
             self.acm_validation_discovery_complete = True
             return
         bucket = self.outputs.get("ArtifactBucket") or discover_stack_output(
-            self.aws, self.stack_name, "ArtifactBucket"
+            self.aws, stack_id, "ArtifactBucket"
         )
         if not isinstance(bucket, str) or not S3_BUCKET.fullmatch(bucket):
             raise QualificationError(
                 "qualification artifact bucket is unavailable for ACM ownership"
             )
-        target = (
-            f"s3://{bucket}/qualification/{self.args.execution_id}/"
+        key = (
+            f"qualification/{self.args.execution_id}/"
             "ownership/acm-validation-records.json"
         )
+        target = f"s3://{bucket}/{key}"
         self.acm_validation_journal = dict(journal)
         self.acm_validation_journal_object = target
-        private_json(self.args.output / "acm-validation-ownership.json", journal)
-        self.runner.run(
+        self.acm_validation_journal_bucket = bucket
+        self.acm_validation_journal_key = key
+        # The discovered value is an exact output of the bound root stack.  Save
+        # it even when the root output collection was interrupted so cleanup and
+        # zero proof do not silently skip the versioned ownership journal.
+        existing_bucket = self.outputs.get("ArtifactBucket")
+        if existing_bucket not in (None, bucket):
+            raise QualificationError("qualification artifact bucket identity changed")
+        self.outputs["ArtifactBucket"] = bucket
+        journal_path = self.args.output / "acm-validation-ownership.json"
+        private_json(journal_path, journal)
+        uploaded = self.aws.json(
             [
-                "aws",
-                "s3",
-                "cp",
-                "-",
-                target,
-                "--sse",
+                "s3api",
+                "put-object",
+                "--bucket",
+                bucket,
+                "--key",
+                key,
+                "--body",
+                os.fspath(journal_path),
+                "--server-side-encryption",
                 "AES256",
-                "--only-show-errors",
-                "--region",
-                self.args.region,
             ],
-            input_text=json.dumps(journal, separators=(",", ":"), sort_keys=True),
             timeout=120,
         )
+        version_id = (
+            uploaded.get("VersionId") if isinstance(uploaded, Mapping) else None
+        )
+        if (
+            not isinstance(version_id, str)
+            or not 1 <= len(version_id) <= 1_024
+            or version_id in {"null", "None"}
+            or re.search(r"[\x00-\x1f\x7f]", version_id)
+        ):
+            raise QualificationError(
+                "qualification ACM ownership journal version is unavailable"
+            )
+        self.acm_validation_journal_version_id = version_id
         self.acm_validation_discovery_complete = True
+
+    def qualification_artifact_bucket(self) -> str | None:
+        """Return the output or independently tracked exact cleanup bucket."""
+        output_bucket = self.outputs.get("ArtifactBucket")
+        tracked_bucket = getattr(self, "acm_validation_journal_bucket", None)
+        for value in (output_bucket, tracked_bucket):
+            if value is not None and (
+                not isinstance(value, str) or S3_BUCKET.fullmatch(value) is None
+            ):
+                raise QualificationError(
+                    "qualification artifact bucket identity is invalid"
+                )
+        if (
+            isinstance(output_bucket, str)
+            and isinstance(tracked_bucket, str)
+            and output_bucket != tracked_bucket
+        ):
+            raise QualificationError("qualification artifact bucket identity changed")
+        return tracked_bucket or output_bucket
+
+    def validate_root_deployment_ids(
+        self,
+        *,
+        change_set_name: str,
+        change_set_arn: Any,
+        stack_id: Any,
+    ) -> tuple[str, str]:
+        """Bind CloudFormation's full returned identities to this execution."""
+        stack_pattern = re.compile(
+            rf"^arn:aws:cloudformation:{re.escape(self.args.region)}:"
+            rf"{re.escape(self.args.expected_account_id)}:stack/"
+            rf"{re.escape(self.stack_name)}/{CFN_STACK_UUID}$"
+        )
+        change_set_pattern = re.compile(
+            rf"^arn:aws:cloudformation:{re.escape(self.args.region)}:"
+            rf"{re.escape(self.args.expected_account_id)}:changeSet/"
+            rf"{re.escape(change_set_name)}/{CFN_CHANGE_SET_UUID}$"
+        )
+        if (
+            not isinstance(change_set_arn, str)
+            or change_set_pattern.fullmatch(change_set_arn) is None
+            or not isinstance(stack_id, str)
+            or stack_pattern.fullmatch(stack_id) is None
+        ):
+            raise QualificationError(
+                "CloudFormation returned an unexpected deployment identity"
+            )
+        return change_set_arn, stack_id
+
+    def resolve_existing_stack_id(self) -> str | None:
+        """Resolve the deterministic name once, then use only the full StackId."""
+        current_stack_id = getattr(self, "stack_id", None)
+        if current_stack_id is not None:
+            return current_stack_id
+        if not self.aws.exists(
+            ["cloudformation", "describe-stacks", "--stack-name", self.stack_name]
+        ):
+            return None
+        response = self.aws.json(
+            ["cloudformation", "describe-stacks", "--stack-name", self.stack_name],
+            timeout=120,
+        )
+        stacks = response.get("Stacks") if isinstance(response, Mapping) else None
+        stack = (
+            stacks[0]
+            if isinstance(stacks, list)
+            and len(stacks) == 1
+            and isinstance(stacks[0], Mapping)
+            else None
+        )
+        stack_id = stack.get("StackId") if isinstance(stack, Mapping) else None
+        expected = re.compile(
+            rf"^arn:aws:cloudformation:{re.escape(self.args.region)}:"
+            rf"{re.escape(self.args.expected_account_id)}:stack/"
+            rf"{re.escape(self.stack_name)}/{CFN_STACK_UUID}$"
+        )
+        if (
+            not isinstance(stack_id, str)
+            or expected.fullmatch(stack_id) is None
+            or stack.get("StackName") != self.stack_name
+        ):
+            raise QualificationError("qualification stack identity is not exact")
+        self.stack_id = stack_id
+        return stack_id
+
+    def wait_for_root_change_set(self, change_set_arn: str, stack_id: str) -> None:
+        """Poll the exact full ARN until the nested CREATE review is complete."""
+        deadline = time.monotonic() + 900
+        while True:
+            response = self.aws.json(
+                [
+                    "cloudformation",
+                    "describe-change-set",
+                    "--change-set-name",
+                    change_set_arn,
+                ],
+                timeout=180,
+            )
+            if (
+                not isinstance(response, Mapping)
+                or response.get("ChangeSetId") != change_set_arn
+                or response.get("StackId") != stack_id
+            ):
+                raise QualificationError("CloudFormation change-set identity changed")
+            status = response.get("Status")
+            if status == "CREATE_COMPLETE":
+                return
+            if status not in {"CREATE_PENDING", "CREATE_IN_PROGRESS"}:
+                raise QualificationError("CloudFormation change-set creation failed")
+            if time.monotonic() >= deadline:
+                raise QualificationError("CloudFormation change-set review timed out")
+            time.sleep(5)
+
+    def delete_unexecuted_change_set_hierarchy(self, stack_id: str) -> bool:
+        """Delete an exact nested CREATE review hierarchy before execution."""
+        stack_description = self.aws.json(
+            ["cloudformation", "describe-stacks", "--stack-name", stack_id],
+            timeout=120,
+        )
+        stacks = (
+            stack_description.get("Stacks")
+            if isinstance(stack_description, Mapping)
+            else None
+        )
+        stack = (
+            stacks[0]
+            if isinstance(stacks, list)
+            and len(stacks) == 1
+            and isinstance(stacks[0], Mapping)
+            else None
+        )
+        if stack is None or stack.get("StackId") != stack_id:
+            raise QualificationError("qualification cleanup stack identity changed")
+        if stack.get("StackStatus") != "REVIEW_IN_PROGRESS":
+            return False
+
+        change_set_name = f"bridgefu-{self.args.execution_id}-review"
+        change_set_arn = getattr(self, "root_change_set_arn", None)
+        if change_set_arn is None:
+            recovered = self.aws.json(
+                [
+                    "cloudformation",
+                    "describe-change-set",
+                    "--change-set-name",
+                    change_set_name,
+                    "--stack-name",
+                    stack_id,
+                ],
+                timeout=120,
+            )
+            change_set_arn = (
+                recovered.get("ChangeSetId") if isinstance(recovered, Mapping) else None
+            )
+        change_set_arn, bound_stack_id = self.validate_root_deployment_ids(
+            change_set_name=change_set_name,
+            change_set_arn=change_set_arn,
+            stack_id=stack_id,
+        )
+        description = self.aws.json(
+            [
+                "cloudformation",
+                "describe-change-set",
+                "--change-set-name",
+                change_set_arn,
+            ],
+            timeout=120,
+        )
+        if (
+            not isinstance(description, Mapping)
+            or description.get("ChangeSetId") != change_set_arn
+            or description.get("StackId") != bound_stack_id
+            or description.get("ParentChangeSetId") not in (None, "")
+            or description.get("RootChangeSetId") not in (None, "")
+            or (description.get("Status"), description.get("ExecutionStatus"))
+            not in {
+                ("CREATE_COMPLETE", "AVAILABLE"),
+                ("FAILED", "UNAVAILABLE"),
+            }
+            or description.get("IncludeNestedStacks") is not True
+        ):
+            raise QualificationError(
+                "qualification root change-set is not safely deletable"
+            )
+        self.root_change_set_arn = change_set_arn
+        self.aws.text(
+            [
+                "cloudformation",
+                "delete-change-set",
+                "--change-set-name",
+                change_set_arn,
+            ],
+            timeout=180,
+        )
+        change_sets = set(getattr(self, "reviewed_change_set_arns", ()))
+        change_sets.add(change_set_arn)
+        stacks_to_verify = set(getattr(self, "reviewed_stack_ids", ()))
+        stacks_to_verify.add(stack_id)
+        deadline = time.monotonic() + 900
+        while True:
+            remaining_change_sets = [
+                value
+                for value in sorted(change_sets)
+                if self.aws.exists(
+                    [
+                        "cloudformation",
+                        "describe-change-set",
+                        "--change-set-name",
+                        value,
+                    ]
+                )
+            ]
+            remaining_stacks = [
+                value
+                for value in sorted(stacks_to_verify)
+                if self.aws.exists(
+                    ["cloudformation", "describe-stacks", "--stack-name", value]
+                )
+            ]
+            if not remaining_change_sets and not remaining_stacks:
+                return True
+            if time.monotonic() >= deadline:
+                raise QualificationError(
+                    "qualification change-set hierarchy deletion timed out"
+                )
+            time.sleep(5)
 
     def deploy(self) -> None:
         hostname = f"{self.args.execution_id}.{self.args.hosted_zone_name.rstrip('.')}"
@@ -3806,12 +4346,44 @@ class Controller:
             ("PublicHostedZoneId", self.args.hosted_zone_id),
             ("SipHostname", hostname),
             ("InstanceType", self.args.instance_type),
+            ("SipSecurity", QUALIFICATION_SIP_SECURITY),
+            ("ScreenPopFieldsJson", QUALIFICATION_SCREEN_POP_FIELDS_JSON),
         ]
+        change_set_name = f"bridgefu-{self.args.execution_id}-review"
+        root_invocation = deployment_review.RootInvocation(
+            change_set_name=change_set_name,
+            stack_name=self.stack_name,
+            parameters=tuple(parameters),
+            role_arn=self.args.cloudformation_role_arn,
+            capabilities=("CAPABILITY_NAMED_IAM",),
+            tags=(
+                ("ManagedBy", "bridgefu-qualification"),
+                ("BridgefuExecutionId", self.args.execution_id),
+            ),
+            on_stack_failure="DO_NOTHING",
+            include_nested_stacks=True,
+            notification_arns=(),
+            import_existing_resources=False,
+        )
+        create_token = (
+            "bfq-"
+            + hashlib.sha256(
+                (
+                    f"{self.args.execution_id}\0{self.args.region}\0"
+                    f"{self.args.release}\0{self.args.template_url}\0create"
+                ).encode()
+            ).hexdigest()[:48]
+        )
         arguments = [
             "cloudformation",
-            "create-stack",
+            "create-change-set",
             "--stack-name",
             self.stack_name,
+            "--change-set-name",
+            change_set_name,
+            "--change-set-type",
+            "CREATE",
+            "--include-nested-stacks",
             "--template-url",
             self.args.template_url,
             "--capabilities",
@@ -3819,28 +4391,143 @@ class Controller:
             "--role-arn",
             self.args.cloudformation_role_arn,
             *create_failure_arguments(self.args.retain_on_failure),
+            "--client-token",
+            create_token,
+            "--tags",
+            "Key=ManagedBy,Value=bridgefu-qualification",
+            f"Key=BridgefuExecutionId,Value={self.args.execution_id}",
             "--parameters",
             *[
                 f"ParameterKey={key},ParameterValue={value}"
                 for key, value in parameters
             ],
         ]
-        self.aws.json(arguments, timeout=120)
+        if self.sealed_template_catalog is None:
+            raise QualificationError("sealed template catalog is unavailable")
         self.created_stack = True
+        try:
+            created = self.aws.json(arguments, timeout=180)
+        except QualificationError as create_error:
+            try:
+                created = self.aws.json(
+                    [
+                        "cloudformation",
+                        "describe-change-set",
+                        "--change-set-name",
+                        change_set_name,
+                        "--stack-name",
+                        self.stack_name,
+                    ],
+                    timeout=120,
+                )
+            except QualificationError:
+                raise create_error
+        change_set_arn, stack_id = self.validate_root_deployment_ids(
+            change_set_name=change_set_name,
+            change_set_arn=(created.get("Id") or created.get("ChangeSetId"))
+            if isinstance(created, Mapping)
+            else None,
+            stack_id=created.get("StackId") if isinstance(created, Mapping) else None,
+        )
+        self.root_change_set_arn = change_set_arn
+        self.stack_id = stack_id
+        self.wait_for_root_change_set(change_set_arn, stack_id)
+        try:
+            reviewed = deployment_review.review_create_change_set(
+                aws=self.aws,
+                root_change_set_arn=change_set_arn,
+                root_stack_id=stack_id,
+                root_template_url=self.args.template_url,
+                sealed_catalog=self.sealed_template_catalog,
+                expected_change_set_type="CREATE",
+                expected_region=self.args.region,
+                expected_account_id=self.args.expected_account_id,
+                expected_root_invocation=root_invocation,
+            )
+        except deployment_review.DeploymentReviewError as error:
+            raise QualificationError(
+                "CloudFormation deployment review failed"
+            ) from error
+        self.deployment_review_evidence = dict(reviewed.proof)
+        self.reviewed_change_set_arns = reviewed.change_set_arns
+        self.reviewed_stack_ids = reviewed.stack_ids
+        validate_schema(
+            self.deployment_review_evidence, "deployment-review-v1.schema.json"
+        )
+        private_json(
+            self.args.output / "deployment-review.json",
+            self.deployment_review_evidence,
+        )
+        execute_token = (
+            "bfq-"
+            + hashlib.sha256(f"{create_token}\0execute".encode()).hexdigest()[:48]
+        )
+        self.change_set_execution_attempted = True
+        self.aws.text(
+            [
+                "cloudformation",
+                "execute-change-set",
+                "--change-set-name",
+                change_set_arn,
+                "--client-request-token",
+                execute_token,
+            ],
+            timeout=180,
+        )
         self.aws.text(
             [
                 "cloudformation",
                 "wait",
                 "stack-create-complete",
                 "--stack-name",
-                self.stack_name,
+                stack_id,
             ],
             timeout=3600,
         )
         description = self.aws.json(
-            ["cloudformation", "describe-stacks", "--stack-name", self.stack_name]
+            ["cloudformation", "describe-stacks", "--stack-name", stack_id]
         )
+        stacks = description.get("Stacks") if isinstance(description, Mapping) else None
+        if (
+            not isinstance(stacks, list)
+            or len(stacks) != 1
+            or not isinstance(stacks[0], Mapping)
+            or stacks[0].get("StackId") != stack_id
+            or stacks[0].get("StackName") != self.stack_name
+            or stacks[0].get("StackStatus") != "CREATE_COMPLETE"
+        ):
+            raise QualificationError("deployed qualification stack identity is invalid")
         self.outputs = stack_outputs(description)
+        try:
+            self.runtime_deployment_evidence = (
+                release_safeguards.validate_deployed_runtime(
+                    self.aws,
+                    execution_id=self.args.execution_id,
+                    region=self.args.region,
+                    expected_account_id=self.args.expected_account_id,
+                    instance_id=self.outputs.get("BridgefuInstanceId", ""),
+                    runtime_image_id=self.args.runtime_image_id,
+                    instance_type=self.args.instance_type,
+                    expected_recipe=RECIPE,
+                )
+            )
+        except release_safeguards.SafeguardError as error:
+            raise QualificationError(str(error)) from error
+        validate_schema(
+            self.runtime_deployment_evidence, "runtime-deployment-v1.schema.json"
+        )
+        private_json(
+            self.args.output / "runtime-deployment.json",
+            self.runtime_deployment_evidence,
+        )
+        try:
+            self.owned_resource_inventory = (
+                release_safeguards.stack_ownership_inventory(
+                    self.aws, stack_id, MAX_NESTED_STACKS
+                )
+            )
+        except release_safeguards.SafeguardError as error:
+            raise QualificationError(str(error)) from error
         self.ensure_acm_validation_journal()
         self.wait_for_runtime()
 
@@ -4167,7 +4854,7 @@ class Controller:
     def direct_secure_preflight(self, storage: Path) -> None:
         """Gate both release smokes on a restored direct SIPS/SDES-SRTP call."""
         digest = self.secure_preflight_binary_sha256
-        bucket = self.outputs.get("ArtifactBucket")
+        bucket = self.qualification_artifact_bucket()
         instance = self.outputs.get("BridgefuInstanceId")
         if (
             not isinstance(digest, str)
@@ -5673,6 +6360,7 @@ class Controller:
                 sip_uri=None,
                 source_call_id=bridgefu_call_id,
                 correlation_id=correlation_id,
+                source_started_epoch_ms=int(ready_value["started_epoch_ms"]),
             )
             private_json(session_path, session)
             private_json(trigger, {"schema_version": 1, "execute": True})
@@ -6085,6 +6773,7 @@ class Controller:
             bridgefu_commit=self.bridgefu_lock["commit"],
             release=self.args.release,
             sip_uri=sip_uri,
+            source_started_epoch_ms=int(started.timestamp() * 1_000),
         )
         session = self.bind_sip_session_context(session, correlation_key)
         private_json(session_path, session)
@@ -6290,6 +6979,30 @@ class Controller:
             raise QualificationError(
                 f"scenario evidence did not converge: {sanitize_diagnostic(failed, 512)}"
             )
+        started_at, ended_at = established_call_window(source, agent, session)
+        if self.preflight_evidence is None:
+            raise QualificationError("capacity preflight evidence is unavailable")
+        try:
+            telemetry = release_safeguards.collect_active_call_telemetry(
+                self.aws,
+                execution_id=self.args.execution_id,
+                instance_id=self.outputs["BridgefuInstanceId"],
+                instance_type=self.args.instance_type,
+                vcpus=int(self.preflight_evidence["vcpus"]),
+                memory_mib=int(self.preflight_evidence["memory_mib"]),
+                runtime_log_group=self.outputs["RuntimeLogGroupName"],
+                window_started_at=started_at.isoformat(),
+                window_ended_at=ended_at.isoformat(),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise QualificationError(
+                "capacity preflight evidence is invalid"
+            ) from error
+        except release_safeguards.SafeguardError as error:
+            raise QualificationError(str(error)) from error
+        telemetry_path = self.args.output / f"{scenario}-active-call-telemetry.json"
+        validate_schema(telemetry, "active-call-telemetry-v1.schema.json")
+        private_json(telemetry_path, telemetry)
         self.scenario_evidence.append(
             {
                 "id": scenario,
@@ -6310,6 +7023,8 @@ class Controller:
                 "runtime_security_srtp_negotiated": log_proof[
                     "vapi_destination_srtp_negotiated"
                 ],
+                "active_call_telemetry_sha256": sha256_file(telemetry_path),
+                "active_call_telemetry": telemetry,
                 "checks": checks,
                 "passed": passed,
             }
@@ -6353,12 +7068,15 @@ class Controller:
         capture_errors: list[str] = []
         if self.created_stack:
             try:
+                stack_id = self.resolve_existing_stack_id()
+                if stack_id is None:
+                    raise QualificationError("qualification stack no longer exists")
                 description = self.aws.json(
                     [
                         "cloudformation",
                         "describe-stacks",
                         "--stack-name",
-                        self.stack_name,
+                        stack_id,
                     ],
                     timeout=120,
                 )
@@ -6373,8 +7091,9 @@ class Controller:
                         stack_status = sanitize_diagnostic(observed_status, 128)
             except QualificationError as capture:
                 capture_errors.append(sanitize_diagnostic(str(capture), 256))
+            event_root = self.stack_id or self.stack_name
             failed_events, event_error = collect_cloudformation_failure_events(
-                self.aws, self.stack_name
+                self.aws, event_root
             )
             if event_error is not None:
                 capture_errors.append(event_error)
@@ -6404,8 +7123,934 @@ class Controller:
         validate_schema(value, "failure-evidence-v1.schema.json")
         private_json(self.args.output / "failure-evidence.json", value)
 
+    def ensure_owned_resource_inventory(self) -> None:
+        """Seal exact in-memory resource ownership before deleting the root stack."""
+        if self.owned_resource_inventory is not None:
+            return
+        stack_id = self.resolve_existing_stack_id()
+        if stack_id is not None:
+            try:
+                self.owned_resource_inventory = (
+                    release_safeguards.stack_ownership_inventory(
+                        self.aws, stack_id, MAX_NESTED_STACKS
+                    )
+                )
+            except release_safeguards.SafeguardError as error:
+                raise QualificationError(str(error)) from error
+            return
+        resources = {name: [] for name in release_safeguards.ZERO_RESOURCE_CATEGORIES}
+        authority = {
+            "stack_ids": [],
+            "stack_logical_ids": {},
+            "resources": resources,
+            "resources_by_type": {},
+        }
+        self.owned_resource_inventory = {
+            **authority,
+            "resource_count": 0,
+            "ownership_sha256": sha256_bytes(
+                json.dumps(authority, separators=(",", ":"), sort_keys=True).encode(
+                    "utf-8"
+                )
+            ),
+        }
+
+    def _owned_ids(self, resource_type: str) -> list[str]:
+        inventory = self.owned_resource_inventory
+        by_type = (
+            inventory.get("resources_by_type")
+            if isinstance(inventory, Mapping)
+            else None
+        )
+        values = (
+            by_type.get(resource_type, []) if isinstance(by_type, Mapping) else None
+        )
+        if (
+            not isinstance(values, list)
+            or len(values) > release_safeguards.MAX_INVENTORY_RESOURCES
+            or any(not isinstance(value, str) for value in values)
+        ):
+            raise QualificationError("owned resource inventory is invalid")
+        return values
+
+    def _ec2_present_ids(
+        self,
+        operation: str,
+        result_key: str,
+        identity_key: str,
+        filter_name: str,
+        resource_ids: list[str],
+        *,
+        state_key: str | None = None,
+        absent_states: frozenset[str] = frozenset(),
+    ) -> set[str]:
+        present: set[str] = set()
+        for offset in range(0, len(resource_ids), 100):
+            batch = resource_ids[offset : offset + 100]
+            response = self.aws.json(
+                [
+                    "ec2",
+                    operation,
+                    "--filters",
+                    f"Name={filter_name},Values={','.join(batch)}",
+                ],
+                timeout=120,
+            )
+            values = response.get(result_key) if isinstance(response, Mapping) else None
+            if not isinstance(values, list) or len(values) > 1_000:
+                raise QualificationError("EC2 zero-resource inventory is invalid")
+            for value in values:
+                resource_id = (
+                    value.get(identity_key) if isinstance(value, Mapping) else None
+                )
+                if resource_id not in batch:
+                    raise QualificationError("EC2 zero-resource identity changed")
+                if state_key is not None:
+                    state = value.get(state_key) if isinstance(value, Mapping) else None
+                    if not isinstance(state, str):
+                        raise QualificationError("EC2 zero-resource state is invalid")
+                    if state in absent_states:
+                        continue
+                present.add(str(resource_id))
+        return present
+
+    def _exact_log_group_exists(self, name: str) -> bool:
+        response = self.aws.json(
+            [
+                "logs",
+                "describe-log-groups",
+                "--log-group-name-prefix",
+                name,
+                "--limit",
+                "50",
+            ],
+            timeout=120,
+        )
+        groups = response.get("logGroups") if isinstance(response, Mapping) else None
+        if not isinstance(groups, list) or len(groups) > 50:
+            raise QualificationError("CloudWatch log-group inventory is invalid")
+        return any(
+            isinstance(group, Mapping) and group.get("logGroupName") == name
+            for group in groups
+        )
+
+    def _exact_alarm_exists(self, name: str) -> bool:
+        response = self.aws.json(
+            ["cloudwatch", "describe-alarms", "--alarm-names", name], timeout=120
+        )
+        observed: list[str] = []
+        for key in ("MetricAlarms", "CompositeAlarms"):
+            alarms = response.get(key) if isinstance(response, Mapping) else None
+            if not isinstance(alarms, list) or len(alarms) > 1:
+                raise QualificationError("CloudWatch alarm inventory is invalid")
+            observed.extend(
+                str(item.get("AlarmName"))
+                for item in alarms
+                if isinstance(item, Mapping)
+            )
+        if any(item != name for item in observed):
+            raise QualificationError("CloudWatch alarm identity changed")
+        return bool(observed)
+
+    def _tagged_resource_is_live(self, arn: str) -> tuple[str, bool]:
+        """Resolve a tag-discovered ARN; tag-index presence is not liveness."""
+        match = re.fullmatch(
+            r"arn:(aws(?:-[a-z0-9-]+)?):([a-z0-9-]+):([^:]*):([0-9]*):(.*)",
+            arn,
+        )
+        if match is None:
+            raise QualificationError("execution-tagged resource ARN is invalid")
+        _partition, service, region, account, resource = match.groups()
+        global_services = {"iam", "route53"}
+        if (service not in global_services and region != self.args.region) or (
+            account and account != self.args.expected_account_id
+        ):
+            raise QualificationError("execution-tagged resource scope changed")
+        if service == "cloudformation":
+            return "cloudformation_stacks", self.aws.exists(
+                ["cloudformation", "describe-stacks", "--stack-name", arn]
+            )
+        if service == "ec2":
+            prefix, separator, resource_id = resource.partition("/")
+            ec2_types = {
+                "instance": (
+                    "describe-instances",
+                    "Reservations",
+                    "InstanceId",
+                    "instance-id",
+                    "ec2_instances",
+                ),
+                "volume": (
+                    "describe-volumes",
+                    "Volumes",
+                    "VolumeId",
+                    "volume-id",
+                    "ec2_volumes",
+                ),
+                "network-interface": (
+                    "describe-network-interfaces",
+                    "NetworkInterfaces",
+                    "NetworkInterfaceId",
+                    "network-interface-id",
+                    "ec2_network_interfaces",
+                ),
+                "vpc": (
+                    "describe-vpcs",
+                    "Vpcs",
+                    "VpcId",
+                    "vpc-id",
+                    "ec2_vpcs",
+                ),
+                "security-group": (
+                    "describe-security-groups",
+                    "SecurityGroups",
+                    "GroupId",
+                    "group-id",
+                    "ec2_security_groups",
+                ),
+                "elastic-ip": (
+                    "describe-addresses",
+                    "Addresses",
+                    "AllocationId",
+                    "allocation-id",
+                    "ec2_elastic_ips",
+                ),
+                "vpc-endpoint": (
+                    "describe-vpc-endpoints",
+                    "VpcEndpoints",
+                    "VpcEndpointId",
+                    "vpc-endpoint-id",
+                    "ec2_vpc_endpoints",
+                ),
+                "subnet": (
+                    "describe-subnets",
+                    "Subnets",
+                    "SubnetId",
+                    "subnet-id",
+                    "ec2_vpcs",
+                ),
+                "internet-gateway": (
+                    "describe-internet-gateways",
+                    "InternetGateways",
+                    "InternetGatewayId",
+                    "internet-gateway-id",
+                    "ec2_vpcs",
+                ),
+                "natgateway": (
+                    "describe-nat-gateways",
+                    "NatGateways",
+                    "NatGatewayId",
+                    "nat-gateway-id",
+                    "ec2_vpcs",
+                ),
+                "route-table": (
+                    "describe-route-tables",
+                    "RouteTables",
+                    "RouteTableId",
+                    "route-table-id",
+                    "ec2_vpcs",
+                ),
+            }
+            spec = ec2_types.get(prefix)
+            if not separator or spec is None or not resource_id:
+                raise QualificationError(
+                    "execution-tagged EC2 resource cannot be verified"
+                )
+            operation, key, identity, filter_name, category = spec
+            if prefix == "instance":
+                response = self.aws.json(
+                    [
+                        "ec2",
+                        "describe-instances",
+                        "--filters",
+                        f"Name=instance-id,Values={resource_id}",
+                    ],
+                    timeout=120,
+                )
+                reservations = (
+                    response.get("Reservations")
+                    if isinstance(response, Mapping)
+                    else None
+                )
+                if not isinstance(reservations, list) or len(reservations) > 1:
+                    raise QualificationError(
+                        "execution-tagged EC2 instance inventory is invalid"
+                    )
+                instances: list[Mapping[str, Any]] = []
+                for reservation in reservations:
+                    values = (
+                        reservation.get("Instances")
+                        if isinstance(reservation, Mapping)
+                        else None
+                    )
+                    if not isinstance(values, list) or len(values) > 1:
+                        raise QualificationError(
+                            "execution-tagged EC2 instance inventory is invalid"
+                        )
+                    instances.extend(
+                        item for item in values if isinstance(item, Mapping)
+                    )
+                if len(instances) > 1 or any(
+                    item.get("InstanceId") != resource_id for item in instances
+                ):
+                    raise QualificationError(
+                        "execution-tagged EC2 instance identity changed"
+                    )
+                if not instances:
+                    return category, False
+                state = instances[0].get("State")
+                state_name = state.get("Name") if isinstance(state, Mapping) else None
+                if not isinstance(state_name, str):
+                    raise QualificationError(
+                        "execution-tagged EC2 instance state is invalid"
+                    )
+                return category, state_name != "terminated"
+            state_options: dict[str, Any] = {}
+            if prefix == "natgateway":
+                state_options = {
+                    "state_key": "State",
+                    "absent_states": frozenset({"deleted"}),
+                }
+            elif prefix == "vpc-endpoint":
+                state_options = {
+                    "state_key": "State",
+                    "absent_states": frozenset({"deleted"}),
+                }
+            present = self._ec2_present_ids(
+                operation,
+                key,
+                identity,
+                filter_name,
+                [resource_id],
+                **state_options,
+            )
+            return category, resource_id in present
+        if service == "dynamodb" and resource.startswith("table/"):
+            name = resource.removeprefix("table/")
+            return "dynamodb_tables", self.aws.exists(
+                ["dynamodb", "describe-table", "--table-name", name]
+            )
+        if service == "lambda" and resource.startswith("function:"):
+            name = resource.removeprefix("function:").split(":", 1)[0]
+            return "lambda_functions", self.aws.exists(
+                ["lambda", "get-function", "--function-name", name]
+            )
+        if service == "apigateway" and resource.startswith("/apis/"):
+            api_id = resource.removeprefix("/apis/").split("/", 1)[0]
+            return "api_gateway_apis", self.aws.exists(
+                ["apigatewayv2", "get-api", "--api-id", api_id]
+            )
+        if service == "acm" and resource.startswith("certificate/"):
+            return "acm_certificates", self.aws.exists(
+                ["acm", "describe-certificate", "--certificate-arn", arn]
+            )
+        if service == "logs" and resource.startswith("log-group:"):
+            name = resource.removeprefix("log-group:").removesuffix(":*")
+            return "cloudwatch_log_groups", self._exact_log_group_exists(name)
+        if service == "cloudwatch" and resource.startswith("alarm:"):
+            return "cloudwatch_alarms", self._exact_alarm_exists(
+                resource.removeprefix("alarm:")
+            )
+        if service == "cloudwatch" and resource.startswith("dashboard/"):
+            return "cloudwatch_dashboards", self.aws.exists(
+                [
+                    "cloudwatch",
+                    "get-dashboard",
+                    "--dashboard-name",
+                    resource.removeprefix("dashboard/"),
+                ]
+            )
+        if service == "secretsmanager" and resource.startswith("secret:"):
+            return "secrets", self.aws.exists(
+                ["secretsmanager", "describe-secret", "--secret-id", arn]
+            )
+        if service == "connect" and resource.startswith("instance/"):
+            # Connect may retain stale child-resource tag index entries for
+            # weeks. The exact parent instance is the deletion authority for
+            # every child ARN in this disposable environment.
+            instance_id = resource.removeprefix("instance/").split("/", 1)[0]
+            return "connect_resources", self.aws.exists(
+                ["connect", "describe-instance", "--instance-id", instance_id]
+            )
+        if service == "route53" and resource.startswith("hostedzone/"):
+            zone_id = resource.removeprefix("hostedzone/")
+            return "route53_private_zones", self.aws.exists(
+                ["route53", "get-hosted-zone", "--id", zone_id]
+            )
+        if service == "iam" and resource.startswith("role/"):
+            return "iam_resources", self.aws.exists(
+                ["iam", "get-role", "--role-name", resource.removeprefix("role/")]
+            )
+        if service == "iam" and resource.startswith("policy/"):
+            return "iam_resources", self.aws.exists(
+                ["iam", "get-policy", "--policy-arn", arn]
+            )
+        if service == "iam" and resource.startswith("instance-profile/"):
+            return "iam_resources", self.aws.exists(
+                [
+                    "iam",
+                    "get-instance-profile",
+                    "--instance-profile-name",
+                    resource.removeprefix("instance-profile/"),
+                ]
+            )
+        if service == "sns":
+            return "sns_resources", self.aws.exists(
+                ["sns", "get-topic-attributes", "--topic-arn", arn]
+            )
+        if service == "backup" and resource.startswith("backup-vault:"):
+            return "backup_resources", self.aws.exists(
+                [
+                    "backup",
+                    "describe-backup-vault",
+                    "--backup-vault-name",
+                    resource.removeprefix("backup-vault:"),
+                ]
+            )
+        if service == "backup" and resource.startswith("backup-plan:"):
+            return "backup_resources", self.aws.exists(
+                [
+                    "backup",
+                    "get-backup-plan",
+                    "--backup-plan-id",
+                    resource.removeprefix("backup-plan:"),
+                ]
+            )
+        raise QualificationError(
+            "execution-tagged resource service cannot be verified exactly"
+        )
+
+    def _related_vapi_resource_fingerprints(self) -> set[str]:
+        if self.vapi is None:
+            raise QualificationError("Vapi zero-resource verifier is unavailable")
+        stack_id = self.outputs.get("VapiProvisioningStackId")
+        prepare_url = self.outputs.get("VapiPrepareUrl")
+        direct_url = self.outputs.get("DirectHandoffUrl")
+        inventory = self.owned_resource_inventory
+        logical_ids = (
+            inventory.get("stack_logical_ids")
+            if isinstance(inventory, Mapping)
+            else None
+        )
+        vapi_stacks = (
+            [
+                value
+                for value, logical_id in logical_ids.items()
+                if logical_id == "VapiResources" and isinstance(value, str)
+            ]
+            if isinstance(logical_ids, Mapping)
+            else []
+        )
+        if not isinstance(stack_id, str) and len(vapi_stacks) == 1:
+            stack_id = vapi_stacks[0]
+        if (
+            not isinstance(stack_id, str)
+            or not stack_id.startswith("arn:")
+            or (prepare_url is not None and not isinstance(prepare_url, str))
+            or (direct_url is not None and not isinstance(direct_url, str))
+        ):
+            raise QualificationError("Vapi zero-resource ownership scope is invalid")
+        owner_token = hashlib.sha256(stack_id.encode("utf-8")).hexdigest()[:32]
+        prefix = re.sub(r"[^A-Za-z0-9-]", "-", self.args.execution_id)[:17]
+        product_assistant_name = f"Bridgefu {prefix} {owner_token[:10]}"[:40]
+        credential_name = f"Bridgefu {owner_token[:30]}"
+        direct_assistant_name = f"BFQ direct {self.args.execution_id}"
+        phone_name = vapi_phone_owned_name(self.args.execution_id)
+        related: set[str] = set()
+        related_credential_ids: set[str] = set()
+        related_tool_ids: set[str] = set()
+        for resource_type in ("assistant", "credential", "tool", "phone-number"):
+            values = self.vapi.list(resource_type, limit=100)
+            if len(values) == 100:
+                raise QualificationError(
+                    "Vapi zero-resource inventory exceeded its safe bound"
+                )
+            for item in values:
+                metadata = item.get("metadata")
+                server = item.get("server")
+                function = item.get("function")
+                is_related = False
+                if resource_type == "assistant":
+                    is_related = item.get("name") in {
+                        product_assistant_name,
+                        direct_assistant_name,
+                    } or (
+                        isinstance(metadata, Mapping)
+                        and (
+                            metadata.get("bridgefu_deployment")
+                            == self.args.execution_id
+                            or metadata.get("bridgefu_qualification")
+                            == self.args.execution_id
+                        )
+                    )
+                    if is_related:
+                        credential_ids = item.get("credentialIds")
+                        model = item.get("model")
+                        tool_ids = (
+                            model.get("toolIds") if isinstance(model, Mapping) else None
+                        )
+                        if credential_ids is not None:
+                            if not isinstance(credential_ids, list) or any(
+                                not isinstance(value, str)
+                                or not RESOURCE_ID.fullmatch(value)
+                                for value in credential_ids
+                            ):
+                                raise QualificationError(
+                                    "Vapi zero-resource assistant attachment is invalid"
+                                )
+                            related_credential_ids.update(credential_ids)
+                        if tool_ids is not None:
+                            if not isinstance(tool_ids, list) or any(
+                                not isinstance(value, str)
+                                or not RESOURCE_ID.fullmatch(value)
+                                for value in tool_ids
+                            ):
+                                raise QualificationError(
+                                    "Vapi zero-resource assistant attachment is invalid"
+                                )
+                            related_tool_ids.update(tool_ids)
+                elif resource_type == "credential":
+                    is_related = (
+                        item.get("name") == credential_name
+                        or item.get("id") in related_credential_ids
+                    )
+                    if is_related and isinstance(item.get("id"), str):
+                        related_credential_ids.add(item["id"])
+                elif resource_type == "phone-number":
+                    is_related = item.get("name") == phone_name
+                else:
+                    is_related = item.get("id") in related_tool_ids
+                    endpoints = {
+                        value
+                        for value in (prepare_url, direct_url)
+                        if isinstance(value, str)
+                    }
+                    is_related = is_related or (
+                        isinstance(server, Mapping) and server.get("url") in endpoints
+                    )
+                    if not is_related and isinstance(function, Mapping):
+                        is_related = (
+                            function.get("name") == "prepare_handoff"
+                            and isinstance(server, Mapping)
+                            and server.get("credentialId") in related_credential_ids
+                        ) or (
+                            function.get("name")
+                            == bridgefu_web_handoff.DIRECT_TOOL_NAME
+                            and isinstance(server, Mapping)
+                            and server.get("url") == direct_url
+                        )
+                if not is_related:
+                    continue
+                resource_id = item.get("id")
+                if not isinstance(resource_id, str) or not RESOURCE_ID.fullmatch(
+                    resource_id
+                ):
+                    raise QualificationError("Vapi zero-resource identity is invalid")
+                related.add(
+                    sha256_bytes(f"{resource_type}:{resource_id}".encode())[:12]
+                )
+        return related
+
+    def observe_zero_resources(self) -> dict[str, Any]:
+        if self.owned_resource_inventory is None:
+            raise QualificationError("owned resource inventory is unavailable")
+        by_type = self.owned_resource_inventory.get("resources_by_type")
+        if not isinstance(by_type, Mapping):
+            raise QualificationError("owned resource inventory is invalid")
+        modeled = set(release_safeguards.RESOURCE_TYPE_CATEGORY)
+        if set(by_type) - modeled:
+            raise QualificationError(
+                "owned resource inventory contains an unmodeled type"
+            )
+        unverifiable_types = set(by_type) - (
+            release_safeguards.DIRECT_VERIFIED_RESOURCE_TYPES
+            | release_safeguards.PARENT_BOUND_RESOURCE_TYPES
+        )
+        if unverifiable_types:
+            raise QualificationError(
+                "owned resource inventory contains an unverifiable type"
+            )
+        other_types = {
+            resource_type
+            for resource_type in by_type
+            if release_safeguards.RESOURCE_TYPE_CATEGORY[resource_type]
+            == "other_stack_resources"
+        }
+        if not other_types <= release_safeguards.PARENT_BOUND_RESOURCE_TYPES:
+            raise QualificationError(
+                "owned other-stack resource lacks a parent-bound verifier"
+            )
+        resources: dict[str, set[str]] = {
+            name: set() for name in release_safeguards.ZERO_RESOURCE_CATEGORIES
+        }
+        for stack_id in self.owned_resource_inventory.get("stack_ids", []):
+            if self.aws.exists(
+                ["cloudformation", "describe-stacks", "--stack-name", stack_id]
+            ):
+                resources["cloudformation_stacks"].add(stack_id)
+
+        instance_ids = self._owned_ids("AWS::EC2::Instance")
+        for offset in range(0, len(instance_ids), 100):
+            batch = instance_ids[offset : offset + 100]
+            response = self.aws.json(
+                [
+                    "ec2",
+                    "describe-instances",
+                    "--filters",
+                    f"Name=instance-id,Values={','.join(batch)}",
+                ],
+                timeout=120,
+            )
+            reservations = (
+                response.get("Reservations") if isinstance(response, Mapping) else None
+            )
+            if not isinstance(reservations, list) or len(reservations) > 1_000:
+                raise QualificationError(
+                    "EC2 instance zero-resource inventory is invalid"
+                )
+            for reservation in reservations:
+                instances = (
+                    reservation.get("Instances")
+                    if isinstance(reservation, Mapping)
+                    else None
+                )
+                if not isinstance(instances, list) or len(instances) > 1_000:
+                    raise QualificationError(
+                        "EC2 instance zero-resource inventory is invalid"
+                    )
+                for instance in instances:
+                    instance_id = (
+                        instance.get("InstanceId")
+                        if isinstance(instance, Mapping)
+                        else None
+                    )
+                    state = (
+                        instance.get("State") if isinstance(instance, Mapping) else None
+                    )
+                    state_name = (
+                        state.get("Name") if isinstance(state, Mapping) else None
+                    )
+                    if instance_id not in batch or not isinstance(state_name, str):
+                        raise QualificationError(
+                            "EC2 instance zero-resource identity changed"
+                        )
+                    # EC2 retains terminated instance tombstones after the
+                    # resource itself is gone; normalize only that terminal state.
+                    if state_name != "terminated":
+                        resources["ec2_instances"].add(str(instance_id))
+
+        ec2_specs = (
+            (
+                "AWS::EC2::Volume",
+                "describe-volumes",
+                "Volumes",
+                "VolumeId",
+                "volume-id",
+                "ec2_volumes",
+                None,
+                frozenset(),
+            ),
+            (
+                "AWS::EC2::NetworkInterface",
+                "describe-network-interfaces",
+                "NetworkInterfaces",
+                "NetworkInterfaceId",
+                "network-interface-id",
+                "ec2_network_interfaces",
+                None,
+                frozenset(),
+            ),
+            (
+                "AWS::EC2::VPC",
+                "describe-vpcs",
+                "Vpcs",
+                "VpcId",
+                "vpc-id",
+                "ec2_vpcs",
+                None,
+                frozenset(),
+            ),
+            (
+                "AWS::EC2::SecurityGroup",
+                "describe-security-groups",
+                "SecurityGroups",
+                "GroupId",
+                "group-id",
+                "ec2_security_groups",
+                None,
+                frozenset(),
+            ),
+            (
+                "AWS::EC2::EIP",
+                "describe-addresses",
+                "Addresses",
+                "AllocationId",
+                "allocation-id",
+                "ec2_elastic_ips",
+                None,
+                frozenset(),
+            ),
+            (
+                "AWS::EC2::VPCEndpoint",
+                "describe-vpc-endpoints",
+                "VpcEndpoints",
+                "VpcEndpointId",
+                "vpc-endpoint-id",
+                "ec2_vpc_endpoints",
+                "State",
+                frozenset({"deleted"}),
+            ),
+            (
+                "AWS::EC2::InternetGateway",
+                "describe-internet-gateways",
+                "InternetGateways",
+                "InternetGatewayId",
+                "internet-gateway-id",
+                "ec2_vpcs",
+                None,
+                frozenset(),
+            ),
+            (
+                "AWS::EC2::NatGateway",
+                "describe-nat-gateways",
+                "NatGateways",
+                "NatGatewayId",
+                "nat-gateway-id",
+                "ec2_vpcs",
+                "State",
+                frozenset({"deleted"}),
+            ),
+            (
+                "AWS::EC2::RouteTable",
+                "describe-route-tables",
+                "RouteTables",
+                "RouteTableId",
+                "route-table-id",
+                "ec2_vpcs",
+                None,
+                frozenset(),
+            ),
+            (
+                "AWS::EC2::Subnet",
+                "describe-subnets",
+                "Subnets",
+                "SubnetId",
+                "subnet-id",
+                "ec2_vpcs",
+                None,
+                frozenset(),
+            ),
+        )
+        for (
+            resource_type,
+            operation,
+            key,
+            identity,
+            filter_name,
+            category,
+            state_key,
+            absent_states,
+        ) in ec2_specs:
+            resources[category].update(
+                self._ec2_present_ids(
+                    operation,
+                    key,
+                    identity,
+                    filter_name,
+                    self._owned_ids(resource_type),
+                    state_key=state_key,
+                    absent_states=absent_states,
+                )
+            )
+
+        exact_apis = (
+            (
+                "AWS::DynamoDB::Table",
+                "dynamodb_tables",
+                ["dynamodb", "describe-table", "--table-name"],
+            ),
+            (
+                "AWS::Lambda::Function",
+                "lambda_functions",
+                ["lambda", "get-function", "--function-name"],
+            ),
+            (
+                "AWS::ApiGatewayV2::Api",
+                "api_gateway_apis",
+                ["apigatewayv2", "get-api", "--api-id"],
+            ),
+            (
+                "AWS::CertificateManager::Certificate",
+                "acm_certificates",
+                ["acm", "describe-certificate", "--certificate-arn"],
+            ),
+            (
+                "AWS::SecretsManager::Secret",
+                "secrets",
+                ["secretsmanager", "describe-secret", "--secret-id"],
+            ),
+            (
+                "AWS::CloudWatch::Dashboard",
+                "cloudwatch_dashboards",
+                ["cloudwatch", "get-dashboard", "--dashboard-name"],
+            ),
+            ("AWS::IAM::Role", "iam_resources", ["iam", "get-role", "--role-name"]),
+            (
+                "AWS::IAM::ManagedPolicy",
+                "iam_resources",
+                ["iam", "get-policy", "--policy-arn"],
+            ),
+            (
+                "AWS::IAM::InstanceProfile",
+                "iam_resources",
+                ["iam", "get-instance-profile", "--instance-profile-name"],
+            ),
+            (
+                "AWS::SNS::Topic",
+                "sns_resources",
+                ["sns", "get-topic-attributes", "--topic-arn"],
+            ),
+            (
+                "AWS::Backup::BackupVault",
+                "backup_resources",
+                ["backup", "describe-backup-vault", "--backup-vault-name"],
+            ),
+            (
+                "AWS::Backup::BackupPlan",
+                "backup_resources",
+                ["backup", "get-backup-plan", "--backup-plan-id"],
+            ),
+        )
+        for resource_type, category, arguments in exact_apis:
+            for resource_id in self._owned_ids(resource_type):
+                if self.aws.exists([*arguments, resource_id]):
+                    resources[category].add(resource_id)
+
+        for name in self._owned_ids("AWS::Logs::LogGroup"):
+            if self._exact_log_group_exists(name):
+                resources["cloudwatch_log_groups"].add(name)
+        alarm_names = self._owned_ids("AWS::CloudWatch::Alarm")
+        for offset in range(0, len(alarm_names), 100):
+            batch = alarm_names[offset : offset + 100]
+            response = self.aws.json(
+                ["cloudwatch", "describe-alarms", "--alarm-names", *batch],
+                timeout=120,
+            )
+            for key in ("MetricAlarms", "CompositeAlarms"):
+                alarms = response.get(key) if isinstance(response, Mapping) else None
+                if not isinstance(alarms, list) or len(alarms) > 100:
+                    raise QualificationError("CloudWatch alarm inventory is invalid")
+                for alarm in alarms:
+                    name = (
+                        alarm.get("AlarmName") if isinstance(alarm, Mapping) else None
+                    )
+                    if name not in batch:
+                        raise QualificationError("CloudWatch alarm identity changed")
+                    resources["cloudwatch_alarms"].add(str(name))
+
+        for connect_id in self._owned_ids("AWS::Connect::Instance"):
+            if self.aws.exists(
+                ["connect", "describe-instance", "--instance-id", connect_id]
+            ):
+                resources["connect_resources"].add(connect_id)
+        for private_zone in self._owned_ids("AWS::Route53::HostedZone"):
+            if self.aws.exists(["route53", "get-hosted-zone", "--id", private_zone]):
+                resources["route53_private_zones"].add(private_zone)
+
+        hostname = f"{self.args.execution_id}.{self.args.hosted_zone_name.rstrip('.')}"
+        public_names = [hostname, f"control.{hostname}"]
+        if self.acm_validation_journal is not None:
+            public_names.extend(
+                str(item["name"])
+                for item in self.acm_validation_journal.get("record_sets", [])
+                if isinstance(item, Mapping) and isinstance(item.get("name"), str)
+            )
+        try:
+            for name in sorted(set(public_names)):
+                if release_safeguards.exact_route53_records(
+                    self.aws, self.args.hosted_zone_id, name
+                ):
+                    resources["route53_public_records"].add(name)
+        except release_safeguards.SafeguardError as error:
+            raise QualificationError(str(error)) from error
+
+        bucket = self.qualification_artifact_bucket()
+        if isinstance(bucket, str):
+            versions = list_object_versions_exact(
+                self.aws,
+                bucket,
+                f"qualification/{self.args.execution_id}/",
+            )
+            resources["s3_object_versions"].update(
+                f"{item['Key']}\x00{item['VersionId']}" for item in versions
+            )
+
+        vapi_ids = [
+            ("assistant", self.outputs.get("VapiAssistantId")),
+            ("tool", self.outputs.get("VapiPrepareToolId")),
+            ("credential", self.outputs.get("VapiWebhookCredentialId")),
+            ("phone-number", getattr(self, "temp_phone_id", None)),
+            ("assistant", getattr(self, "direct_assistant_id", None)),
+            ("tool", getattr(self, "direct_tool_id", None)),
+        ]
+        stack_vapi_physical_ids = self._owned_ids("Custom::BridgefuVapiResources")
+        for physical_id in stack_vapi_physical_ids:
+            if not physical_id.startswith("bridgefu-vapi-v2:"):
+                continue
+            try:
+                assistant_id, tool_id, credential_id = parse_physical_id(physical_id)
+            except VapiProvisioningError as error:
+                raise QualificationError(
+                    "stack-owned Vapi physical identity is invalid"
+                ) from error
+            vapi_ids.extend(
+                (
+                    ("assistant", assistant_id),
+                    ("tool", tool_id),
+                    ("credential", credential_id),
+                )
+            )
+        vapi_verification_required = bool(stack_vapi_physical_ids) or any(
+            isinstance(item, str) for _, item in vapi_ids
+        )
+        if self.vapi is None and vapi_verification_required:
+            raise QualificationError("Vapi zero-resource verifier is unavailable")
+        if self.vapi is not None:
+            for resource_type, resource_id in vapi_ids:
+                if (
+                    isinstance(resource_id, str)
+                    and self.vapi.get(resource_type, resource_id) is not None
+                ):
+                    resources["vapi_resources"].add(
+                        sha256_bytes(f"{resource_type}:{resource_id}".encode())[:12]
+                    )
+            resources["vapi_resources"].update(
+                self._related_vapi_resource_fingerprints()
+            )
+
+        try:
+            tagged = release_safeguards.tagged_resource_arns(
+                self.aws, self.args.execution_id
+            )
+        except release_safeguards.SafeguardError as error:
+            raise QualificationError(str(error)) from error
+        for arn in tagged:
+            category, live = self._tagged_resource_is_live(arn)
+            if live:
+                resources["execution_tagged_resources"].add(arn)
+                resources[category].add(arn)
+        counts = {name: len(resources[name]) for name in resources}
+        try:
+            return release_safeguards.normalize_zero_observation(
+                counts, observed_at=utc_now()
+            )
+        except release_safeguards.SafeguardError as error:
+            raise QualificationError(str(error)) from error
+
     def cleanup(self) -> dict[str, Any]:
         errors = self.stop_active_work()
+        if not hasattr(self, "owned_resource_inventory"):
+            self.owned_resource_inventory = None
         errors.extend(self.cleanup_direct_context())
         errors.extend(self.cleanup_web_runtime())
         try:
@@ -6427,9 +8072,25 @@ class Controller:
             or getattr(self, "temp_phone_intent_journal_object", None) is not None
             or getattr(self, "temp_phone_request_journal_object", None) is not None
         )
+        tracked_acm_key = getattr(self, "acm_validation_journal_key", None)
+        tracked_acm_bucket = getattr(self, "acm_validation_journal_bucket", None)
+        tracked_acm_version = getattr(self, "acm_validation_journal_version_id", None)
+        expected_acm_key = (
+            f"qualification/{self.args.execution_id}/"
+            "ownership/acm-validation-records.json"
+        )
+        acm_journal_tracking_invalid = self.acm_validation_journal is not None and (
+            not isinstance(tracked_acm_bucket, str)
+            or S3_BUCKET.fullmatch(tracked_acm_bucket) is None
+            or tracked_acm_key != expected_acm_key
+            or not isinstance(tracked_acm_version, str)
+            or not 1 <= len(tracked_acm_version) <= 1_024
+            or tracked_acm_version in {"null", "None"}
+            or re.search(r"[\x00-\x1f\x7f]", tracked_acm_version) is not None
+        )
         acm_recovery_required = (
             self.created_stack and not self.acm_validation_discovery_complete
-        )
+        ) or acm_journal_tracking_invalid
         direct_vapi_recovery_required = (
             getattr(self, "direct_vapi_cleanup_required", False)
             or getattr(self, "direct_identity_binding_installed", False)
@@ -6458,31 +8119,62 @@ class Controller:
             "provisioning resilience" in error for error in errors
         ):
             errors.append("Vapi provisioning resilience cleanup is incomplete")
+        if not ownership_recovery_required:
+            try:
+                self.ensure_owned_resource_inventory()
+            except QualificationError:
+                errors.append("qualification resource ownership inventory failed")
+                ownership_recovery_required = True
+        if not ownership_recovery_required:
+            try:
+                self.initialize_cleanup_vapi_verifier()
+            except QualificationError:
+                errors.append("Vapi cleanup verifier initialization failed")
+                ownership_recovery_required = True
+        artifact_bucket: str | None = None
+        try:
+            artifact_bucket = self.qualification_artifact_bucket()
+        except QualificationError:
+            errors.append("qualification artifact bucket identity recovery failed")
+            ownership_recovery_required = True
+        stack_id: str | None = getattr(self, "stack_id", None)
+        if self.created_stack and not ownership_recovery_required:
+            try:
+                stack_id = self.resolve_existing_stack_id()
+            except QualificationError:
+                errors.append("qualification stack identity recovery failed")
+                ownership_recovery_required = True
         if (
-            self.created_stack
+            stack_id is not None
             and not ownership_recovery_required
+            and self.owned_resource_inventory is not None
             and self.aws.exists(
-                ["cloudformation", "describe-stacks", "--stack-name", self.stack_name]
+                ["cloudformation", "describe-stacks", "--stack-name", stack_id]
             )
         ):
             try:
-                self.aws.text(
-                    ["cloudformation", "delete-stack", "--stack-name", self.stack_name]
-                )
-                self.aws.text(
-                    [
-                        "cloudformation",
-                        "wait",
-                        "stack-delete-complete",
-                        "--stack-name",
-                        self.stack_name,
-                    ],
-                    timeout=3600,
-                )
+                review_deleted = self.delete_unexecuted_change_set_hierarchy(stack_id)
+                if not review_deleted:
+                    self.aws.text(
+                        ["cloudformation", "delete-stack", "--stack-name", stack_id]
+                    )
+                    self.aws.text(
+                        [
+                            "cloudformation",
+                            "wait",
+                            "stack-delete-complete",
+                            "--stack-name",
+                            stack_id,
+                        ],
+                        timeout=3600,
+                    )
             except QualificationError:
-                errors.append("qualification stack deletion failed")
+                errors.append(
+                    "qualification stack or change-set hierarchy deletion failed"
+                )
+        absence_identifier = stack_id or self.stack_name
         stack_absent = not self.aws.exists(
-            ["cloudformation", "describe-stacks", "--stack-name", self.stack_name]
+            ["cloudformation", "describe-stacks", "--stack-name", absence_identifier]
         )
         acm_validation_absent = self.acm_validation_journal is None
         if self.acm_validation_journal is not None:
@@ -6498,7 +8190,6 @@ class Controller:
                 except QualificationError:
                     acm_validation_absent = False
                     errors.append("qualification ACM validation-record cleanup failed")
-        artifact_bucket = self.outputs.get("ArtifactBucket")
         if (
             isinstance(artifact_bucket, str)
             and not ownership_recovery_required
@@ -6511,6 +8202,8 @@ class Controller:
                     f"qualification/{self.args.execution_id}/",
                 )
                 self.acm_validation_journal_object = None
+                self.acm_validation_journal_key = None
+                self.acm_validation_journal_version_id = None
             except QualificationError:
                 errors.append("qualification object version cleanup failed")
         connect_absent = True
@@ -6534,11 +8227,11 @@ class Controller:
                 ]
             )
         objects_absent = True
-        if self.outputs.get("ArtifactBucket"):
+        if isinstance(artifact_bucket, str):
             try:
                 objects_absent = not list_object_versions_exact(
                     self.aws,
-                    self.outputs["ArtifactBucket"],
+                    artifact_bucket,
                     f"qualification/{self.args.execution_id}/",
                 )
             except QualificationError:
@@ -6578,6 +8271,49 @@ class Controller:
                     vapi_absent = False
         if phone_recovery_required or direct_vapi_recovery_required:
             vapi_absent = False
+        stable_proof: dict[str, Any] | None = None
+        immediate_absence = all(
+            (
+                stack_absent,
+                connect_absent,
+                vapi_absent,
+                secret_absent,
+                objects_absent,
+                private_dns_absent,
+                acm_validation_absent,
+            )
+        )
+        if (
+            immediate_absence
+            and self.owned_resource_inventory is not None
+            and not ownership_recovery_required
+        ):
+            try:
+                stable_proof = release_safeguards.stable_zero_resource_proof(
+                    self.observe_zero_resources,
+                    execution_id=self.args.execution_id,
+                    ownership_sha256=str(
+                        self.owned_resource_inventory["ownership_sha256"]
+                    ),
+                    owned_resource_count=int(
+                        self.owned_resource_inventory["resource_count"]
+                    ),
+                )
+                validate_schema(stable_proof, "zero-resource-proof-v1.schema.json")
+                private_json(
+                    self.args.output / "zero-resource-proof.json", stable_proof
+                )
+            except (KeyError, TypeError, ValueError):
+                errors.append("qualification resource ownership proof is invalid")
+            except (QualificationError, release_safeguards.SafeguardError):
+                errors.append("three stable zero-resource observations failed")
+        else:
+            errors.append("exhaustive zero-resource proof prerequisites failed")
+        proof_sha256 = (
+            sha256_file(self.args.output / "zero-resource-proof.json")
+            if stable_proof is not None
+            else None
+        )
         zero = {
             "schema_version": 1,
             "producer": PRODUCER,
@@ -6591,6 +8327,9 @@ class Controller:
             "qualification_objects_absent": objects_absent,
             "qualification_private_dns_absent": private_dns_absent,
             "qualification_acm_validation_records_absent": acm_validation_absent,
+            "all_resource_classes_absent": stable_proof is not None,
+            "three_observations_spanning_60_seconds": stable_proof is not None,
+            "zero_resource_proof_sha256": proof_sha256,
             "redacted": True,
         }
         private_json(self.args.output / "zero-state.json", zero)
@@ -6707,6 +8446,9 @@ class Controller:
             ) from primary_error
         if (
             zero is None
+            or self.preflight_evidence is None
+            or self.deployment_review_evidence is None
+            or self.runtime_deployment_evidence is None
             or self.secure_preflight_evidence is None
             or self.vapi_provisioning_resilience_evidence is None
             or set(self.database_reset_evidence) != test_database_reset.STAGES
@@ -6724,6 +8466,9 @@ class Controller:
             "started_at": self.started_at,
             "ended_at": utc_now(),
             "bridgefu_commit": self.bridgefu_lock["commit"],
+            "preflight": self.preflight_evidence,
+            "deployment_review": self.deployment_review_evidence,
+            "runtime_deployment": self.runtime_deployment_evidence,
             "secure_preflight": self.secure_preflight_evidence,
             "database_resets": {
                 stage: self.database_reset_evidence[stage]
@@ -6747,7 +8492,12 @@ class Controller:
                 "qualification_acm_validation_records_absent": zero[
                     "qualification_acm_validation_records_absent"
                 ],
+                "all_resource_classes_absent": zero["all_resource_classes_absent"],
+                "three_observations_spanning_60_seconds": zero[
+                    "three_observations_spanning_60_seconds"
+                ],
             },
+            "zero_resource_proof_sha256": zero["zero_resource_proof_sha256"],
             "redacted": True,
         }
         validate_schema(evidence, "evidence-v2.schema.json")
@@ -6758,9 +8508,13 @@ def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("run", nargs="?")
     value.add_argument("--execution-id", required=True)
+    value.add_argument("--expected-account-id", required=True)
     value.add_argument("--release", required=True)
     value.add_argument("--region", required=True, choices=sorted(REGIONS))
     value.add_argument("--template-url", required=True)
+    value.add_argument("--staged-objects", required=True, type=Path)
+    value.add_argument("--sealed-template-root", required=True, type=Path)
+    value.add_argument("--runtime-image-id", required=True)
     value.add_argument("--vapi-secret-arn", required=True)
     value.add_argument("--hosted-zone-id", required=True)
     value.add_argument("--hosted-zone-name", required=True)

@@ -2069,11 +2069,271 @@ class QualificationControllerTests(unittest.TestCase):
 
     def test_failed_environment_retention_must_be_explicit(self):
         self.assertEqual(
-            CONTROLLER.create_failure_arguments(False), ["--disable-rollback"]
+            CONTROLLER.create_failure_arguments(False),
+            ["--on-stack-failure", "DO_NOTHING"],
         )
         self.assertEqual(
-            CONTROLLER.create_failure_arguments(True), ["--disable-rollback"]
+            CONTROLLER.create_failure_arguments(True),
+            ["--on-stack-failure", "DO_NOTHING"],
         )
+
+    def test_root_default_parameters_are_explicit_and_match_the_sealed_source(self):
+        template = CONTROLLER.deployment_review.parse_template_body(
+            (ROOT / "qualification" / "cloudformation" / "template.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        parameters = template["Parameters"]
+        self.assertEqual(
+            parameters["SipSecurity"]["Default"],
+            CONTROLLER.QUALIFICATION_SIP_SECURITY,
+        )
+        self.assertEqual(
+            parameters["ScreenPopFieldsJson"]["Default"],
+            CONTROLLER.QUALIFICATION_SCREEN_POP_FIELDS_JSON,
+        )
+
+    def test_deploy_reviews_exact_create_change_set_and_uses_full_stack_id(self):
+        output = Path(tempfile.mkdtemp(prefix="qualification-deploy-review-test-"))
+        try:
+            change_set_arn = (
+                "arn:aws:cloudformation:us-west-2:123456789012:"
+                "changeSet/bridgefu-bfq-test1234-review/change-1234"
+            )
+            stack_id = (
+                "arn:aws:cloudformation:us-west-2:123456789012:"
+                "stack/bridgefu-bfq-test1234/stack-1234"
+            )
+            proof = {
+                "producer": "bridgefu-cloudformation-deployment-review@1",
+                "version": 1,
+                "result": "pass",
+                "change_set_type": "CREATE",
+                "template_count": 10,
+                "nested_change_set_count": 9,
+                "max_depth": 2,
+                "catalog_sha256": "a" * 64,
+                "hierarchy_sha256": "b" * 64,
+                "root_invocation_sha256": "f" * 64,
+                "root_change_set_fingerprint": "c" * 16,
+                "root_stack_fingerprint": "d" * 16,
+            }
+
+            class Aws:
+                def __init__(self):
+                    self.json_calls = []
+                    self.text_calls = []
+
+                def json(self, arguments, timeout=900):
+                    self.json_calls.append((arguments, timeout))
+                    if "create-change-set" in arguments:
+                        return {"Id": change_set_arn, "StackId": stack_id}
+                    if "describe-change-set" in arguments:
+                        return {
+                            "ChangeSetId": change_set_arn,
+                            "StackId": stack_id,
+                            "Status": "CREATE_COMPLETE",
+                        }
+                    if "describe-stacks" in arguments:
+                        return {
+                            "Stacks": [
+                                {
+                                    "StackId": stack_id,
+                                    "StackName": "bridgefu-bfq-test1234",
+                                    "StackStatus": "CREATE_COMPLETE",
+                                    "Outputs": [],
+                                }
+                            ]
+                        }
+                    raise AssertionError(arguments)
+
+                def text(self, arguments, timeout=900):
+                    self.text_calls.append((arguments, timeout))
+                    return ""
+
+            controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+            controller.args = SimpleNamespace(
+                execution_id="bfq-test1234",
+                region="us-west-2",
+                expected_account_id="123456789012",
+                release="1.2.3",
+                template_url=(
+                    "https://bridgefu-test.s3.us-east-1.amazonaws.com/"
+                    "releases/1.2.3/qualification/cloudformation/template.yaml"
+                    "?versionId=version-1"
+                ),
+                vapi_secret_arn=(  # noqa: S106 - test ARN, not a secret value.
+                    "arn:aws:secretsmanager:us-west-2:123456789012:secret:vapi"
+                ),
+                hosted_zone_id="Z1234",
+                hosted_zone_name="example.test",
+                instance_type="c7g.2xlarge",
+                runtime_image_id="ami-0123456789abcdef0",
+                cloudformation_role_arn=(
+                    "arn:aws:iam::123456789012:role/qualification"
+                ),
+                retain_on_failure=False,
+                output=output,
+            )
+            controller.stack_name = "bridgefu-bfq-test1234"
+            controller.created_stack = False
+            controller.stack_id = None
+            controller.root_change_set_arn = None
+            controller.sealed_template_catalog = (mock.sentinel.template,)
+            controller.deployment_review_evidence = None
+            controller.runtime_deployment_evidence = None
+            controller.reviewed_change_set_arns = ()
+            controller.reviewed_stack_ids = ()
+            controller.aws = Aws()
+            controller.outputs = {}
+            controller.owned_resource_inventory = None
+            controller.ensure_acm_validation_journal = mock.Mock()
+            controller.wait_for_runtime = mock.Mock()
+
+            reviewed = CONTROLLER.deployment_review.DeploymentReview(
+                root_change_set_arn=change_set_arn,
+                root_stack_id=stack_id,
+                proof=proof,
+                change_set_arns=(change_set_arn,),
+                stack_ids=(stack_id,),
+            )
+            runtime_proof = {
+                "schema_version": 1,
+                "producer": "bridgefu-runtime-deployment@1",
+                "execution_id": "bfq-test1234",
+                "region": "us-west-2",
+                "runtime_image_sha256": "9" * 64,
+                "instance_id_fingerprint": "8" * 16,
+                "instance_type": "c7g.2xlarge",
+                "architecture": "arm64",
+                "availability_zone": "us-west-2a",
+                "checks": {
+                    "instance_id_exact": True,
+                    "candidate_ami_exact": True,
+                    "instance_type_exact": True,
+                    "architecture_arm64": True,
+                    "running": True,
+                    "ownership_tags_exact": True,
+                },
+                "passed": True,
+                "redacted": True,
+            }
+            with (
+                mock.patch.object(
+                    CONTROLLER.deployment_review,
+                    "review_create_change_set",
+                    return_value=reviewed,
+                ) as review,
+                mock.patch.object(
+                    CONTROLLER,
+                    "stack_outputs",
+                    return_value={"BridgefuInstanceId": "i-0123456789abcdef0"},
+                ),
+                mock.patch.object(
+                    CONTROLLER.release_safeguards,
+                    "validate_deployed_runtime",
+                    return_value=runtime_proof,
+                ) as runtime_review,
+                mock.patch.object(
+                    CONTROLLER.release_safeguards,
+                    "stack_ownership_inventory",
+                    return_value={"ownership_sha256": "e" * 64},
+                ) as inventory,
+            ):
+                controller.deploy()
+
+            create = next(
+                call
+                for call, _ in controller.aws.json_calls
+                if "create-change-set" in call
+            )
+            self.assertIn("--include-nested-stacks", create)
+            self.assertIn("--on-stack-failure", create)
+            self.assertNotIn("create-stack", create)
+            self.assertEqual(controller.stack_id, stack_id)
+            self.assertEqual(controller.root_change_set_arn, change_set_arn)
+            review.assert_called_once_with(
+                aws=controller.aws,
+                root_change_set_arn=change_set_arn,
+                root_stack_id=stack_id,
+                root_template_url=controller.args.template_url,
+                sealed_catalog=controller.sealed_template_catalog,
+                expected_change_set_type="CREATE",
+                expected_region="us-west-2",
+                expected_account_id="123456789012",
+                expected_root_invocation=CONTROLLER.deployment_review.RootInvocation(
+                    change_set_name="bridgefu-bfq-test1234-review",
+                    stack_name="bridgefu-bfq-test1234",
+                    parameters=(
+                        ("DeploymentId", "bfq-test1234"),
+                        (
+                            "VapiApiKeySecretArn",
+                            "arn:aws:secretsmanager:us-west-2:123456789012:secret:vapi",
+                        ),
+                        ("PublicHostedZoneId", "Z1234"),
+                        ("SipHostname", "bfq-test1234.example.test"),
+                        ("InstanceType", "c7g.2xlarge"),
+                        ("SipSecurity", CONTROLLER.QUALIFICATION_SIP_SECURITY),
+                        (
+                            "ScreenPopFieldsJson",
+                            CONTROLLER.QUALIFICATION_SCREEN_POP_FIELDS_JSON,
+                        ),
+                    ),
+                    role_arn="arn:aws:iam::123456789012:role/qualification",
+                    capabilities=("CAPABILITY_NAMED_IAM",),
+                    tags=(
+                        ("ManagedBy", "bridgefu-qualification"),
+                        ("BridgefuExecutionId", "bfq-test1234"),
+                    ),
+                    on_stack_failure="DO_NOTHING",
+                ),
+            )
+            parameter_offset = create.index("--parameters") + 1
+            explicit_parameters = set(create[parameter_offset:])
+            self.assertIn(
+                "ParameterKey=SipSecurity,ParameterValue=sips_optional_srtp",
+                explicit_parameters,
+            )
+            self.assertIn(
+                "ParameterKey=ScreenPopFieldsJson,ParameterValue="
+                + CONTROLLER.QUALIFICATION_SCREEN_POP_FIELDS_JSON,
+                explicit_parameters,
+            )
+            runtime_review.assert_called_once_with(
+                controller.aws,
+                execution_id="bfq-test1234",
+                region="us-west-2",
+                expected_account_id="123456789012",
+                instance_id="i-0123456789abcdef0",
+                runtime_image_id="ami-0123456789abcdef0",
+                instance_type="c7g.2xlarge",
+                expected_recipe=CONTROLLER.RECIPE,
+            )
+            inventory.assert_called_once_with(
+                controller.aws, stack_id, CONTROLLER.MAX_NESTED_STACKS
+            )
+            execute = next(
+                call
+                for call, _ in controller.aws.text_calls
+                if "execute-change-set" in call
+            )
+            self.assertEqual(
+                execute[execute.index("--change-set-name") + 1], change_set_arn
+            )
+            waiter = next(
+                call for call, _ in controller.aws.text_calls if "wait" in call
+            )
+            self.assertEqual(waiter[waiter.index("--stack-name") + 1], stack_id)
+            CONTROLLER.validate_schema(
+                json.loads((output / "deployment-review.json").read_text()),
+                "deployment-review-v1.schema.json",
+            )
+            CONTROLLER.validate_schema(
+                json.loads((output / "runtime-deployment.json").read_text()),
+                "runtime-deployment-v1.schema.json",
+            )
+        finally:
+            shutil.rmtree(output, ignore_errors=True)
 
     def test_connect_agent_availability_is_exact_and_idempotent(self):
         instance_arn = "arn:aws:connect:us-west-2:123456789012:instance/instance-1"
@@ -2429,6 +2689,10 @@ class QualificationControllerTests(unittest.TestCase):
             )
             controller = CONTROLLER.Controller(args)
             controller.created_stack = True
+            controller.stack_id = (
+                "arn:aws:cloudformation:us-west-2:123456789012:"
+                "stack/bridgefu-bfq-test1234/01234567-89ab-cdef-0123-456789abcdef"
+            )
             controller.phase = "cloudformation_deploy"
 
             class Aws:
@@ -2612,10 +2876,12 @@ class QualificationControllerTests(unittest.TestCase):
             sip_uri=None,
             source_call_id="bridgefu_call_1234",
             correlation_id=correlation,
+            source_started_epoch_ms=1_787_000_000_000,
         )
         self.assertEqual(session["source_call_id"], "bridgefu_call_1234")
         self.assertEqual(session["vapi_call_id"], "vapi_call_1234")
         self.assertEqual(session["correlation_id"], correlation)
+        self.assertEqual(session["started_epoch_ms"], 1_787_000_000_000)
         self.assertEqual(
             session["source_call_fingerprint"],
             CONTROLLER.sha256_bytes(b"bridgefu_call_1234")[:12],

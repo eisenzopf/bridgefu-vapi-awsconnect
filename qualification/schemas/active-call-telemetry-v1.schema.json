@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bridgefu.dev/vapi-awsconnect/qualification/active-call-telemetry-v1.schema.json",
+  "title": "Per-smoke active-call CloudWatch capacity proof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "producer", "execution_id", "instance_type", "vcpus", "memory_mib", "window_duration_seconds", "minimum_required_samples", "cpu_sample_count", "memory_sample_count", "host_cpu_peak_percent", "host_memory_peak_percent", "bridgefu_start_events_during_smoke", "cpu_strictly_under_60_percent", "memory_strictly_under_60_percent", "bridgefu_restart_free", "compile_excluded", "passed", "redacted"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "producer": {"const": "bridgefu-cloudwatch-capacity-observation@1"},
+    "execution_id": {"type": "string", "pattern": "^bfq-[a-z0-9-]{4,28}$"},
+    "instance_type": {"type": "string", "pattern": "^[a-z0-9.]{3,32}$"},
+    "vcpus": {"type": "integer", "minimum": 1, "maximum": 256},
+    "memory_mib": {"type": "integer", "minimum": 1, "maximum": 2097152},
+    "window_duration_seconds": {"type": "number", "minimum": 10, "maximum": 600},
+    "minimum_required_samples": {"type": "integer", "minimum": 2, "maximum": 60},
+    "cpu_sample_count": {"type": "integer", "minimum": 2, "maximum": 512},
+    "memory_sample_count": {"type": "integer", "minimum": 2, "maximum": 512},
+    "host_cpu_peak_percent": {"type": "number", "minimum": 0, "exclusiveMaximum": 60},
+    "host_memory_peak_percent": {"type": "number", "minimum": 0, "exclusiveMaximum": 60},
+    "bridgefu_start_events_during_smoke": {"const": 0},
+    "cpu_strictly_under_60_percent": {"const": true},
+    "memory_strictly_under_60_percent": {"const": true},
+    "bridgefu_restart_free": {"const": true},
+    "compile_excluded": {"const": true},
+    "passed": {"const": true},
+    "redacted": {"const": true}
+  }
+}
