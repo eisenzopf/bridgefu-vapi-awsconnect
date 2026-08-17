@@ -76,7 +76,9 @@ any candidate run.
 | Recipe-first reconciliation | PASSED | Applicable safeguards are preserved and obsolete branch scope is explicitly rejected |
 | Secret and repository hygiene | PASSED | History, working-tree, and exact staged-source scans pass with only reviewed synthetic test fixtures |
 | Local contract and static gates | PASSED | Complete fail-closed preflight passed on the final combined worktree |
-| Persistent IAM control plane | NOT UPDATED | Reviewed, no-replacement role-stack changes deployed and reverified |
+| Exact merged-main CI | PASSED | All four required checks passed on merge commit `26706683b3c92c1a735fc09e5171975d27025ff9` |
+| Retained diagnostic cleanup | PASSED | The exact Oregon `TestDelete` root is absent and its Vapi, ACM, S3, and direct resource checks pass |
+| Persistent IAM control plane | PASSED | Reviewed, no-replacement role-stack changes deployed and reverified |
 | Exact remote template validation | PASSED | All ten exact rendered templates passed AWS validation in both supported regions (20/20) |
 | Fresh Oregon qualification | NOT STARTED | Direct secure preflight and both Vapi smoke paths pass, then zero proof |
 | Fresh Virginia qualification | NOT STARTED | Same immutable bits and checks pass only after Oregon |
@@ -100,6 +102,16 @@ Local gate evidence on 2026-08-17:
 - AWS CloudFormation `ValidateTemplate` accepted all ten exact rendered
   templates in `us-west-2` and all ten in `us-east-1` (20/20), using the same
   bytes produced by the passing deterministic package gate.
+- push-triggered CI passed all four required checks on exact merged-main commit
+  `26706683b3c92c1a735fc09e5171975d27025ff9`.
+- the retained Oregon diagnostic root and its companion direct-handoff stack
+  were deleted; direct service inventory proved zero CloudFormation, Vapi,
+  Connect, EC2/VPC, EBS, Lambda, API Gateway, DynamoDB, Secrets Manager, IAM,
+  log, alarm, dashboard, ACM, DNS, and qualification S3 resources;
+- the persistent publisher and qualification stacks were updated through
+  reviewed in-place change sets with zero replacement or removal, their exact
+  v5/v4 templates and critical policies passed verification, all expected
+  GitHub environment bindings matched, and both stacks report `IN_SYNC`.
 
 ## Audit safeguards incorporated in the worktree
 
@@ -209,20 +221,15 @@ AWS authority.
 
 ## Remaining path to the customer template
 
-1. Commit the coherent audited delta, push it, pass exact-commit CI, and merge it
-   into `origin/main`.
-2. Configure the protected expected-account variable for production release,
-   live qualification, and release recovery.
-3. Review and deploy the persistent publisher/qualification role updates with
-   no resource replacement, then re-run the exact deployed-template, policy,
-   and drift checks.
-4. Start one new private candidate from the exact merged commit.
-5. Qualify Oregon, destroy it, and prove stable zero resources.
-6. Qualify Virginia with the same immutable bits, destroy it, and prove stable
+1. Merge the small readiness-ledger and deterministic bucket-verifier follow-up
+   through the now-protected `main` branch and require exact-commit CI.
+2. Start one new private candidate from the exact merged commit.
+3. Qualify Oregon, destroy it, and prove stable zero resources.
+4. Qualify Virginia with the same immutable bits, destroy it, and prove stable
    zero resources.
-7. Seal and review the signed receipt.
-8. Tag the exact qualified commit and approve publication.
-9. Publish public AMI/snapshot permissions and immutable release objects, then
+5. Seal and review the signed receipt.
+6. Tag the exact qualified commit and approve publication.
+7. Publish public AMI/snapshot permissions and immutable release objects, then
    update `latest` pointers last.
 
 ## Historical conclusions retained without live identifiers
@@ -244,7 +251,8 @@ AWS authority.
 
 ## Next permitted action
 
-Commit and push the exact staged source, pass exact-commit CI, and merge it into
-`origin/main`. No candidate, retained mutation, or publication run is permitted
-until the persistent IAM control-plane update is reviewed, deployed without
-replacement, and reverified.
+Commit the small readiness-ledger and deterministic bucket-verifier correction,
+push it through the protected `main` branch, and require all four exact-commit
+checks to pass. Only then may the new private `0.1.22` candidate begin; no
+publication is permitted before both regional qualifications and signed receipt
+review pass.

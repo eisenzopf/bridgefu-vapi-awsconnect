@@ -116,6 +116,8 @@ class FakeBucketCli:
                 "Arn": "arn:aws:sts::123456789012:assumed-role/release/session",
             }
         if operation == ("s3control", "get-public-access-block"):
+            if arguments[-2:] != ("--region", "us-east-1"):
+                raise AssertionError(arguments)
             return {
                 "PublicAccessBlockConfiguration": {
                     "BlockPublicAcls": True,
