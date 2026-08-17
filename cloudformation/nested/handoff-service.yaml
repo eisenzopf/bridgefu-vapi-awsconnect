@@ -36,7 +36,7 @@ Parameters:
   BridgefuControlBaseUrl:
     Type: String
     Description: >-
-      Authenticated Bridgefu control endpoint. The production SIPS posture uses
+      Authenticated Bridgefu control endpoint. The production TLS-signaling posture uses
       HTTPS; the disposable IP-only SIP proof uses HTTP inside its private VPC.
     AllowedPattern: '^https?://\S+$'
   BridgefuRouteId:

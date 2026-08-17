@@ -41,9 +41,11 @@ Parameters:
     Default: sips_optional_srtp
     AllowedValues: [sips_optional_srtp, sips_srtp, sip_rtp]
     Description: >-
-      The release path keeps signaling on SIPS/TLS, prefers SRTP, and accepts
-      RTP/AVP only when Vapi does not offer SRTP. Plain SIP/RTP is available
-      only because this qualification stack uses DataRetentionMode=TestDelete.
+      The release path keeps SIP signaling on TLS, prefers SRTP, and accepts
+      RTP/AVP only when Vapi does not offer SRTP. Optional mode uses a
+      sip:...;transport=tls destination and proves the actual transport
+      independently. Plain SIP/RTP is available only because this qualification
+      stack uses DataRetentionMode=TestDelete.
   ScreenPopFieldsJson:
     Type: String
     MaxLength: 4096

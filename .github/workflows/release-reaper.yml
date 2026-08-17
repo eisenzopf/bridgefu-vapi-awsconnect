@@ -13,29 +13,61 @@ permissions:
   id-token: write
 
 concurrency:
-  group: bridgefu-vapi-awsconnect-reaper-${{ github.event.workflow_run.id }}
+  # Failed qualification runs use the same repository-wide mutation mutex as
+  # candidate.yml and remote-qualification.yml. Publication recovery stays on
+  # its independent path and is additionally serialized with publication below.
+  group: >-
+    ${{ github.event.workflow_run.name == 'Publish qualified release'
+        && 'bridgefu-vapi-awsconnect-publication-recovery'
+        || 'bridgefu-vapi-awsconnect-qualification-mutation' }}
   cancel-in-progress: false
 
 jobs:
   delete-cancelled-qualification-stacks:
     if: >-
+      github.ref == 'refs/heads/main' &&
+      github.event.workflow_run.head_branch == 'main' &&
       (github.event.workflow_run.name == 'Build and qualify private candidate' ||
        github.event.workflow_run.name == 'Remote live qualification') &&
       github.event.workflow_run.conclusion != 'success' &&
       github.event.workflow_run.head_repository.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 175
     environment: release-recovery
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          # github.sha is the trusted default-branch event revision.  The
+          # failed workflow head_sha is untrusted input and is never executed.
+          ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
           role-to-assume: ${{ vars.AWS_RECOVERY_ROLE_ARN }}
+          role-duration-seconds: 10800
           aws-region: us-west-2
+      - name: Verify recovery control-plane bindings
+        env:
+          EXPECTED_AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          EXPECTED_RECOVERY_ROLE_ARN: ${{ vars.AWS_RECOVERY_ROLE_ARN }}
+          EXPECTED_SIGNING_KEY_ARN: ${{ vars.RELEASE_SIGNING_KEY_ARN }}
+          EXPECTED_VAPI_SECRET_WEST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_WEST_2 }}
+          EXPECTED_VAPI_SECRET_EAST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_EAST_1 }}
+          EXPECTED_HOSTED_ZONE_ID: ${{ vars.PUBLIC_HOSTED_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          python release/verify_release_control_plane.py \
+            --mode recovery \
+            --expected-account-id "$EXPECTED_AWS_ACCOUNT_ID" \
+            --expected-caller-role-arn "$EXPECTED_RECOVERY_ROLE_ARN" \
+            --expected-signing-key-arn "$EXPECTED_SIGNING_KEY_ARN" \
+            --expected-vapi-secret-west "$EXPECTED_VAPI_SECRET_WEST" \
+            --expected-vapi-secret-east "$EXPECTED_VAPI_SECRET_EAST" \
+            --expected-hosted-zone-id "$EXPECTED_HOSTED_ZONE_ID"
       - name: Delete only stacks and objects owned by the interrupted run
         env:
+          EXPECTED_AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          EXPECTED_RECOVERY_ROLE_ARN: ${{ vars.AWS_RECOVERY_ROLE_ARN }}
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
           SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           PUBLIC_HOSTED_ZONE_ID: ${{ vars.PUBLIC_HOSTED_ZONE_ID }}
@@ -45,16 +77,42 @@ jobs:
 
   delete-failed-private-candidate:
     if: >-
+      github.ref == 'refs/heads/main' &&
+      github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.name == 'Build and qualify private candidate' &&
       github.event.workflow_run.conclusion != 'success' &&
       github.event.workflow_run.head_repository.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 175
     environment: release-recovery
     steps:
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
           role-to-assume: ${{ vars.AWS_RECOVERY_ROLE_ARN }}
+          role-duration-seconds: 10800
           aws-region: us-east-1
+      - name: Verify recovery control-plane bindings
+        env:
+          EXPECTED_AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          EXPECTED_RECOVERY_ROLE_ARN: ${{ vars.AWS_RECOVERY_ROLE_ARN }}
+          EXPECTED_SIGNING_KEY_ARN: ${{ vars.RELEASE_SIGNING_KEY_ARN }}
+          EXPECTED_VAPI_SECRET_WEST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_WEST_2 }}
+          EXPECTED_VAPI_SECRET_EAST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_EAST_1 }}
+          EXPECTED_HOSTED_ZONE_ID: ${{ vars.PUBLIC_HOSTED_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          python release/verify_release_control_plane.py \
+            --mode recovery \
+            --expected-account-id "$EXPECTED_AWS_ACCOUNT_ID" \
+            --expected-caller-role-arn "$EXPECTED_RECOVERY_ROLE_ARN" \
+            --expected-signing-key-arn "$EXPECTED_SIGNING_KEY_ARN" \
+            --expected-vapi-secret-west "$EXPECTED_VAPI_SECRET_WEST" \
+            --expected-vapi-secret-east "$EXPECTED_VAPI_SECRET_EAST" \
+            --expected-hosted-zone-id "$EXPECTED_HOSTED_ZONE_ID"
       - name: Remove only the failed run's private AMIs and object versions
         env:
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
@@ -217,6 +275,11 @@ jobs:
                  join("\u0000")] | length == (unique | length)) and
                ([.qualification[] |
                  .evidence_schema_version == 2 and
+                 (.evidence_sha256 | test("^[0-9a-f]{64}$")) and
+                 (.zero_state_sha256 | test("^[0-9a-f]{64}$")) and
+                 (.zero_resource_proof_sha256 | test("^[0-9a-f]{64}$")) and
+                 (.runtime_image_sha256 | test("^[0-9a-f]{64}$")) and
+                 (.root_invocation_sha256 | test("^[0-9a-f]{64}$")) and
                  .secure_preflight_passed == true and
                  .required_checks_passed == true and
                  .scenario_ids == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"] and
@@ -426,19 +489,44 @@ jobs:
 
   rollback-interrupted-publication:
     if: >-
+      github.ref == 'refs/heads/main' &&
       github.event.workflow_run.name == 'Publish qualified release' &&
       github.event.workflow_run.conclusion != 'success' &&
       github.event.workflow_run.head_repository.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 175
     environment: release-recovery
     concurrency:
       group: bridgefu-vapi-awsconnect-release
       cancel-in-progress: false
     steps:
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
           role-to-assume: ${{ vars.AWS_RECOVERY_ROLE_ARN }}
+          role-duration-seconds: 10800
           aws-region: us-east-1
+      - name: Verify recovery control-plane bindings
+        env:
+          EXPECTED_AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          EXPECTED_RECOVERY_ROLE_ARN: ${{ vars.AWS_RECOVERY_ROLE_ARN }}
+          EXPECTED_SIGNING_KEY_ARN: ${{ vars.RELEASE_SIGNING_KEY_ARN }}
+          EXPECTED_VAPI_SECRET_WEST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_WEST_2 }}
+          EXPECTED_VAPI_SECRET_EAST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_EAST_1 }}
+          EXPECTED_HOSTED_ZONE_ID: ${{ vars.PUBLIC_HOSTED_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          python release/verify_release_control_plane.py \
+            --mode recovery \
+            --expected-account-id "$EXPECTED_AWS_ACCOUNT_ID" \
+            --expected-caller-role-arn "$EXPECTED_RECOVERY_ROLE_ARN" \
+            --expected-signing-key-arn "$EXPECTED_SIGNING_KEY_ARN" \
+            --expected-vapi-secret-west "$EXPECTED_VAPI_SECRET_WEST" \
+            --expected-vapi-secret-east "$EXPECTED_VAPI_SECRET_EAST" \
+            --expected-hosted-zone-id "$EXPECTED_HOSTED_ZONE_ID"
       - name: Revoke partial visibility while preserving the qualified candidate
         env:
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
@@ -505,6 +593,11 @@ jobs:
                join("\u0000")] | length == (unique | length)) and
              ([.qualification[] |
                .evidence_schema_version == 2 and
+               (.evidence_sha256 | test("^[0-9a-f]{64}$")) and
+               (.zero_state_sha256 | test("^[0-9a-f]{64}$")) and
+               (.zero_resource_proof_sha256 | test("^[0-9a-f]{64}$")) and
+               (.runtime_image_sha256 | test("^[0-9a-f]{64}$")) and
+               (.root_invocation_sha256 | test("^[0-9a-f]{64}$")) and
                .secure_preflight_passed == true and
                .required_checks_passed == true and
                .scenario_ids == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"] and

@@ -14,6 +14,7 @@ validation records in that zone.
 Do not use the mutable repository name as the IAM subject. Configure the
 GitHub `production-release` environment variables:
 
+- `AWS_ACCOUNT_ID`
 - `AWS_CANDIDATE_ROLE_ARN`
 - `AWS_PUBLISH_ROLE_ARN`
 - `RELEASE_SIGNING_KEY_ARN`
@@ -25,6 +26,7 @@ qualification environment below.
 
 Configure the protected `live-qualification` environment with:
 
+- `AWS_ACCOUNT_ID`
 - `AWS_QUALIFICATION_ROLE_ARN`
 - `AWS_QUALIFICATION_CLOUDFORMATION_ROLE_ARN`
 - `RELEASE_SIGNING_KEY_ARN`
@@ -32,12 +34,16 @@ Configure the protected `live-qualification` environment with:
 - `VAPI_API_KEY_SECRET_ARN_US_EAST_1`
 - `PUBLIC_HOSTED_ZONE_ID`
 - `PUBLIC_HOSTED_ZONE_NAME`
-- `VAPI_PUBLIC_KEY` as an environment secret
+
+The Vapi values are regional Secrets Manager ARNs containing the private API
+key. No Vapi browser/public key is used by qualification.
 
 Create a separate GitHub environment named `release-recovery` with these
 non-secret variables:
 
+- `AWS_ACCOUNT_ID`
 - `AWS_RECOVERY_ROLE_ARN`
+- `RELEASE_SIGNING_KEY_ARN`
 - `VAPI_API_KEY_SECRET_ARN_US_WEST_2`
 - `VAPI_API_KEY_SECRET_ARN_US_EAST_1`
 - `PUBLIC_HOSTED_ZONE_ID`
@@ -62,7 +68,12 @@ dual-region qualification receipt as the explicit release gate.
 
 ## Release flow
 
-1. Run `make test qualification-test validate package`.
+1. On Linux x86_64/ARM64 or macOS ARM64, run `make preflight`. It is the single fail-closed
+   local gate: Python/Rust/Node 22 with npm 10 tests, the exact pinned Bridgefu Web SDK, Ruff,
+   ShellCheck, actionlint, deterministic packaging, `cfn-lint`, and Packer
+   validation with the reviewed plugin archive hash must all pass. Missing tools
+   fail the command; nothing is silently skipped. Live source-AMI identity and
+   every exact rendered template URL are reverified later before AWS mutation.
 2. From `main`, manually run **Build and qualify private candidate** with the
    exact intended tag version without the leading `v` (for `v0.1.14`, enter
    `0.1.14`). The run-specific candidate ID is the RC identity; do not add an

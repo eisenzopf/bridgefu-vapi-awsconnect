@@ -77,7 +77,7 @@ def qualification_statements() -> list[dict[str, Any]]:
 
 SUBSTITUTIONS = {
     "${AWS::Partition}": "aws",
-    "${AWS::AccountId}": "225478700523",
+    "${AWS::AccountId}": "123456789012",
     "${ArtifactBucketPrefix}": "bridgefu-vapi-awsconnect",
     "${QualificationPublicHostedZoneId}": "Z0123456789EXACT",
 }
@@ -173,11 +173,11 @@ class RecoveryPolicyContractTests(unittest.TestCase):
     def test_qualification_runner_can_delete_only_its_versioned_objects(self):
         statements = qualification_statements()
         owned = (
-            "arn:aws:s3:::bridgefu-vapi-awsconnect-225478700523-us-west-2/"
+            "arn:aws:s3:::bridgefu-vapi-awsconnect-123456789012-us-west-2/"
             "qualification/bfq-w-123-1/ownership/acm-validation-records.json"
         )
         unrelated = (
-            "arn:aws:s3:::bridgefu-vapi-awsconnect-225478700523-us-west-2/"
+            "arn:aws:s3:::bridgefu-vapi-awsconnect-123456789012-us-west-2/"
             "customer-data/context.json"
         )
         for action in ("s3:DeleteObject", "s3:DeleteObjectVersion"):
@@ -207,7 +207,7 @@ class RecoveryPolicyContractTests(unittest.TestCase):
         prefix = prefix_match.group(1).replace(
             "$candidate_id", "candidate-0.1.14-deadbeef-123-1"
         )
-        bucket = "arn:aws:s3:::bridgefu-vapi-awsconnect-225478700523-us-east-1"
+        bucket = "arn:aws:s3:::bridgefu-vapi-awsconnect-123456789012-us-east-1"
         object_arn = f"{bucket}/{prefix}qualification/demo-site.zip"
         statements = recovery_statements()
         self.assertTrue(
@@ -238,7 +238,7 @@ class RecoveryPolicyContractTests(unittest.TestCase):
 
     def test_recovery_s3_routes_are_complete_but_not_bucket_wide(self):
         statements = recovery_statements()
-        bucket = "arn:aws:s3:::bridgefu-vapi-awsconnect-225478700523-us-east-1"
+        bucket = "arn:aws:s3:::bridgefu-vapi-awsconnect-123456789012-us-east-1"
         listed_prefixes = (
             "candidates/runs/123/1/state.json",
             "candidates/candidate-0.1.14-deadbeef-123-1/",
@@ -272,7 +272,7 @@ class RecoveryPolicyContractTests(unittest.TestCase):
     def test_vapi_intent_recovery_permissions_are_exact_and_one_way(self):
         statements = recovery_statements()
         prefix = (
-            "arn:aws:s3:::bridgefu-vapi-awsconnect-225478700523-us-west-2/"
+            "arn:aws:s3:::bridgefu-vapi-awsconnect-123456789012-us-west-2/"
             "qualification/bfq-w-123-1/ownership/"
         )
         intent = prefix + "vapi-phone-intent.json"
@@ -292,7 +292,7 @@ class RecoveryPolicyContractTests(unittest.TestCase):
     def test_direct_vapi_recovery_permissions_are_journal_and_binding_scoped(self):
         statements = recovery_statements()
         prefix = (
-            "arn:aws:s3:::bridgefu-vapi-awsconnect-225478700523-us-west-2/"
+            "arn:aws:s3:::bridgefu-vapi-awsconnect-123456789012-us-west-2/"
             "qualification/bfq-w-123-1/ownership/"
         )
         intent_names = (
@@ -315,15 +315,15 @@ class RecoveryPolicyContractTests(unittest.TestCase):
             allows(statements, "s3:GetObject", prefix + "foreign-vapi.json")
         )
         direct_binding = (
-            "arn:aws:secretsmanager:us-west-2:225478700523:secret:"
+            "arn:aws:secretsmanager:us-west-2:123456789012:secret:"
             "bridgefu/bfq-w-123-1/qualification/direct-vapi-identity-AbCdEf"
         )
         product_binding = (
-            "arn:aws:secretsmanager:us-west-2:225478700523:secret:"
+            "arn:aws:secretsmanager:us-west-2:123456789012:secret:"
             "bridgefu-bfq-w-123-1-vapi-identity-AbCdEf"
         )
         foreign_binding = (
-            "arn:aws:secretsmanager:us-west-2:225478700523:secret:"
+            "arn:aws:secretsmanager:us-west-2:123456789012:secret:"
             "customer/vapi-identity-AbCdEf"
         )
         self.assertTrue(
@@ -1502,7 +1502,7 @@ test ! -e {marker!s}
         remote = REMOTE_QUALIFICATION_PATH.read_text()
         build_marker = "Build the immutable qualification demo site before AWS mutation"
         journal_marker = "Journal ownership and prove the version is unused"
-        credential_marker = "aws-actions/configure-aws-credentials@v4"
+        credential_marker = "aws-actions/configure-aws-credentials@"
         self.assertLess(candidate.index(build_marker), candidate.index(journal_marker))
         self.assertLess(
             candidate.index(build_marker), candidate.index(credential_marker)
@@ -1534,8 +1534,12 @@ test ! -e {marker!s}
         )
         self.assertTrue(run_blocks)
         self.assertTrue(all(len(body.encode()) < 21_000 for _, body in run_blocks))
-        self.assertIn("- uses: actions/checkout@v4", workflow)
-        self.assertIn("ref: ${{ github.event.workflow_run.head_sha }}", workflow)
+        self.assertIn(
+            "- uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            workflow,
+        )
+        self.assertIn("ref: ${{ github.sha }}", workflow)
+        self.assertNotIn("ref: ${{ github.event.workflow_run.head_sha }}", workflow)
         self.assertIn("persist-credentials: false", workflow)
         self.assertIn("run: bash release/reap_qualification.sh", workflow)
         self.assertTrue(script.startswith("#!/usr/bin/env bash\nset -euo pipefail\n"))

@@ -1,6 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
-account_id="$(aws sts get-caller-identity --query Account --output text)"
+recovery_started_at="$(date +%s)"
+recovery_deadline_at="$((recovery_started_at + 10200))"
+run_with_recovery_deadline() {
+  now="$(date +%s)"
+  remaining="$((recovery_deadline_at - now))"
+  if ((remaining <= 0)); then
+    echo 'Recovery exceeded its fixed 170-minute deadline.' >&2
+    return 124
+  fi
+  timeout --signal=TERM --kill-after=15 "$remaining" "$@"
+}
+[[ "${EXPECTED_AWS_ACCOUNT_ID:-}" =~ ^[0-9]{12}$ ]]
+[[ "${EXPECTED_RECOVERY_ROLE_ARN:-}" == arn:*:iam::"$EXPECTED_AWS_ACCOUNT_ID":role/* ]]
+identity="$(aws sts get-caller-identity --output json)"
+account_id="$(jq -r .Account <<<"$identity")"
+test "$account_id" = "$EXPECTED_AWS_ACCOUNT_ID"
+expected_role_name="${EXPECTED_RECOVERY_ROLE_ARN##*/}"
+caller_arn="$(jq -r .Arn <<<"$identity")"
+[[ "$caller_arn" == arn:*:sts::"$account_id":assumed-role/"$expected_role_name"/* ]]
 strict_status=0
 sensitive_files=()
 cleanup_sensitive_files() {
@@ -1497,7 +1515,8 @@ cleanup_exact_acm_validation_records() {
       --change-batch file://acm-validation-delete.json \
       --query ChangeInfo.Id --output text)"
     [[ "$change_id" =~ ^/change/[A-Z0-9]+$ ]]
-    aws route53 wait resource-record-sets-changed --id "$change_id"
+    run_with_recovery_deadline aws route53 wait \
+      resource-record-sets-changed --id "$change_id"
   fi
   while read -r name; do
     listing="$(aws route53 list-resource-record-sets \
@@ -1572,8 +1591,8 @@ for pair in us-west-2:w us-east-1:e; do
     fi
     aws cloudformation delete-stack --region "$region" \
       --stack-name "$stack_name"
-    aws cloudformation wait stack-delete-complete --region "$region" \
-      --stack-name "$stack_name"
+    run_with_recovery_deadline aws cloudformation wait \
+      stack-delete-complete --region "$region" --stack-name "$stack_name"
   fi
   if [[ "$acm_journal_present" = true ]]; then
     cleanup_exact_acm_validation_records

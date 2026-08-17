@@ -72,7 +72,7 @@ Enter:
 Leave the field and routing JSON at their defaults for the first deployment.
 Review the IAM capabilities, create the stack, and wait for `CREATE_COMPLETE`.
 The EC2 resource does not report success until Bridgefu, its private control
-endpoint, and its SIPS certificate are ready.
+endpoint, and its SIP TLS certificate are ready.
 
 The Vapi-specific default, `sips_optional_srtp`, always encrypts SIP signaling
 with TLS and prefers SRTP media. It accepts `RTP/AVP` only when the incoming

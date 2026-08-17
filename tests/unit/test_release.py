@@ -461,6 +461,26 @@ class ReleaseContractTests(unittest.TestCase):
                 check=True,
                 stdout=subprocess.DEVNULL,
             )
+            original_manifest = (output / "manifest.json").read_text()
+            altered_manifest = json.loads(original_manifest)
+            altered_manifest["ami_build_inputs"]["source_ami"]["id"] = (
+                "ami-11111111111111111"
+            )
+            (output / "manifest.json").write_text(json.dumps(altered_manifest))
+            result = subprocess.run(  # noqa: S603
+                [
+                    sys.executable,
+                    str(ROOT / "release" / "build_release.py"),
+                    "--verify-existing",
+                    str(output),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("AMI build inputs do not match", result.stderr)
+            (output / "manifest.json").write_text(original_manifest)
             artifact = output / manifest["artifacts"][0]["path"]
             artifact.write_bytes(artifact.read_bytes() + b"tampered")
             result = subprocess.run(  # noqa: S603
@@ -483,7 +503,10 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", candidate)
         self.assertIn("packer build", candidate)
         self.assertIn("candidates/qualified/$VERSION/$GITHUB_SHA", candidate)
-        self.assertIn("for REGION in us-west-2 us-east-1; do", candidate)
+        self.assertNotIn("for REGION in us-west-2 us-east-1; do", candidate)
+        self.assertIn("  qualify-oregon:", candidate)
+        self.assertIn("  qualify-virginia:", candidate)
+        self.assertIn("needs: [build-private-candidate, qualify-oregon]", candidate)
         self.assertNotIn("matrix:\n        region: [us-west-2, us-east-1]", candidate)
         self.assertIn("qualification/controller.py run", candidate)
         self.assertIn("release_objects", candidate)
@@ -548,7 +571,9 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertNotIn("AWS_PUBLISH_ROLE_ARN", reaper)
         self.assertNotIn("AWS_QUALIFICATION_ROLE_ARN", reaper)
         self.assertEqual(workflow.count("environment: release-recovery"), 3)
-        self.assertEqual(workflow.count("AWS_RECOVERY_ROLE_ARN"), 3)
+        self.assertEqual(
+            workflow.count("role-to-assume: ${{ vars.AWS_RECOVERY_ROLE_ARN }}"), 3
+        )
         policy = (ROOT / "publisher" / "oidc-role.yaml").read_text()
         recovery = policy.split("  RecoveryRole:\n", 1)[1].split("\nOutputs:\n", 1)[0]
         self.assertIn("environment:${GitHubRecoveryEnvironment}", recovery)
@@ -592,6 +617,41 @@ class ReleaseContractTests(unittest.TestCase):
             "region": "us-west-2",
             "bridgefu_commit": "a" * 40,
             "redacted": True,
+            "preflight": {
+                "passed": True,
+                "checks": {
+                    name: True
+                    for name in (
+                        "active_account_exact",
+                        "cloudformation_role_account_exact",
+                        "vapi_secret_account_region_exact",
+                        "public_hosted_zone_exact",
+                        "public_delegation_exact",
+                        "dns_names_vacant",
+                        "candidate_ami_exact",
+                        "instance_offering_available",
+                        "vpcs",
+                        "internet_gateways",
+                        "elastic_ips",
+                        "connect_instances",
+                        "standard_vcpus",
+                    )
+                },
+            },
+            "deployment_review": {
+                "producer": "bridgefu-cloudformation-deployment-review@1",
+                "version": 1,
+                "result": "pass",
+                "change_set_type": "CREATE",
+                "template_count": 10,
+                "nested_change_set_count": 9,
+                "max_depth": 2,
+                "catalog_sha256": "b" * 64,
+                "hierarchy_sha256": "c" * 64,
+                "root_invocation_sha256": "6" * 64,
+                "root_change_set_fingerprint": "d" * 16,
+                "root_stack_fingerprint": "e" * 16,
+            },
             "secure_preflight": {
                 "passed": True,
                 "checks": {name: True for name in secure_required},
@@ -627,17 +687,46 @@ class ReleaseContractTests(unittest.TestCase):
                 {
                     "id": "vapi-sip-transfer",
                     "passed": True,
+                    "active_call_telemetry_sha256": "f" * 64,
+                    "active_call_telemetry": {
+                        "passed": True,
+                        "compile_excluded": True,
+                        "cpu_strictly_under_60_percent": True,
+                        "memory_strictly_under_60_percent": True,
+                        "bridgefu_restart_free": True,
+                        "bridgefu_start_events_during_smoke": 0,
+                        "host_cpu_peak_percent": 40,
+                        "host_memory_peak_percent": 40,
+                        "cpu_sample_count": 3,
+                        "memory_sample_count": 3,
+                        "minimum_required_samples": 2,
+                    },
                     "checks": dict(checks),
                 },
                 {
                     "id": "bridgefu-web-sdk-handoff",
                     "passed": True,
+                    "active_call_telemetry_sha256": "0" * 64,
+                    "active_call_telemetry": {
+                        "passed": True,
+                        "compile_excluded": True,
+                        "cpu_strictly_under_60_percent": True,
+                        "memory_strictly_under_60_percent": True,
+                        "bridgefu_restart_free": True,
+                        "bridgefu_start_events_during_smoke": 0,
+                        "host_cpu_peak_percent": 40,
+                        "host_memory_peak_percent": 40,
+                        "cpu_sample_count": 3,
+                        "memory_sample_count": 3,
+                        "minimum_required_samples": 2,
+                    },
                     "checks": {**checks, "dtmf_agent_to_source": True},
                 },
             ],
             "teardown": {
                 name: True for name in schema["properties"]["teardown"]["required"]
             },
+            "zero_resource_proof_sha256": "1" * 64,
         }
         jq_args = [
             jq,
@@ -717,6 +806,9 @@ class ReleaseContractTests(unittest.TestCase):
             "qualification_objects_absent": True,
             "qualification_private_dns_absent": True,
             "qualification_acm_validation_records_absent": True,
+            "all_resource_classes_absent": True,
+            "three_observations_spanning_60_seconds": True,
+            "zero_resource_proof_sha256": "2" * 64,
             "redacted": True,
         }
         valid_zero = subprocess.run(  # noqa: S603
@@ -772,6 +864,11 @@ class ReleaseContractTests(unittest.TestCase):
         receipt_filter = receipt_filter_match.group(1)
         attestation = {
             "evidence_schema_version": 2,
+            "evidence_sha256": "1" * 64,
+            "zero_state_sha256": "2" * 64,
+            "zero_resource_proof_sha256": "3" * 64,
+            "runtime_image_sha256": "4" * 64,
+            "root_invocation_sha256": "5" * 64,
             "secure_preflight_passed": True,
             "required_checks_passed": True,
             "scenario_ids": ["bridgefu-web-sdk-handoff", "vapi-sip-transfer"],
@@ -902,9 +999,11 @@ class ReleaseContractTests(unittest.TestCase):
         for phase in ("assets", "product", "complete"):
             self.assertIn(f"--render-phase {phase}", candidate)
         self.assertIn("object-versions.json", candidate)
-        self.assertIn('template_url="https://$east_bucket', candidate)
-        self.assertIn('--template-url "$template_url"', candidate)
-        self.assertIn("?versionId=$encoded_version", candidate)
+        self.assertIn("python release/validate_staged_templates.py", candidate)
+        self.assertIn(
+            "--staged-objects target/candidate/staged-objects.json", candidate
+        )
+        self.assertIn('--bucket "$east_bucket"', candidate)
         self.assertIn("exact_candidate_version", remote)
         self.assertIn('--version-id "$receipt_version"', remote)
         self.assertIn("aws kms verify --region us-east-1", remote)

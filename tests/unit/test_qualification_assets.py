@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -217,30 +218,38 @@ class QualificationAssetTests(unittest.TestCase):
 
     def test_fresh_qualification_job_checks_out_pinned_bridgefu_before_aws(self):
         workflow = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
-        qualification = workflow.split("  qualify-regions-sequentially:\n", 1)[1].split(
-            "\n  seal-qualified-receipt:", 1
-        )[0]
-        checkout = qualification.index(
-            "Checkout and reverify the exact Bridgefu source used by the AMI and SDK"
-        )
-        credentials = qualification.index("aws-actions/configure-aws-credentials@v4")
-        smoke = qualification.index("Run both live smoke paths and prove teardown")
-        self.assertLess(checkout, credentials)
-        self.assertLess(credentials, smoke)
-        checkout_block = qualification[checkout:credentials]
-        self.assertIn(
-            'git clone --filter=blob:none --no-checkout "$repository" '
-            "target/pinned-bridgefu",
-            checkout_block,
-        )
-        self.assertIn(
-            'git -C target/pinned-bridgefu checkout --detach "$commit"',
-            checkout_block,
-        )
-        self.assertIn(
-            'git -C target/pinned-bridgefu rev-parse HEAD', checkout_block
-        )
-        self.assertIn("target/pinned-bridgefu/Cargo.lock", checkout_block)
+        for job_name, next_job, smoke_name in (
+            ("qualify-oregon", "qualify-virginia", "Run both Oregon live smoke paths"),
+            (
+                "qualify-virginia",
+                "seal-qualified-receipt",
+                "Run both Virginia live smoke paths",
+            ),
+        ):
+            qualification = workflow.split(f"  {job_name}:\n", 1)[1].split(
+                f"\n  {next_job}:", 1
+            )[0]
+            checkout = qualification.index(
+                "Checkout and reverify the exact Bridgefu source used by the AMI and SDK"
+            )
+            credentials = qualification.index("aws-actions/configure-aws-credentials@")
+            smoke = qualification.index(smoke_name)
+            self.assertLess(checkout, credentials)
+            self.assertLess(credentials, smoke)
+            checkout_block = qualification[checkout:credentials]
+            self.assertIn(
+                'git clone --filter=blob:none --no-checkout "$repository" '
+                "target/pinned-bridgefu",
+                checkout_block,
+            )
+            self.assertIn(
+                'git -C target/pinned-bridgefu checkout --detach "$commit"',
+                checkout_block,
+            )
+            self.assertIn(
+                "git -C target/pinned-bridgefu rev-parse HEAD", checkout_block
+            )
+            self.assertIn("target/pinned-bridgefu/Cargo.lock", checkout_block)
 
     def test_static_sip_client_links_opus_dependencies_and_launches_in_ci(self):
         workflows = [
@@ -359,9 +368,11 @@ class QualificationAssetTests(unittest.TestCase):
         candidate = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
         publication = (ROOT / ".github" / "workflows" / "release.yml").read_text()
         self.assertIn(
-            "needs: [build-private-candidate, qualify-regions-sequentially]", candidate
+            "needs: [build-private-candidate, qualify-oregon, qualify-virginia]",
+            candidate,
         )
-        self.assertIn("for REGION in us-west-2 us-east-1; do", candidate)
+        self.assertNotIn("for REGION in us-west-2 us-east-1; do", candidate)
+        self.assertIn("needs: [build-private-candidate, qualify-oregon]", candidate)
         self.assertNotIn("matrix:\n        region: [us-west-2, us-east-1]", candidate)
         self.assertIn("qualification/controller.py run", candidate)
         self.assertIn("bridgefu-vapi-sip-smoke", candidate)
@@ -383,14 +394,48 @@ class QualificationAssetTests(unittest.TestCase):
         mutation = candidate.index("Journal ownership and prove the version is unused")
         self.assertLess(credentials, contract)
         self.assertLess(contract, mutation)
-        self.assertIn("PublisherPolicyContractVersion", candidate)
-        self.assertIn("2026-08-17-direct-vapi-recovery-v1", candidate)
-        self.assertIn("QualificationPolicyContractVersion", candidate)
-        self.assertIn("2026-08-17-direct-vapi-identity-v1", candidate)
+        self.assertIn("release/verify_release_control_plane.py", candidate)
+        self.assertIn("release/verify_release_buckets.py", candidate)
+        verifier = (ROOT / "release" / "verify_release_control_plane.py").read_text()
+        self.assertIn("PublisherPolicyContractVersion", verifier)
+        self.assertIn("2026-08-17-bound-release-control-plane-v5", verifier)
+        self.assertIn("QualificationPolicyContractVersion", verifier)
+        self.assertIn("2026-08-17-bound-qualification-control-plane-v4", verifier)
+        self.assertIn('"cloudformation",\n        "get-template"', verifier)
+        self.assertIn('"detect-stack-resource-drift"', verifier)
+        verifier_tree = ast.parse(verifier)
+        self.assertTrue(
+            any(
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "json"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "iam"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "get-role-policy"
+                for node in ast.walk(verifier_tree)
+            )
+        )
+        self.assertIn("ReapOnlyOwnedReleaseAttempts", verifier)
+        self.assertIn("DisposableQualificationOrchestration", verifier)
+        self.assertIn("ReadExactDeployedReleaseRoles", publisher)
+        self.assertIn("- iam:GetRolePolicy", publisher)
+        self.assertIn("- iam:GetRole", publisher)
+        self.assertIn("- iam:ListAttachedRolePolicies", publisher)
+        self.assertIn("- iam:ListRolePolicies", publisher)
+        self.assertIn('"iam", "list-role-policies"', verifier)
+        self.assertIn('"iam", "list-attached-role-policies"', verifier)
+        self.assertIn("ReadExactQualificationVapiIdentityBindings", publisher)
+        self.assertIn("UnbindOnlyTaggedDirectQualificationVapiIdentity", publisher)
 
         self.assertIn("VerifyDeployedReleaseControlPlaneContract", publisher)
-        self.assertIn("Action: cloudformation:DescribeStacks", publisher)
+        self.assertIn("- cloudformation:DescribeStacks", publisher)
+        self.assertIn("- cloudformation:GetTemplate", publisher)
         self.assertIn("PublisherPolicyContractVersion:", publisher)
+        self.assertIn("- cloudformation:DetectStackResourceDrift", publisher)
+        self.assertIn("QualificationRunnerRole", verifier)
+        self.assertIn("RecoveryRole", verifier)
         self.assertIn("QualificationPolicyContractVersion:", qualification)
 
     def test_live_workflows_install_the_exact_session_manager_plugin(self):
@@ -429,7 +474,7 @@ class QualificationAssetTests(unittest.TestCase):
         candidate_role_blocks = candidate.split(
             "role-to-assume: ${{ vars.AWS_CANDIDATE_ROLE_ARN }}"
         )[1:]
-        self.assertEqual(len(candidate_role_blocks), 2)
+        self.assertEqual(len(candidate_role_blocks), 3)
         for credential_block in candidate_role_blocks:
             self.assertIn(
                 "role-duration-seconds: 10800",

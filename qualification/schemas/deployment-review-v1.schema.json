@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bridgefu.dev/vapi-awsconnect/qualification/deployment-review-v1.schema.json",
+  "title": "Exact nested CloudFormation CREATE change-set review proof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["producer", "version", "result", "change_set_type", "template_count", "nested_change_set_count", "max_depth", "catalog_sha256", "hierarchy_sha256", "root_invocation_sha256", "root_change_set_fingerprint", "root_stack_fingerprint"],
+  "properties": {
+    "producer": {"const": "bridgefu-cloudformation-deployment-review@1"},
+    "version": {"const": 1},
+    "result": {"const": "pass"},
+    "change_set_type": {"const": "CREATE"},
+    "template_count": {"const": 10},
+    "nested_change_set_count": {"const": 9},
+    "max_depth": {"type": "integer", "minimum": 1, "maximum": 8},
+    "catalog_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "hierarchy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "root_invocation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "root_change_set_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+    "root_stack_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{16}$"}
+  }
+}

@@ -1,7 +1,7 @@
 packer {
   required_plugins {
     amazon = {
-      version = ">= 1.3.6, < 2.0.0"
+      version = "= 1.3.9"
       source  = "github.com/hashicorp/amazon"
     }
   }
@@ -10,6 +10,14 @@ packer {
 variable "aws_region" {
   type    = string
   default = "us-east-1"
+}
+
+variable "source_ami_id" {
+  type = string
+  validation {
+    condition     = can(regex("^ami-[0-9a-f]{17}$", var.source_ami_id))
+    error_message = "Source_ami_id must be an exact AMI ID."
+  }
 }
 
 variable "bridgefu_repository" {
@@ -61,16 +69,7 @@ source "amazon-ebs" "bridgefu_arm64" {
   ssh_username  = "ec2-user"
   ami_name      = "bridgefu-vapi-awsconnect-${var.release_version}-${formatdate("YYYYMMDDhhmmss", timestamp())}"
 
-  source_ami_filter {
-    filters = {
-      architecture        = "arm64"
-      name                = "al2023-ami-2023.*-kernel-6.1-arm64"
-      root-device-type    = "ebs"
-      virtualization-type = "hvm"
-    }
-    owners      = ["137112412989"]
-    most_recent = true
-  }
+  source_ami = var.source_ami_id
 
   metadata_options {
     http_endpoint               = "enabled"
@@ -120,6 +119,11 @@ build {
     destination = "/tmp/bridgefu-runtime/"
   }
 
+  provisioner "file" {
+    source      = "image/build-inputs.json"
+    destination = "/tmp/bridgefu-build-inputs.json"
+  }
+
   provisioner "shell" {
     script = "image/install.sh"
     environment_vars = [
@@ -127,6 +131,7 @@ build {
       "BRIDGEFU_COMMIT=${var.bridgefu_commit}",
       "BRIDGEFU_CARGO_LOCK_SHA256=${var.bridgefu_cargo_lock_sha256}",
       "BRIDGEFU_RELEASE_VERSION=${var.release_version}",
+      "BRIDGEFU_SOURCE_AMI_ID=${var.source_ami_id}",
     ]
   }
 

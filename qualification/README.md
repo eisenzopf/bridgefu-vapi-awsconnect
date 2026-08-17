@@ -46,8 +46,10 @@ read. Stack deletion owns the private zone and the zero-resource proof confirms
 that hosted zone is gone.
 
 The two Vapi scenarios then exercise the candidate's
-`sips_optional_srtp` policy. Each scenario must prove SIPS/TLS and an exact,
-internally consistent media posture from Bridgefu's correlated runtime event.
+`sips_optional_srtp` policy. Each scenario must prove that
+`sip:...;transport=tls` produced an observed TLS connection, independently of
+the URI text, and must prove an exact, internally consistent media posture from
+Bridgefu's correlated runtime event.
 Evidence records `RTP/SAVP` + `SDES-SRTP` + the negotiated suite when Vapi
 offers SRTP, or `RTP/AVP` + `none` when Vapi offers only clear RTP. The latter
 is an explicit compatibility result, never reported as SRTP. The strict direct
@@ -72,10 +74,15 @@ provide:
 
 - `AWS_QUALIFICATION_ROLE_ARN`
 - `AWS_QUALIFICATION_CLOUDFORMATION_ROLE_ARN`
-- `VAPI_API_KEY_SECRET_ARN`
+- `AWS_ACCOUNT_ID`
+- `RELEASE_SIGNING_KEY_ARN`
+- `VAPI_API_KEY_SECRET_ARN_US_WEST_2`
+- `VAPI_API_KEY_SECRET_ARN_US_EAST_1`
 - `PUBLIC_HOSTED_ZONE_ID`
 - `PUBLIC_HOSTED_ZONE_NAME`
-- the Vapi private API key secret ARN; no Vapi browser/public key is used
+
+The two Vapi variables are regional Secrets Manager ARNs for the private API
+key. No Vapi browser/public key is used.
 
 The controller keeps the Vapi private key and generated Connect password only
 in process memory. Retained evidence contains hashes, fixed synthetic values,

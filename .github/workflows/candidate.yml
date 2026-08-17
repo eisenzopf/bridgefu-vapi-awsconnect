@@ -9,11 +9,15 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
   id-token: write
 
 concurrency:
-  group: bridgefu-vapi-awsconnect-candidate-${{ inputs.release_version }}
+  # Repository-wide mutex for every workflow that can mutate the shared Vapi
+  # organization or AWS qualification control plane. Keep this value in sync
+  # with remote-qualification.yml and the qualification branch of the reaper.
+  group: bridgefu-vapi-awsconnect-qualification-mutation
   cancel-in-progress: false
 
 jobs:
@@ -25,16 +29,17 @@ jobs:
       candidate_id: ${{ steps.inputs.outputs.candidate_id }}
       repository_commit: ${{ steps.inputs.outputs.repository_commit }}
       bridgefu_commit: ${{ steps.inputs.outputs.bridgefu_commit }}
+      originating_attempt: ${{ steps.inputs.outputs.originating_attempt }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with: {python-version: '3.12'}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: qualification/package-lock.json
-      - uses: hashicorp/setup-packer@main
+      - uses: hashicorp/setup-packer@1aa358be5cf73883762b302a3a03abd66e75b232 # v3.1.0
         with: {version: '1.12.0'}
       - name: Resolve immutable candidate inputs
         id: inputs
@@ -58,6 +63,7 @@ jobs:
             echo "repository_commit=$GITHUB_SHA"
             echo "bridgefu_commit=$bridgefu_commit"
             echo "bridgefu_lock=$bridgefu_lock"
+            echo "originating_attempt=$GITHUB_RUN_ATTEMPT"
           } >> "$GITHUB_OUTPUT"
       - name: Checkout the exact Bridgefu source before AWS mutation
         run: |
@@ -84,28 +90,39 @@ jobs:
           test "$(sha256sum target/candidate/qualification-demo-site/demo-site.zip |
             awk '{print $1}')" = "$(jq -r .archive_sha256 \
             target/candidate/qualification-demo-site/manifest.json)"
-      - uses: aws-actions/configure-aws-credentials@v4
+      - name: Require successful exact-main CI before AWS authentication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          runs="$(gh api -X GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$GITHUB_SHA" -f status=completed -f per_page=100)"
+          jq -e --arg sha "$GITHUB_SHA" '
+            [.workflow_runs[] | select(
+              .head_sha == $sha and .head_branch == "main" and
+              .event == "push" and .conclusion == "success")] |
+            length >= 1
+          ' <<<"$runs" >/dev/null
+      - uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
           role-to-assume: ${{ vars.AWS_CANDIDATE_ROLE_ARN }}
           role-duration-seconds: 10800
           aws-region: us-west-2
       - name: Verify the deployed release-control IAM contract
+        env:
+          EXPECTED_AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          EXPECTED_CALLER_ROLE_ARN: ${{ vars.AWS_CANDIDATE_ROLE_ARN }}
+          EXPECTED_SIGNING_KEY_ARN: ${{ vars.RELEASE_SIGNING_KEY_ARN }}
         run: |
           set -euo pipefail
-          stack_output() {
-            stack="$1"
-            output="$2"
-            aws cloudformation describe-stacks --region us-east-1 \
-              --stack-name "$stack" \
-              --query "Stacks[0].Outputs[?OutputKey=='$output'].OutputValue | [0]" \
-              --output text
-          }
-          test "$(stack_output bridgefu-vapi-awsconnect-publisher \
-            PublisherPolicyContractVersion)" = \
-            2026-08-17-direct-vapi-recovery-v1
-          test "$(stack_output bridgefu-vapi-awsconnect-qualification \
-            QualificationPolicyContractVersion)" = \
-            2026-08-17-direct-vapi-identity-v1
+          python release/verify_release_control_plane.py \
+            --mode candidate \
+            --expected-account-id "$EXPECTED_AWS_ACCOUNT_ID" \
+            --expected-caller-role-arn "$EXPECTED_CALLER_ROLE_ARN" \
+            --expected-signing-key-arn "$EXPECTED_SIGNING_KEY_ARN"
+          python release/verify_release_buckets.py \
+            --expected-account-id "$EXPECTED_AWS_ACCOUNT_ID"
       - name: Journal ownership and prove the version is unused
         env:
           VERSION: ${{ steps.inputs.outputs.version }}
@@ -169,9 +186,44 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p target
+          test "$(packer version | sed -n 's/^Packer v//p' | head -1)" = 1.12.0
+          python release/ami_build_inputs.py \
+            --inputs image/build-inputs.json --verify-source-ami \
+            > target/candidate/ami-build-input-verification.json
+          jq -e '.schema_version == 1 and .verified == true and
+            .redacted == true and
+            (.source_ami_id | test("^ami-[0-9a-f]{17}$"))' \
+            target/candidate/ami-build-input-verification.json >/dev/null
+          source_base_ami="$(jq -r .source_ami.id image/build-inputs.json)"
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = aarch64
+          packer_plugin_version="$(jq -r .packer.amazon_plugin_version \
+            image/build-inputs.json)"
+          test "$packer_plugin_version" = 1.3.9
+          packer_plugin_platform=linux_arm64
+          packer_plugin_archive="target/candidate/packer-plugin-amazon.zip"
+          packer_plugin_binary="packer-plugin-amazon_v${packer_plugin_version}_x5.0_${packer_plugin_platform}"
+          packer_plugin_sha256="$(jq -r \
+            ".packer.amazon_plugin_zip_sha256.${packer_plugin_platform}" \
+            image/build-inputs.json)"
+          [[ "$packer_plugin_sha256" =~ ^[0-9a-f]{64}$ ]]
+          curl --fail --location --silent --show-error --proto '=https' \
+            --tlsv1.2 \
+            "https://github.com/hashicorp/packer-plugin-amazon/releases/download/v${packer_plugin_version}/${packer_plugin_binary}.zip" \
+            --output "$packer_plugin_archive"
+          printf '%s  %s\n' "$packer_plugin_sha256" "$packer_plugin_archive" | \
+            sha256sum --check --strict
+          unzip -q "$packer_plugin_archive" "$packer_plugin_binary" \
+            -d target/candidate
+          chmod 0700 "target/candidate/$packer_plugin_binary"
+          packer plugins install --path "target/candidate/$packer_plugin_binary" \
+            github.com/hashicorp/amazon
+          test "$(packer plugins installed | \
+            grep -Ec "/${packer_plugin_binary}$")" = 1
           packer init image/bridgefu.pkr.hcl
           packer build \
             -var aws_region=us-west-2 \
+            -var source_ami_id="$source_base_ami" \
             -var bridgefu_commit=${{ steps.inputs.outputs.bridgefu_commit }} \
             -var bridgefu_cargo_lock_sha256=${{ steps.inputs.outputs.bridgefu_lock }} \
             -var candidate_id="$CANDIDATE_ID" \
@@ -242,6 +294,12 @@ jobs:
             mv target/candidate/region-release.next.json \
               target/candidate/region-release.json
           done < <(jq -r '.regions[].code' release/regions.json)
+      - name: Refresh candidate AWS session after the AMI build
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ vars.AWS_CANDIDATE_ROLE_ARN }}
+          role-duration-seconds: 10800
+          aws-region: us-west-2
       - name: Build staged release assets and native qualification clients
         env:
           VERSION: ${{ steps.inputs.outputs.version }}
@@ -511,40 +569,39 @@ jobs:
                 --template-body "file://$template" >/dev/null
             done < <(jq -r '.regions[].code' release/regions.json)
           done < <(find target/candidate/release -name '*.yaml' -print0 | sort -z)
-          for relative in cloudformation/template.yaml \
-            qualification/cloudformation/template.yaml; do
-            version_id="$(existing_release_version us-east-1 "$relative")"
-            encoded_version="$(python -c \
-              'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' \
-              "$version_id")"
-            template_url="https://$east_bucket.s3.us-east-1.amazonaws.com/releases/$VERSION/$relative?versionId=$encoded_version"
-            while read -r region; do
-              aws cloudformation validate-template --region "$region" \
-                --template-url "$template_url" >/dev/null
-            done < <(jq -r '.regions[].code' release/regions.json)
-          done
-      - uses: actions/upload-artifact@v4
+          python release/validate_staged_templates.py \
+            --staged-objects target/candidate/staged-objects.json \
+            --regions release/regions.json \
+            --release-version "$VERSION" \
+            --candidate-id "$CANDIDATE_ID" \
+            --bucket "$east_bucket"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: private-release-candidate
           path: target/candidate
           if-no-files-found: error
           retention-days: 7
 
-  qualify-regions-sequentially:
+  qualify-oregon:
     needs: build-private-candidate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 165
     environment: live-qualification
     steps:
-      - uses: actions/checkout@v4
+      - name: Reject a partial workflow rerun
+        env:
+          ORIGINATING_ATTEMPT: ${{ needs.build-private-candidate.outputs.originating_attempt }}
+        run: test "$GITHUB_RUN_ATTEMPT" = "$ORIGINATING_ATTEMPT"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with: {ref: '${{ needs.build-private-candidate.outputs.repository_commit }}'}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with: {python-version: '3.12'}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: qualification/package-lock.json
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: {name: private-release-candidate, path: target/candidate}
       - name: Checkout and reverify the exact Bridgefu source used by the AMI and SDK
         run: |
@@ -555,11 +612,6 @@ jobs:
           test "$(git -C target/pinned-bridgefu rev-parse HEAD)" = "$commit"
           test "$(shasum -a 256 target/pinned-bridgefu/Cargo.lock | awk '{print $1}')" = \
             "$(jq -r .cargo_lock_sha256 bridgefu.lock.json)"
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_QUALIFICATION_ROLE_ARN }}
-          role-duration-seconds: 10800
-          aws-region: us-west-2
       - name: Install pinned qualification dependencies
         run: |
           session_manager_version=1.2.835.0
@@ -571,30 +623,52 @@ jobs:
           sudo dpkg --install /tmp/session-manager-plugin.deb
           command -v session-manager-plugin >/dev/null
           session-manager-plugin --version | grep -F "$session_manager_version"
-          python -m pip install -r qualification/requirements-runner.txt
+          python -m pip install --require-hashes \
+            -r qualification/requirements-runner.lock
           npm --prefix qualification ci --ignore-scripts
           PLAYWRIGHT_BROWSERS_PATH=0 npm --prefix qualification exec playwright install --with-deps chromium
-      - name: Run both live smoke paths and prove teardown
+      - name: Acquire fresh Oregon qualification AWS session
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ vars.AWS_QUALIFICATION_ROLE_ARN }}
+          role-duration-seconds: 10800
+          aws-region: us-west-2
+      - name: Verify Oregon qualification control-plane bindings
+        env:
+          EXPECTED_AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          EXPECTED_CALLER_ROLE_ARN: ${{ vars.AWS_QUALIFICATION_ROLE_ARN }}
+          EXPECTED_CFN_ROLE_ARN: ${{ vars.AWS_QUALIFICATION_CLOUDFORMATION_ROLE_ARN }}
+          EXPECTED_SIGNING_KEY_ARN: ${{ vars.RELEASE_SIGNING_KEY_ARN }}
+          EXPECTED_VAPI_SECRET_WEST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_WEST_2 || vars.VAPI_API_KEY_SECRET_ARN }}
+          EXPECTED_VAPI_SECRET_EAST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_EAST_1 }}
+          EXPECTED_HOSTED_ZONE_ID: ${{ vars.PUBLIC_HOSTED_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          python release/verify_release_control_plane.py \
+            --mode qualification \
+            --expected-account-id "$EXPECTED_AWS_ACCOUNT_ID" \
+            --expected-caller-role-arn "$EXPECTED_CALLER_ROLE_ARN" \
+            --expected-cloudformation-role-arn "$EXPECTED_CFN_ROLE_ARN" \
+            --expected-signing-key-arn "$EXPECTED_SIGNING_KEY_ARN" \
+            --expected-vapi-secret-west "$EXPECTED_VAPI_SECRET_WEST" \
+            --expected-vapi-secret-east "$EXPECTED_VAPI_SECRET_EAST" \
+            --expected-hosted-zone-id "$EXPECTED_HOSTED_ZONE_ID"
+      - name: Run both Oregon live smoke paths and prove teardown
         env:
           VERSION: ${{ needs.build-private-candidate.outputs.version }}
-          VAPI_SECRET_WEST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_WEST_2 || vars.VAPI_API_KEY_SECRET_ARN }}
-          VAPI_SECRET_EAST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_EAST_1 }}
+          VAPI_SECRET_ARN: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_WEST_2 || vars.VAPI_API_KEY_SECRET_ARN }}
           CANDIDATE_ID: ${{ needs.build-private-candidate.outputs.candidate_id }}
+          EXPECTED_AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           chmod 0700 \
             target/candidate/bridgefu-vapi-sip-smoke \
             target/candidate/bridgefu-direct-secure-probe
           account_id="$(aws sts get-caller-identity --query Account --output text)"
+          test "$account_id" = "$EXPECTED_AWS_ACCOUNT_ID"
           bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
-          for REGION in us-west-2 us-east-1; do
-          case "$REGION" in
-            us-west-2) vapi_secret_arn="$VAPI_SECRET_WEST"; short_region=w ;;
-            us-east-1) vapi_secret_arn="$VAPI_SECRET_EAST"; short_region=e ;;
-            *) exit 2 ;;
-          esac
-          test -n "$vapi_secret_arn"
-          execution_id="bfq-${short_region}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test -n "$VAPI_SECRET_ARN"
+          execution_id="bfq-w-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           download_candidate_asset() {
             relative="$1"
             destination="$2"
@@ -632,12 +706,19 @@ jobs:
           encoded_version="$(python -c \
             'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' \
             "$template_version")"
+          runtime_image_id="$(jq -er '.["us-west-2"].ami_id |
+            select(test("^ami-[0-9a-f]{17}$"))' \
+            target/candidate/region-release.json)"
           python qualification/controller.py run \
             --execution-id "$execution_id" \
+            --expected-account-id "$EXPECTED_AWS_ACCOUNT_ID" \
             --release "$VERSION" \
-            --region "$REGION" \
+            --region us-west-2 \
             --template-url "https://$bucket.s3.us-east-1.amazonaws.com/releases/$VERSION/qualification/cloudformation/template.yaml?versionId=$encoded_version" \
-            --vapi-secret-arn "$vapi_secret_arn" \
+            --staged-objects target/candidate/staged-objects.json \
+            --sealed-template-root target/candidate/release \
+            --runtime-image-id "$runtime_image_id" \
+            --vapi-secret-arn "$VAPI_SECRET_ARN" \
             --hosted-zone-id "${{ vars.PUBLIC_HOSTED_ZONE_ID }}" \
             --hosted-zone-name "${{ vars.PUBLIC_HOSTED_ZONE_NAME }}" \
             --cloudformation-role-arn "${{ vars.AWS_QUALIFICATION_CLOUDFORMATION_ROLE_ARN }}" \
@@ -646,16 +727,162 @@ jobs:
             --direct-secure-probe target/candidate/bridgefu-direct-secure-probe \
             --demo-site-archive target/qualification-inputs/demo-site.zip \
             --demo-site-sha256 "$demo_site_sha256" \
-            --output "target/live-qualification-$REGION"
-          done
-      - uses: actions/upload-artifact@v4
+            --output target/live-qualification-us-west-2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: qualification-us-west-2
           path: target/live-qualification-us-west-2
           if-no-files-found: warn
           retention-days: 14
-      - uses: actions/upload-artifact@v4
+
+  qualify-virginia:
+    needs: [build-private-candidate, qualify-oregon]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 165
+    environment: live-qualification
+    steps:
+      - name: Reject a partial workflow rerun
+        env:
+          ORIGINATING_ATTEMPT: ${{ needs.build-private-candidate.outputs.originating_attempt }}
+        run: test "$GITHUB_RUN_ATTEMPT" = "$ORIGINATING_ATTEMPT"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: {ref: '${{ needs.build-private-candidate.outputs.repository_commit }}'}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with: {python-version: '3.12'}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: qualification/package-lock.json
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: {name: private-release-candidate, path: target/candidate}
+      - name: Checkout and reverify the exact Bridgefu source used by the AMI and SDK
+        run: |
+          repository="$(jq -r .repository bridgefu.lock.json)"
+          commit="$(jq -r .commit bridgefu.lock.json)"
+          git clone --filter=blob:none --no-checkout "$repository" target/pinned-bridgefu
+          git -C target/pinned-bridgefu checkout --detach "$commit"
+          test "$(git -C target/pinned-bridgefu rev-parse HEAD)" = "$commit"
+          test "$(shasum -a 256 target/pinned-bridgefu/Cargo.lock | awk '{print $1}')" = \
+            "$(jq -r .cargo_lock_sha256 bridgefu.lock.json)"
+      - name: Install pinned qualification dependencies
+        run: |
+          session_manager_version=1.2.835.0
+          session_manager_sha256=7c6dcad12518571cc7959a713e6a8ae1bdf6ed66fd9bee37dc189e39ca58ae03
+          curl --fail --location --silent --show-error \
+            "https://s3.amazonaws.com/session-manager-downloads/plugin/$session_manager_version/ubuntu_64bit/session-manager-plugin.deb" \
+            --output /tmp/session-manager-plugin.deb
+          echo "$session_manager_sha256  /tmp/session-manager-plugin.deb" | sha256sum --check --strict
+          sudo dpkg --install /tmp/session-manager-plugin.deb
+          command -v session-manager-plugin >/dev/null
+          session-manager-plugin --version | grep -F "$session_manager_version"
+          python -m pip install --require-hashes \
+            -r qualification/requirements-runner.lock
+          npm --prefix qualification ci --ignore-scripts
+          PLAYWRIGHT_BROWSERS_PATH=0 npm --prefix qualification exec playwright install --with-deps chromium
+      - name: Acquire fresh Virginia qualification AWS session
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ vars.AWS_QUALIFICATION_ROLE_ARN }}
+          role-duration-seconds: 10800
+          aws-region: us-east-1
+      - name: Verify Virginia qualification control-plane bindings
+        env:
+          EXPECTED_AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          EXPECTED_CALLER_ROLE_ARN: ${{ vars.AWS_QUALIFICATION_ROLE_ARN }}
+          EXPECTED_CFN_ROLE_ARN: ${{ vars.AWS_QUALIFICATION_CLOUDFORMATION_ROLE_ARN }}
+          EXPECTED_SIGNING_KEY_ARN: ${{ vars.RELEASE_SIGNING_KEY_ARN }}
+          EXPECTED_VAPI_SECRET_WEST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_WEST_2 || vars.VAPI_API_KEY_SECRET_ARN }}
+          EXPECTED_VAPI_SECRET_EAST: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_EAST_1 }}
+          EXPECTED_HOSTED_ZONE_ID: ${{ vars.PUBLIC_HOSTED_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          python release/verify_release_control_plane.py \
+            --mode qualification \
+            --expected-account-id "$EXPECTED_AWS_ACCOUNT_ID" \
+            --expected-caller-role-arn "$EXPECTED_CALLER_ROLE_ARN" \
+            --expected-cloudformation-role-arn "$EXPECTED_CFN_ROLE_ARN" \
+            --expected-signing-key-arn "$EXPECTED_SIGNING_KEY_ARN" \
+            --expected-vapi-secret-west "$EXPECTED_VAPI_SECRET_WEST" \
+            --expected-vapi-secret-east "$EXPECTED_VAPI_SECRET_EAST" \
+            --expected-hosted-zone-id "$EXPECTED_HOSTED_ZONE_ID"
+      - name: Run both Virginia live smoke paths and prove teardown
+        env:
+          VERSION: ${{ needs.build-private-candidate.outputs.version }}
+          VAPI_SECRET_ARN: ${{ vars.VAPI_API_KEY_SECRET_ARN_US_EAST_1 }}
+          CANDIDATE_ID: ${{ needs.build-private-candidate.outputs.candidate_id }}
+          EXPECTED_AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          chmod 0700 \
+            target/candidate/bridgefu-vapi-sip-smoke \
+            target/candidate/bridgefu-direct-secure-probe
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          test "$account_id" = "$EXPECTED_AWS_ACCOUNT_ID"
+          bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
+          test -n "$VAPI_SECRET_ARN"
+          execution_id="bfq-e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          download_candidate_asset() {
+            relative="$1"
+            destination="$2"
+            key="candidates/$CANDIDATE_ID/$relative"
+            record="$(jq -cer --arg key "$key" \
+              '[.candidate_objects[] | select(.region == "us-east-1" and
+                .key == $key)] | if length == 1 then .[0] else error(
+                "candidate asset is not uniquely journaled") end' \
+              target/candidate/state.json)"
+            aws s3api get-object --region us-east-1 \
+              --bucket "$(jq -r .bucket <<<"$record")" --key "$key" \
+              --version-id "$(jq -r .version_id <<<"$record")" \
+              "$destination" >/dev/null
+            test "$(sha256sum "$destination" | awk '{print $1}')" = \
+              "$(jq -r .sha256 <<<"$record")"
+            test "$(wc -c < "$destination" | tr -d ' ')" = \
+              "$(jq -r .size_bytes <<<"$record")"
+          }
+          mkdir -p target/qualification-inputs
+          download_candidate_asset qualification/demo-site.zip \
+            target/qualification-inputs/demo-site.zip
+          download_candidate_asset qualification/demo-site-manifest.json \
+            target/qualification-inputs/demo-site-manifest.json
+          demo_site_sha256="$(jq -er '.archive_sha256 |
+            select(test("^[0-9a-f]{64}$"))' \
+            target/qualification-inputs/demo-site-manifest.json)"
+          test "$(sha256sum target/qualification-inputs/demo-site.zip |
+            awk '{print $1}')" = "$demo_site_sha256"
+          template_version="$(jq -er --arg key \
+            "releases/$VERSION/qualification/cloudformation/template.yaml" \
+            '[.objects[] | select(.region == "us-east-1" and .key == $key)] |
+             if length == 1 then .[0].version_id else error(
+               "qualification template is not uniquely versioned") end' \
+            target/candidate/staged-objects.json)"
+          encoded_version="$(python -c \
+            'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' \
+            "$template_version")"
+          runtime_image_id="$(jq -er '.["us-east-1"].ami_id |
+            select(test("^ami-[0-9a-f]{17}$"))' \
+            target/candidate/region-release.json)"
+          python qualification/controller.py run \
+            --execution-id "$execution_id" \
+            --expected-account-id "$EXPECTED_AWS_ACCOUNT_ID" \
+            --release "$VERSION" \
+            --region us-east-1 \
+            --template-url "https://$bucket.s3.us-east-1.amazonaws.com/releases/$VERSION/qualification/cloudformation/template.yaml?versionId=$encoded_version" \
+            --staged-objects target/candidate/staged-objects.json \
+            --sealed-template-root target/candidate/release \
+            --runtime-image-id "$runtime_image_id" \
+            --vapi-secret-arn "$VAPI_SECRET_ARN" \
+            --hosted-zone-id "${{ vars.PUBLIC_HOSTED_ZONE_ID }}" \
+            --hosted-zone-name "${{ vars.PUBLIC_HOSTED_ZONE_NAME }}" \
+            --cloudformation-role-arn "${{ vars.AWS_QUALIFICATION_CLOUDFORMATION_ROLE_ARN }}" \
+            --bridgefu-checkout target/pinned-bridgefu \
+            --sip-client target/candidate/bridgefu-vapi-sip-smoke \
+            --direct-secure-probe target/candidate/bridgefu-direct-secure-probe \
+            --demo-site-archive target/qualification-inputs/demo-site.zip \
+            --demo-site-sha256 "$demo_site_sha256" \
+            --output target/live-qualification-us-east-1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: qualification-us-east-1
@@ -664,23 +891,46 @@ jobs:
           retention-days: 14
 
   seal-qualified-receipt:
-    needs: [build-private-candidate, qualify-regions-sequentially]
-    runs-on: ubuntu-latest
+    needs: [build-private-candidate, qualify-oregon, qualify-virginia]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     environment: production-release
     steps:
-      - uses: actions/checkout@v4
+      - name: Reject a partial workflow rerun
+        env:
+          ORIGINATING_ATTEMPT: ${{ needs.build-private-candidate.outputs.originating_attempt }}
+        run: test "$GITHUB_RUN_ATTEMPT" = "$ORIGINATING_ATTEMPT"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with: {ref: '${{ needs.build-private-candidate.outputs.repository_commit }}'}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: {name: private-release-candidate, path: target/candidate}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: {name: qualification-us-west-2, path: target/qualification/us-west-2}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: {name: qualification-us-east-1, path: target/qualification/us-east-1}
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
           role-to-assume: ${{ vars.AWS_CANDIDATE_ROLE_ARN }}
           role-duration-seconds: 10800
           aws-region: us-east-1
+      - name: Verify sealer AWS account and role boundary
+        env:
+          EXPECTED_AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          EXPECTED_ROLE_ARN: ${{ vars.AWS_CANDIDATE_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          [[ "$EXPECTED_ROLE_ARN" == arn:*:iam::"$EXPECTED_AWS_ACCOUNT_ID":role/* ]]
+          identity="$(aws sts get-caller-identity --output json)"
+          test "$(jq -r .Account <<<"$identity")" = "$EXPECTED_AWS_ACCOUNT_ID"
+          expected_role_name="${EXPECTED_ROLE_ARN##*/}"
+          caller_arn="$(jq -r .Arn <<<"$identity")"
+          [[ "$caller_arn" == arn:*:sts::"$EXPECTED_AWS_ACCOUNT_ID":assumed-role/"$expected_role_name"/* ]]
+          python release/verify_release_control_plane.py \
+            --mode candidate \
+            --expected-account-id "$EXPECTED_AWS_ACCOUNT_ID" \
+            --expected-caller-role-arn "$EXPECTED_ROLE_ARN" \
+            --expected-signing-key-arn "${{ vars.RELEASE_SIGNING_KEY_ARN }}"
       - name: Verify both regional qualifications and seal the receipt
         env:
           VERSION: ${{ needs.build-private-candidate.outputs.version }}
@@ -690,8 +940,24 @@ jobs:
         run: |
           set -euo pipefail
           for region in us-west-2 us-east-1; do
+            case "$region" in
+              us-west-2) expected_execution="bfq-w-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ;;
+              us-east-1) expected_execution="bfq-e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ;;
+              *) exit 2 ;;
+            esac
             evidence="target/qualification/$region/evidence.json"
             zero="target/qualification/$region/zero-state.json"
+            zero_proof="target/qualification/$region/zero-resource-proof.json"
+            python release/verify_qualification_relations.py \
+              --evidence "$evidence" \
+              --zero-state "$zero" \
+              --zero-resource-proof "$zero_proof" \
+              --region-release target/candidate/region-release.json \
+              --release "$VERSION" \
+              --bridgefu-commit "$BRIDGEFU_COMMIT" \
+              --region "$region" \
+              --expected-execution-id "$expected_execution" \
+              > "target/qualification/$region/relations.json"
             jq -e --arg version "$VERSION" --arg region "$region" \
               --arg bridgefu_commit "$BRIDGEFU_COMMIT" \
               'def exact_true_checks($required):
@@ -700,6 +966,34 @@ jobs:
                .schema_version == 2 and
                .release == $version and .region == $region and
                .bridgefu_commit == $bridgefu_commit and .redacted == true and
+               .preflight.passed == true and
+               (.deployment_review |
+                 .producer == "bridgefu-cloudformation-deployment-review@1" and
+                 .version == 1 and .result == "pass" and
+                 .change_set_type == "CREATE" and
+                 .template_count == 10 and
+                 .nested_change_set_count == 9 and
+                 (.max_depth >= 1 and .max_depth <= 8) and
+                 (.catalog_sha256 | test("^[0-9a-f]{64}$")) and
+                 (.hierarchy_sha256 | test("^[0-9a-f]{64}$")) and
+                 (.root_invocation_sha256 | test("^[0-9a-f]{64}$")) and
+                 (.root_change_set_fingerprint | test("^[0-9a-f]{16}$")) and
+                 (.root_stack_fingerprint | test("^[0-9a-f]{16}$"))) and
+               (.preflight.checks | exact_true_checks([
+                 "active_account_exact",
+                 "cloudformation_role_account_exact",
+                 "vapi_secret_account_region_exact",
+                 "public_hosted_zone_exact",
+                 "public_delegation_exact",
+                 "dns_names_vacant",
+                 "candidate_ami_exact",
+                 "instance_offering_available",
+                 "vpcs",
+                 "internet_gateways",
+                 "elastic_ips",
+                 "connect_instances",
+                 "standard_vcpus"
+               ])) and
                .secure_preflight.passed == true and
                ((.database_resets | keys | sort) == ["bridgefu-web-sdk-handoff","direct-secure-preflight","vapi-sip-transfer"]) and
                ([.database_resets[] |
@@ -757,6 +1051,22 @@ jobs:
                  .passed == true) and
                ([.scenarios[].id] | sort) == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"] and
                ([.scenarios[].passed] | all(. == true)) and
+               ([.scenarios[] |
+                 ((.active_call_telemetry_sha256 |
+                   test("^[0-9a-f]{64}$")) and
+                  .active_call_telemetry.passed == true and
+                  .active_call_telemetry.compile_excluded == true and
+                  .active_call_telemetry.cpu_strictly_under_60_percent == true and
+                  .active_call_telemetry.memory_strictly_under_60_percent == true and
+                  .active_call_telemetry.bridgefu_restart_free == true and
+                  .active_call_telemetry.bridgefu_start_events_during_smoke == 0 and
+                  .active_call_telemetry.host_cpu_peak_percent < 60 and
+                  .active_call_telemetry.host_memory_peak_percent < 60 and
+                  .active_call_telemetry.cpu_sample_count >=
+                    .active_call_telemetry.minimum_required_samples and
+                  .active_call_telemetry.memory_sample_count >=
+                    .active_call_telemetry.minimum_required_samples)] |
+                 all(. == true)) and
                ((.scenarios[] | select(.id == "vapi-sip-transfer") | .checks) |
                  exact_true_checks([
                    "vapi_call_connected",
@@ -801,8 +1111,12 @@ jobs:
                  "test_credentials_absent",
                  "qualification_objects_absent",
                  "qualification_private_dns_absent",
-                 "qualification_acm_validation_records_absent"
-               ]))' "$evidence" >/dev/null
+                 "qualification_acm_validation_records_absent",
+                 "all_resource_classes_absent",
+                 "three_observations_spanning_60_seconds"
+               ])) and
+               (.zero_resource_proof_sha256 |
+                 test("^[0-9a-f]{64}$"))' "$evidence" >/dev/null
             jq -e '(.customer_stack_absent == true and
               .connect_instance_absent == true and
               .temporary_vapi_resources_absent == true and
@@ -810,8 +1124,53 @@ jobs:
               .qualification_objects_absent == true and
               .qualification_private_dns_absent == true and
               .qualification_acm_validation_records_absent == true and
+              .all_resource_classes_absent == true and
+              .three_observations_spanning_60_seconds == true and
+              (.zero_resource_proof_sha256 | test("^[0-9a-f]{64}$")) and
               .redacted == true)' \
               "$zero" >/dev/null
+            proof_sha="$(sha256sum "$zero_proof" | awk '{print $1}')"
+            test "$proof_sha" = "$(jq -r .zero_resource_proof_sha256 "$zero")"
+            test "$proof_sha" = \
+              "$(jq -r .zero_resource_proof_sha256 "$evidence")"
+            jq -e '
+              .schema_version == 1 and
+              .producer == "bridgefu-zero-resource-proof@1" and
+              .required_observations == 3 and
+              .minimum_span_seconds == 60 and
+              (.observations | length == 3) and
+              ([.observations[] |
+                (.redacted == true and
+                 ((.resource_counts | keys | sort) == ([
+                   "acm_certificates",
+                   "api_gateway_apis",
+                   "backup_resources",
+                   "cloudformation_stacks",
+                   "cloudwatch_alarms",
+                   "cloudwatch_dashboards",
+                   "cloudwatch_log_groups",
+                   "connect_resources",
+                   "dynamodb_tables",
+                   "ec2_elastic_ips",
+                   "ec2_instances",
+                   "ec2_network_interfaces",
+                   "ec2_security_groups",
+                   "ec2_volumes",
+                   "ec2_vpc_endpoints",
+                   "ec2_vpcs",
+                   "execution_tagged_resources",
+                   "iam_resources",
+                   "lambda_functions",
+                   "other_stack_resources",
+                   "route53_private_zones",
+                   "route53_public_records",
+                   "s3_object_versions",
+                   "secrets",
+                   "sns_resources",
+                   "vapi_resources"
+                 ] | sort)) and
+                 ([.resource_counts[]] | all(. == 0)))] | all(. == true)) and
+              .passed == true and .redacted == true' "$zero_proof" >/dev/null
           done
           account_id="$(aws sts get-caller-identity --query Account --output text)"
           east_bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
@@ -875,6 +1234,9 @@ jobs:
             upload_and_record us-east-1 "$east_bucket" \
               "target/qualification/$region/zero-state.json" \
               "qualification/$region/zero-state.json"
+            upload_and_record us-east-1 "$east_bucket" \
+              "target/qualification/$region/zero-resource-proof.json" \
+              "qualification/$region/zero-resource-proof.json"
           done
           manifest=target/candidate/release/manifest.json
           openssl dgst -sha256 -binary "$manifest" > target/manifest.digest
@@ -890,6 +1252,10 @@ jobs:
           test -n "$manifest_record"
           west_evidence_sha="$(sha256sum target/qualification/us-west-2/evidence.json | awk '{print $1}')"
           east_evidence_sha="$(sha256sum target/qualification/us-east-1/evidence.json | awk '{print $1}')"
+          west_zero_state_sha="$(sha256sum target/qualification/us-west-2/zero-state.json | awk '{print $1}')"
+          east_zero_state_sha="$(sha256sum target/qualification/us-east-1/zero-state.json | awk '{print $1}')"
+          west_zero_proof_sha="$(sha256sum target/qualification/us-west-2/zero-resource-proof.json | awk '{print $1}')"
+          east_zero_proof_sha="$(sha256sum target/qualification/us-east-1/zero-resource-proof.json | awk '{print $1}')"
           qualification_assets="$(jq -cer --arg prefix \
             "candidates/$CANDIDATE_ID/qualification/" \
             '[.candidate_objects[] | select(.key | startswith($prefix))] |
@@ -903,7 +1269,7 @@ jobs:
             --arg repository "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --arg repository_commit "$GITHUB_SHA" \
             --arg bridgefu_commit "$BRIDGEFU_COMMIT" \
-            --arg qualified_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg qualified_at "$(python -c 'import datetime as d; print(d.datetime.now(d.UTC).isoformat().replace("+00:00", "Z"))')" \
             --arg signing_key_arn "$SIGNING_KEY_ARN" \
             --argjson workflow_run_id "$GITHUB_RUN_ID" \
             --argjson workflow_run_attempt "$GITHUB_RUN_ATTEMPT" \
@@ -913,14 +1279,22 @@ jobs:
             --argjson qualification_assets "$qualification_assets" \
             --arg west_evidence_sha "$west_evidence_sha" \
             --arg east_evidence_sha "$east_evidence_sha" \
+            --arg west_zero_state_sha "$west_zero_state_sha" \
+            --arg east_zero_state_sha "$east_zero_state_sha" \
+            --arg west_zero_proof_sha "$west_zero_proof_sha" \
+            --arg east_zero_proof_sha "$east_zero_proof_sha" \
+            --arg west_runtime_image_sha "$(jq -r .runtime_image_sha256 target/qualification/us-west-2/relations.json)" \
+            --arg east_runtime_image_sha "$(jq -r .runtime_image_sha256 target/qualification/us-east-1/relations.json)" \
+            --arg west_root_invocation_sha "$(jq -r .root_invocation_sha256 target/qualification/us-west-2/relations.json)" \
+            --arg east_root_invocation_sha "$(jq -r .root_invocation_sha256 target/qualification/us-east-1/relations.json)" \
             --arg west_execution "$(jq -r .execution_id target/qualification/us-west-2/evidence.json)" \
             --arg east_execution "$(jq -r .execution_id target/qualification/us-east-1/evidence.json)" \
             --argjson west_evidence_schema_version "$(jq .schema_version target/qualification/us-west-2/evidence.json)" \
             --argjson east_evidence_schema_version "$(jq .schema_version target/qualification/us-east-1/evidence.json)" \
             --argjson west_secure_preflight_passed "$(jq .secure_preflight.passed target/qualification/us-west-2/evidence.json)" \
             --argjson east_secure_preflight_passed "$(jq .secure_preflight.passed target/qualification/us-east-1/evidence.json)" \
-            --argjson west_required_checks_passed "$(jq '[.secure_preflight.checks[], .database_resets[].test_delete_verified, .database_resets[].prior_calls_terminal, .database_resets[].fresh_database, .database_resets[].bridgefu_ready, .vapi_provisioning_resilience.ambiguous_create_reconciled, .vapi_provisioning_resilience.first_cycle_deleted, .vapi_provisioning_resilience.second_cycle_recreated, .vapi_provisioning_resilience.exact_owner_resources_present, .vapi_provisioning_resilience.passed, .scenarios[].passed, .scenarios[].checks[], .teardown[]] | all(. == true)' target/qualification/us-west-2/evidence.json)" \
-            --argjson east_required_checks_passed "$(jq '[.secure_preflight.checks[], .database_resets[].test_delete_verified, .database_resets[].prior_calls_terminal, .database_resets[].fresh_database, .database_resets[].bridgefu_ready, .vapi_provisioning_resilience.ambiguous_create_reconciled, .vapi_provisioning_resilience.first_cycle_deleted, .vapi_provisioning_resilience.second_cycle_recreated, .vapi_provisioning_resilience.exact_owner_resources_present, .vapi_provisioning_resilience.passed, .scenarios[].passed, .scenarios[].checks[], .teardown[]] | all(. == true)' target/qualification/us-east-1/evidence.json)" \
+            --argjson west_required_checks_passed "$(jq '[.preflight.passed, (.deployment_review.result == "pass"), (.deployment_review.change_set_type == "CREATE"), (.deployment_review.template_count == 10), (.deployment_review.nested_change_set_count == 9), .secure_preflight.checks[], .database_resets[].test_delete_verified, .database_resets[].prior_calls_terminal, .database_resets[].fresh_database, .database_resets[].bridgefu_ready, .vapi_provisioning_resilience.ambiguous_create_reconciled, .vapi_provisioning_resilience.first_cycle_deleted, .vapi_provisioning_resilience.second_cycle_recreated, .vapi_provisioning_resilience.exact_owner_resources_present, .vapi_provisioning_resilience.passed, .scenarios[].passed, .scenarios[].checks[], .scenarios[].active_call_telemetry.passed, .scenarios[].active_call_telemetry.cpu_strictly_under_60_percent, .scenarios[].active_call_telemetry.memory_strictly_under_60_percent, .scenarios[].active_call_telemetry.bridgefu_restart_free, .scenarios[].active_call_telemetry.compile_excluded, .teardown[]] | all(. == true)' target/qualification/us-west-2/evidence.json)" \
+            --argjson east_required_checks_passed "$(jq '[.preflight.passed, (.deployment_review.result == "pass"), (.deployment_review.change_set_type == "CREATE"), (.deployment_review.template_count == 10), (.deployment_review.nested_change_set_count == 9), .secure_preflight.checks[], .database_resets[].test_delete_verified, .database_resets[].prior_calls_terminal, .database_resets[].fresh_database, .database_resets[].bridgefu_ready, .vapi_provisioning_resilience.ambiguous_create_reconciled, .vapi_provisioning_resilience.first_cycle_deleted, .vapi_provisioning_resilience.second_cycle_recreated, .vapi_provisioning_resilience.exact_owner_resources_present, .vapi_provisioning_resilience.passed, .scenarios[].passed, .scenarios[].checks[], .scenarios[].active_call_telemetry.passed, .scenarios[].active_call_telemetry.cpu_strictly_under_60_percent, .scenarios[].active_call_telemetry.memory_strictly_under_60_percent, .scenarios[].active_call_telemetry.bridgefu_restart_free, .scenarios[].active_call_telemetry.compile_excluded, .teardown[]] | all(. == true)' target/qualification/us-east-1/evidence.json)" \
             --argjson west_scenario_ids "$(jq -c '[.scenarios[].id] | sort' target/qualification/us-west-2/evidence.json)" \
             --argjson east_scenario_ids "$(jq -c '[.scenarios[].id] | sort' target/qualification/us-east-1/evidence.json)" \
             '{schema: $schema, candidate_id: $candidate_id, version: $version,
@@ -933,12 +1307,20 @@ jobs:
               qualification: {
                 "us-west-2": {execution_id: $west_execution,
                   evidence_sha256: $west_evidence_sha,
+                  zero_state_sha256: $west_zero_state_sha,
+                  zero_resource_proof_sha256: $west_zero_proof_sha,
+                  runtime_image_sha256: $west_runtime_image_sha,
+                  root_invocation_sha256: $west_root_invocation_sha,
                   evidence_schema_version: $west_evidence_schema_version,
                   secure_preflight_passed: $west_secure_preflight_passed,
                   required_checks_passed: $west_required_checks_passed,
                   scenario_ids: $west_scenario_ids, zero_resource_proof: true},
                 "us-east-1": {execution_id: $east_execution,
                   evidence_sha256: $east_evidence_sha,
+                  zero_state_sha256: $east_zero_state_sha,
+                  zero_resource_proof_sha256: $east_zero_proof_sha,
+                  runtime_image_sha256: $east_runtime_image_sha,
+                  root_invocation_sha256: $east_root_invocation_sha,
                   evidence_schema_version: $east_evidence_schema_version,
                   secure_preflight_passed: $east_secure_preflight_passed,
                   required_checks_passed: $east_required_checks_passed,
@@ -958,11 +1340,21 @@ jobs:
             (.qualification | keys | sort) == ["us-east-1","us-west-2"] and
             ([.qualification[] |
               .evidence_schema_version == 2 and
+              (.evidence_sha256 | test("^[0-9a-f]{64}$")) and
+              (.zero_state_sha256 | test("^[0-9a-f]{64}$")) and
+              (.zero_resource_proof_sha256 | test("^[0-9a-f]{64}$")) and
+              (.runtime_image_sha256 | test("^[0-9a-f]{64}$")) and
+              (.root_invocation_sha256 | test("^[0-9a-f]{64}$")) and
               .secure_preflight_passed == true and
               .required_checks_passed == true and
               .scenario_ids == ["bridgefu-web-sdk-handoff","vapi-sip-transfer"] and
               .zero_resource_proof == true] | all(. == true))' \
             target/candidate/qualified-receipt.json >/dev/null
+          python release/verify_candidate_receipt.py \
+            --receipt target/candidate/qualified-receipt.json \
+            --qualification-root target/qualification \
+            --release "$VERSION" \
+            --bridgefu-commit "$BRIDGEFU_COMMIT"
           openssl dgst -sha256 -binary target/candidate/qualified-receipt.json \
             > target/receipt.digest
           aws kms sign --key-id "$SIGNING_KEY_ARN" \
@@ -994,7 +1386,7 @@ jobs:
             > target/candidate/state.next.json
           mv target/candidate/state.next.json target/candidate/state.json
           persist_candidate_state
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: qualified-candidate-receipt
           path: |

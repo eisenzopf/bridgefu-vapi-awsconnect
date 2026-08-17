@@ -158,6 +158,10 @@ class SecurePreflightGateTests(unittest.TestCase):
         sip.write_bytes(b"sip")
         checkout = self.temporary / "checkout"
         checkout.mkdir()
+        staged_objects = self.temporary / "staged-objects.json"
+        staged_objects.write_text("{}")
+        sealed_template_root = self.temporary / "sealed-templates"
+        sealed_template_root.mkdir()
         controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
         controller.args = SimpleNamespace(
             execution_id="bfq-test1234",
@@ -165,8 +169,12 @@ class SecurePreflightGateTests(unittest.TestCase):
             release="1.2.3",
             hosted_zone_id="Z1234",
             hosted_zone_name="example.test",
+            expected_account_id="123456789012",
+            runtime_image_id="ami-0123456789abcdef0",
             cloudformation_role_arn=("arn:aws:iam::123456789012:role/qualification"),
             template_url="https://example.test/template.yaml",
+            staged_objects=staged_objects,
+            sealed_template_root=sealed_template_root,
             sip_client=sip,
             direct_secure_probe=probe,
             demo_site_archive=probe,
@@ -178,10 +186,17 @@ class SecurePreflightGateTests(unittest.TestCase):
             "cargo_lock_sha256": "b" * 64,
         }
         controller.secure_preflight_binary_sha256 = None
-        with mock.patch.object(
-            CONTROLLER.shutil,
-            "which",
-            return_value="/usr/local/bin/session-manager-plugin",
+        with (
+            mock.patch.object(
+                CONTROLLER.shutil,
+                "which",
+                return_value="/usr/local/bin/session-manager-plugin",
+            ),
+            mock.patch.object(
+                CONTROLLER,
+                "load_sealed_template_catalog",
+                return_value=(),
+            ),
         ):
             controller.validate_inputs()
         self.assertEqual(
@@ -632,6 +647,72 @@ class SecurePreflightGateTests(unittest.TestCase):
             "started_at": "2026-08-11T04:20:00Z",
             "ended_at": "2026-08-11T04:21:00Z",
             "bridgefu_commit": "a" * 40,
+            "preflight": {
+                "schema_version": 1,
+                "producer": "bridgefu-qualification-preflight@1",
+                "execution_id": "bfq-test1234",
+                "region": "us-west-2",
+                "runtime_image_fingerprint": "a" * 12,
+                "runtime_image_sha256": "b" * 64,
+                "instance_type": "c7g.2xlarge",
+                "vcpus": 8,
+                "memory_mib": 16384,
+                "checks": {
+                    name: True
+                    for name in (
+                        "active_account_exact",
+                        "cloudformation_role_account_exact",
+                        "vapi_secret_account_region_exact",
+                        "public_hosted_zone_exact",
+                        "public_delegation_exact",
+                        "dns_names_vacant",
+                        "candidate_ami_exact",
+                        "instance_offering_available",
+                        "vpcs",
+                        "internet_gateways",
+                        "elastic_ips",
+                        "connect_instances",
+                        "standard_vcpus",
+                    )
+                },
+                "passed": True,
+                "redacted": True,
+            },
+            "deployment_review": {
+                "producer": "bridgefu-cloudformation-deployment-review@1",
+                "version": 1,
+                "result": "pass",
+                "change_set_type": "CREATE",
+                "template_count": 10,
+                "nested_change_set_count": 9,
+                "max_depth": 2,
+                "catalog_sha256": "7" * 64,
+                "hierarchy_sha256": "8" * 64,
+                "root_invocation_sha256": "6" * 64,
+                "root_change_set_fingerprint": "9" * 16,
+                "root_stack_fingerprint": "a" * 16,
+            },
+            "runtime_deployment": {
+                "schema_version": 1,
+                "producer": "bridgefu-runtime-deployment@1",
+                "execution_id": "bfq-test1234",
+                "region": "us-west-2",
+                "runtime_image_sha256": "b" * 64,
+                "instance_id_fingerprint": "c" * 16,
+                "instance_type": "c7g.2xlarge",
+                "architecture": "arm64",
+                "availability_zone": "us-west-2a",
+                "checks": {
+                    "instance_id_exact": True,
+                    "candidate_ami_exact": True,
+                    "instance_type_exact": True,
+                    "architecture_arm64": True,
+                    "running": True,
+                    "ownership_tags_exact": True,
+                },
+                "passed": True,
+                "redacted": True,
+            },
             "secure_preflight": {
                 "binary_sha256": "a" * 64,
                 "probe_result_sha256": "b" * 64,
@@ -677,6 +758,28 @@ class SecurePreflightGateTests(unittest.TestCase):
                     "runtime_security_media_keying": "SDES-SRTP",
                     "runtime_security_media_suite": "AES_CM_128_HMAC_SHA1_80",
                     "runtime_security_srtp_negotiated": True,
+                    "active_call_telemetry_sha256": "4" * 64,
+                    "active_call_telemetry": {
+                        "schema_version": 1,
+                        "producer": "bridgefu-cloudwatch-capacity-observation@1",
+                        "execution_id": "bfq-test1234",
+                        "instance_type": "c7g.2xlarge",
+                        "vcpus": 8,
+                        "memory_mib": 16384,
+                        "window_duration_seconds": 30,
+                        "minimum_required_samples": 2,
+                        "cpu_sample_count": 3,
+                        "memory_sample_count": 3,
+                        "host_cpu_peak_percent": 40,
+                        "host_memory_peak_percent": 40,
+                        "bridgefu_start_events_during_smoke": 0,
+                        "cpu_strictly_under_60_percent": True,
+                        "memory_strictly_under_60_percent": True,
+                        "bridgefu_restart_free": True,
+                        "compile_excluded": True,
+                        "passed": True,
+                        "redacted": True,
+                    },
                     "checks": dict(base_checks),
                     "passed": True,
                 },
@@ -689,6 +792,28 @@ class SecurePreflightGateTests(unittest.TestCase):
                     "runtime_security_media_keying": "none",
                     "runtime_security_media_suite": "none",
                     "runtime_security_srtp_negotiated": False,
+                    "active_call_telemetry_sha256": "5" * 64,
+                    "active_call_telemetry": {
+                        "schema_version": 1,
+                        "producer": "bridgefu-cloudwatch-capacity-observation@1",
+                        "execution_id": "bfq-test1234",
+                        "instance_type": "c7g.2xlarge",
+                        "vcpus": 8,
+                        "memory_mib": 16384,
+                        "window_duration_seconds": 30,
+                        "minimum_required_samples": 2,
+                        "cpu_sample_count": 3,
+                        "memory_sample_count": 3,
+                        "host_cpu_peak_percent": 40,
+                        "host_memory_peak_percent": 40,
+                        "bridgefu_start_events_during_smoke": 0,
+                        "cpu_strictly_under_60_percent": True,
+                        "memory_strictly_under_60_percent": True,
+                        "bridgefu_restart_free": True,
+                        "compile_excluded": True,
+                        "passed": True,
+                        "redacted": True,
+                    },
                     "checks": {**base_checks, "dtmf_agent_to_source": True},
                     "passed": True,
                 },
@@ -701,7 +826,10 @@ class SecurePreflightGateTests(unittest.TestCase):
                 "qualification_objects_absent": True,
                 "qualification_private_dns_absent": True,
                 "qualification_acm_validation_records_absent": True,
+                "all_resource_classes_absent": True,
+                "three_observations_spanning_60_seconds": True,
             },
+            "zero_resource_proof_sha256": "6" * 64,
             "redacted": True,
         }
         CONTROLLER.validate_schema(evidence, "evidence-v2.schema.json")

@@ -172,7 +172,8 @@ Rules:
           - !Equals [!Ref DataRetentionMode, TestDelete]
         AssertDescription: >-
           sip_rtp is permitted only for disposable qualification stacks with
-          DataRetentionMode=TestDelete. Production must use a SIPS mode.
+          DataRetentionMode=TestDelete. Production must use a TLS signaling
+          mode.
 
 Conditions:
   RetainCustomerData: !Equals [!Ref DataRetentionMode, ProductionRetain]

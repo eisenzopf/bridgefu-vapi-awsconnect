@@ -369,7 +369,7 @@ Resources:
     Condition: SecureSip
     Properties:
       AlarmName: !Sub 'bridgefu-${DeploymentId}-certificate-expiry'
-      AlarmDescription: SIPS certificate is missing or below 21 days; see runbooks/dns-certificate.md.
+      AlarmDescription: SIP TLS certificate is missing or below 21 days; see runbooks/dns-certificate.md.
       Namespace: Bridgefu/Runtime
       MetricName: CertificateDaysToExpiry
       Dimensions:

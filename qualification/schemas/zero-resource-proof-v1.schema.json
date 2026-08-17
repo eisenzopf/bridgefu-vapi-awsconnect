@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bridgefu.dev/vapi-awsconnect/qualification/zero-resource-proof-v1.schema.json",
+  "title": "Stable exhaustive qualification zero-resource proof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "producer", "execution_id", "ownership_sha256", "owned_resource_count", "required_observations", "minimum_span_seconds", "observations", "proven_at", "passed", "redacted"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "producer": {"const": "bridgefu-zero-resource-proof@1"},
+    "execution_id": {"type": "string", "pattern": "^bfq-[a-z0-9-]{4,28}$"},
+    "ownership_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "owned_resource_count": {"type": "integer", "minimum": 0, "maximum": 8000},
+    "required_observations": {"const": 3},
+    "minimum_span_seconds": {"const": 60},
+    "observations": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"$ref": "#/$defs/emptyObservation"}
+    },
+    "proven_at": {"type": "string", "format": "date-time"},
+    "passed": {"const": true},
+    "redacted": {"const": true}
+  },
+  "$defs": {
+    "emptyObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observed_at", "resource_counts", "redacted"],
+      "properties": {
+        "observed_at": {"type": "string", "format": "date-time"},
+        "resource_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cloudformation_stacks", "ec2_instances", "ec2_volumes", "ec2_network_interfaces", "ec2_vpcs", "ec2_security_groups", "ec2_elastic_ips", "ec2_vpc_endpoints", "dynamodb_tables", "lambda_functions", "api_gateway_apis", "acm_certificates", "cloudwatch_log_groups", "cloudwatch_alarms", "cloudwatch_dashboards", "secrets", "connect_resources", "route53_private_zones", "route53_public_records", "s3_object_versions", "vapi_resources", "iam_resources", "sns_resources", "backup_resources", "execution_tagged_resources", "other_stack_resources"],
+          "properties": {
+            "cloudformation_stacks": {"const": 0},
+            "ec2_instances": {"const": 0},
+            "ec2_volumes": {"const": 0},
+            "ec2_network_interfaces": {"const": 0},
+            "ec2_vpcs": {"const": 0},
+            "ec2_security_groups": {"const": 0},
+            "ec2_elastic_ips": {"const": 0},
+            "ec2_vpc_endpoints": {"const": 0},
+            "dynamodb_tables": {"const": 0},
+            "lambda_functions": {"const": 0},
+            "api_gateway_apis": {"const": 0},
+            "acm_certificates": {"const": 0},
+            "cloudwatch_log_groups": {"const": 0},
+            "cloudwatch_alarms": {"const": 0},
+            "cloudwatch_dashboards": {"const": 0},
+            "secrets": {"const": 0},
+            "connect_resources": {"const": 0},
+            "route53_private_zones": {"const": 0},
+            "route53_public_records": {"const": 0},
+            "s3_object_versions": {"const": 0},
+            "vapi_resources": {"const": 0},
+            "iam_resources": {"const": 0},
+            "sns_resources": {"const": 0},
+            "backup_resources": {"const": 0},
+            "execution_tagged_resources": {"const": 0},
+            "other_stack_resources": {"const": 0}
+          }
+        },
+        "redacted": {"const": true}
+      }
+    }
+  }
+}

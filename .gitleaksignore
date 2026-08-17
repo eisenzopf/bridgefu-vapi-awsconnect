@@ -1,0 +1,11 @@
+# Reviewed synthetic API-key fixtures from historical unit-test commits.
+# Keep these exact fingerprints narrow; never allowlist a whole file or rule.
+11a1ae62add89fc3e7955eaa80cd245cc88d8d49:tests/unit/test_sdp_capture_diagnostic.py:generic-api-key:250
+11a1ae62add89fc3e7955eaa80cd245cc88d8d49:tests/unit/test_sdp_capture_diagnostic.py:generic-api-key:262
+11a1ae62add89fc3e7955eaa80cd245cc88d8d49:tests/unit/test_qualification_controller.py:generic-api-key:1787
+be7f0fb01330fc204d9695cd137c7fc3f08b4aaf:tests/unit/test_qualification_controller.py:generic-api-key:178
+be7f0fb01330fc204d9695cd137c7fc3f08b4aaf:tests/unit/test_qualification_controller.py:generic-api-key:225
+be7f0fb01330fc204d9695cd137c7fc3f08b4aaf:tests/unit/test_qualification_controller.py:generic-api-key:328
+be7f0fb01330fc204d9695cd137c7fc3f08b4aaf:tests/unit/test_qualification_controller.py:generic-api-key:693
+e03476e040f0442646e3a50dad00afdcd1e564b7:tests/unit/test_qualification_controller.py:generic-api-key:144
+b9a36d74ed08fa46ee511a1381dce6b3676b8bc7:tests/unit/test_qualification_controller.py:generic-api-key:144

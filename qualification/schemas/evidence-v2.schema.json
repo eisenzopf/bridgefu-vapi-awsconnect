@@ -4,7 +4,7 @@
   "title": "Bridgefu secure preflight and Vapi to Amazon Connect release evidence",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "release", "execution_id", "region", "started_at", "ended_at", "bridgefu_commit", "secure_preflight", "database_resets", "vapi_provisioning_resilience", "scenarios", "teardown", "redacted"],
+  "required": ["schema_version", "release", "execution_id", "region", "started_at", "ended_at", "bridgefu_commit", "preflight", "deployment_review", "runtime_deployment", "secure_preflight", "database_resets", "vapi_provisioning_resilience", "scenarios", "teardown", "zero_resource_proof_sha256", "redacted"],
   "properties": {
     "schema_version": {"const": 2},
     "release": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$"},
@@ -13,6 +13,27 @@
     "started_at": {"type": "string", "format": "date-time"},
     "ended_at": {"type": "string", "format": "date-time"},
     "bridgefu_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "preflight": {"$ref": "#/$defs/preflight"},
+    "deployment_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer", "version", "result", "change_set_type", "template_count", "nested_change_set_count", "max_depth", "catalog_sha256", "hierarchy_sha256", "root_invocation_sha256", "root_change_set_fingerprint", "root_stack_fingerprint"],
+      "properties": {
+        "producer": {"const": "bridgefu-cloudformation-deployment-review@1"},
+        "version": {"const": 1},
+        "result": {"const": "pass"},
+        "change_set_type": {"const": "CREATE"},
+        "template_count": {"const": 10},
+        "nested_change_set_count": {"const": 9},
+        "max_depth": {"type": "integer", "minimum": 1, "maximum": 8},
+        "catalog_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "hierarchy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "root_invocation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "root_change_set_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+        "root_stack_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{16}$"}
+      }
+    },
+    "runtime_deployment": {"$ref": "#/$defs/runtimeDeployment"},
     "secure_preflight": {
       "type": "object",
       "additionalProperties": false,
@@ -113,7 +134,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "source_observation_sha256", "agent_observation_sha256", "runtime_security_evidence_sha256", "runtime_security_media_profile", "runtime_security_media_keying", "runtime_security_media_suite", "runtime_security_srtp_negotiated", "checks", "passed"],
+        "required": ["id", "source_observation_sha256", "agent_observation_sha256", "runtime_security_evidence_sha256", "runtime_security_media_profile", "runtime_security_media_keying", "runtime_security_media_suite", "runtime_security_srtp_negotiated", "active_call_telemetry_sha256", "active_call_telemetry", "checks", "passed"],
         "properties": {
           "id": {"enum": ["vapi-sip-transfer", "bridgefu-web-sdk-handoff"]},
           "source_observation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -123,6 +144,8 @@
           "runtime_security_media_keying": {"enum": ["none", "SDES-SRTP"]},
           "runtime_security_media_suite": {"enum": ["none", "AES_CM_128_HMAC_SHA1_80", "AES_CM_128_HMAC_SHA1_32"]},
           "runtime_security_srtp_negotiated": {"type": "boolean"},
+          "active_call_telemetry_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "active_call_telemetry": {"$ref": "#/$defs/activeCallTelemetry"},
           "checks": {
             "type": "object",
             "additionalProperties": false,
@@ -175,7 +198,7 @@
     "teardown": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["customer_stack_absent", "connect_instance_absent", "temporary_vapi_resources_absent", "test_credentials_absent", "qualification_objects_absent", "qualification_private_dns_absent", "qualification_acm_validation_records_absent"],
+      "required": ["customer_stack_absent", "connect_instance_absent", "temporary_vapi_resources_absent", "test_credentials_absent", "qualification_objects_absent", "qualification_private_dns_absent", "qualification_acm_validation_records_absent", "all_resource_classes_absent", "three_observations_spanning_60_seconds"],
       "properties": {
         "customer_stack_absent": {"const": true},
         "connect_instance_absent": {"const": true},
@@ -183,12 +206,110 @@
         "test_credentials_absent": {"const": true},
         "qualification_objects_absent": {"const": true},
         "qualification_private_dns_absent": {"const": true},
-        "qualification_acm_validation_records_absent": {"const": true}
+        "qualification_acm_validation_records_absent": {"const": true},
+        "all_resource_classes_absent": {"const": true},
+        "three_observations_spanning_60_seconds": {"const": true}
       }
     },
+    "zero_resource_proof_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "redacted": {"const": true}
   },
   "$defs": {
+    "preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "producer", "execution_id", "region", "runtime_image_fingerprint", "runtime_image_sha256", "instance_type", "vcpus", "memory_mib", "checks", "passed", "redacted"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "producer": {"const": "bridgefu-qualification-preflight@1"},
+        "execution_id": {"type": "string", "pattern": "^bfq-[a-z0-9-]{4,28}$"},
+        "region": {"enum": ["us-west-2", "us-east-1"]},
+        "runtime_image_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{12}$"},
+        "runtime_image_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "instance_type": {"type": "string", "pattern": "^[a-z0-9.]{3,32}$"},
+        "vcpus": {"type": "integer", "minimum": 1, "maximum": 256},
+        "memory_mib": {"type": "integer", "minimum": 1, "maximum": 2097152},
+        "checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["active_account_exact", "cloudformation_role_account_exact", "vapi_secret_account_region_exact", "public_hosted_zone_exact", "public_delegation_exact", "dns_names_vacant", "candidate_ami_exact", "instance_offering_available", "vpcs", "internet_gateways", "elastic_ips", "connect_instances", "standard_vcpus"],
+          "properties": {
+            "active_account_exact": {"const": true},
+            "cloudformation_role_account_exact": {"const": true},
+            "vapi_secret_account_region_exact": {"const": true},
+            "public_hosted_zone_exact": {"const": true},
+            "public_delegation_exact": {"const": true},
+            "dns_names_vacant": {"const": true},
+            "candidate_ami_exact": {"const": true},
+            "instance_offering_available": {"const": true},
+            "vpcs": {"const": true},
+            "internet_gateways": {"const": true},
+            "elastic_ips": {"const": true},
+            "connect_instances": {"const": true},
+            "standard_vcpus": {"const": true}
+          }
+        },
+        "passed": {"const": true},
+        "redacted": {"const": true}
+      }
+    },
+    "runtimeDeployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "producer", "execution_id", "region", "runtime_image_sha256", "instance_id_fingerprint", "instance_type", "architecture", "availability_zone", "checks", "passed", "redacted"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "producer": {"const": "bridgefu-runtime-deployment@1"},
+        "execution_id": {"type": "string", "pattern": "^bfq-[a-z0-9-]{4,28}$"},
+        "region": {"enum": ["us-west-2", "us-east-1"]},
+        "runtime_image_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "instance_id_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+        "instance_type": {"type": "string", "pattern": "^[a-z0-9.]{3,32}$"},
+        "architecture": {"const": "arm64"},
+        "availability_zone": {"type": "string", "pattern": "^us-(east|west)-[12][a-z]$"},
+        "checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["instance_id_exact", "candidate_ami_exact", "instance_type_exact", "architecture_arm64", "running", "ownership_tags_exact"],
+          "properties": {
+            "instance_id_exact": {"const": true},
+            "candidate_ami_exact": {"const": true},
+            "instance_type_exact": {"const": true},
+            "architecture_arm64": {"const": true},
+            "running": {"const": true},
+            "ownership_tags_exact": {"const": true}
+          }
+        },
+        "passed": {"const": true},
+        "redacted": {"const": true}
+      }
+    },
+    "activeCallTelemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "producer", "execution_id", "instance_type", "vcpus", "memory_mib", "window_duration_seconds", "minimum_required_samples", "cpu_sample_count", "memory_sample_count", "host_cpu_peak_percent", "host_memory_peak_percent", "bridgefu_start_events_during_smoke", "cpu_strictly_under_60_percent", "memory_strictly_under_60_percent", "bridgefu_restart_free", "compile_excluded", "passed", "redacted"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "producer": {"const": "bridgefu-cloudwatch-capacity-observation@1"},
+        "execution_id": {"type": "string", "pattern": "^bfq-[a-z0-9-]{4,28}$"},
+        "instance_type": {"type": "string", "pattern": "^[a-z0-9.]{3,32}$"},
+        "vcpus": {"type": "integer", "minimum": 1, "maximum": 256},
+        "memory_mib": {"type": "integer", "minimum": 1, "maximum": 2097152},
+        "window_duration_seconds": {"type": "number", "minimum": 10, "maximum": 600},
+        "minimum_required_samples": {"type": "integer", "minimum": 2, "maximum": 60},
+        "cpu_sample_count": {"type": "integer", "minimum": 2, "maximum": 512},
+        "memory_sample_count": {"type": "integer", "minimum": 2, "maximum": 512},
+        "host_cpu_peak_percent": {"type": "number", "minimum": 0, "exclusiveMaximum": 60},
+        "host_memory_peak_percent": {"type": "number", "minimum": 0, "exclusiveMaximum": 60},
+        "bridgefu_start_events_during_smoke": {"const": 0},
+        "cpu_strictly_under_60_percent": {"const": true},
+        "memory_strictly_under_60_percent": {"const": true},
+        "bridgefu_restart_free": {"const": true},
+        "compile_excluded": {"const": true},
+        "passed": {"const": true},
+        "redacted": {"const": true}
+      }
+    },
     "databaseReset": {
       "type": "object",
       "additionalProperties": false,

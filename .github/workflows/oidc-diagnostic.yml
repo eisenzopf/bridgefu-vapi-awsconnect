@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   production-release-claims:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: production-release
     steps:
       - name: Print non-secret OIDC trust claims
