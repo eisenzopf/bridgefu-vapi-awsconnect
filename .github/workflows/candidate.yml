@@ -89,6 +89,23 @@ jobs:
           role-to-assume: ${{ vars.AWS_CANDIDATE_ROLE_ARN }}
           role-duration-seconds: 10800
           aws-region: us-west-2
+      - name: Verify the deployed release-control IAM contract
+        run: |
+          set -euo pipefail
+          stack_output() {
+            stack="$1"
+            output="$2"
+            aws cloudformation describe-stacks --region us-east-1 \
+              --stack-name "$stack" \
+              --query "Stacks[0].Outputs[?OutputKey=='$output'].OutputValue | [0]" \
+              --output text
+          }
+          test "$(stack_output bridgefu-vapi-awsconnect-publisher \
+            PublisherPolicyContractVersion)" = \
+            2026-08-17-direct-vapi-recovery-v1
+          test "$(stack_output bridgefu-vapi-awsconnect-qualification \
+            QualificationPolicyContractVersion)" = \
+            2026-08-17-direct-vapi-identity-v1
       - name: Journal ownership and prove the version is unused
         env:
           VERSION: ${{ steps.inputs.outputs.version }}

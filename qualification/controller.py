@@ -4706,6 +4706,29 @@ class Controller:
             timeout=120,
         )
 
+    def verify_post_deploy_iam_contract(self) -> None:
+        """Prove the runner can safely update its stack-owned identity binding."""
+        secret_arn = self.outputs.get("DirectVapiIdentityBindingArn")
+        if not isinstance(secret_arn, str):
+            raise QualificationError("qualification IAM contract secret is missing")
+        try:
+            before = json.loads(self.aws.secret(secret_arn))
+        except json.JSONDecodeError as error:
+            raise QualificationError(
+                "qualification IAM contract secret is invalid"
+            ) from error
+        if before != {"status": "unbound"}:
+            raise QualificationError("qualification IAM contract secret is not unbound")
+        self.put_secret_json(secret_arn, {"status": "unbound"})
+        try:
+            after = json.loads(self.aws.secret(secret_arn))
+        except json.JSONDecodeError as error:
+            raise QualificationError(
+                "qualification IAM contract verification failed"
+            ) from error
+        if after != {"status": "unbound"}:
+            raise QualificationError("qualification IAM contract verification failed")
+
     def install_direct_assistant(self) -> None:
         """Create a direct-only assistant without mutating the product assistant."""
         if self.vapi is None:
@@ -6591,6 +6614,8 @@ class Controller:
             self.preflight()
             self.phase = "cloudformation_deploy"
             self.deploy()
+            self.phase = "qualification_iam_contract"
+            self.verify_post_deploy_iam_contract()
             self.phase = "connect_authentication"
             storage = self.authenticate_agent()
             self.phase = "direct_secure_database_reset"

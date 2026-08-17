@@ -2765,3 +2765,40 @@ and full 226-test Python suite passed.
   customer-visible `latest` pointer may be created until Oregon and then
   Virginia pass from those exact private bits and the signed receipt is
   reviewed.
+
+### 2026-08-17 — Private v0.1.21 candidate stopped by a stale deployed IAM contract
+
+- Candidate run `31982661701` built and remotely validated its exact private
+  artifacts successfully. It produced private AMIs
+  `ami-08c85053bf128e5ee` in Oregon and `ami-09d93dfcd9f58acf0` in Virginia.
+- The fresh qualification checkout and exact Bridgefu source verification
+  passed. Oregon deployed successfully and advanced through the direct secure
+  preflight into the Web qualification phase. Virginia did not start.
+- The Oregon controller could not bind or unbind the stack-owned direct Vapi
+  identity secret because the deployed qualification runner lacked
+  `secretsmanager:PutSecretValue` for that tagged resource. The repository
+  template already contained the permission; the persistent role stack was an
+  older deployment.
+- Automatic recovery initially failed because the deployed recovery role was
+  also stale and lacked read access to the newer direct-tool and
+  direct-assistant ownership journals. Its first exact S3 `HeadObject` received
+  `403 Forbidden`.
+- This was a release-control-plane deployment error, not a Bridgefu, Vapi,
+  Amazon Connect, SIP, or customer-template result. Repository tests had
+  validated desired IAM templates without proving those versions were deployed.
+- Both persistent IAM stacks were updated through in-place CloudFormation
+  change sets. The deployed qualification policy now permits only tagged
+  generated qualification-secret updates, and the deployed recovery policy now
+  reads the exact direct-resource journals and can unbind only the tagged direct
+  identity secret.
+- The candidate workflow now requires explicit policy-contract outputs from
+  both persistent stacks before its first AWS mutation. A stale publisher role
+  cannot read the outputs, and a partially updated control plane cannot match
+  both expected versions.
+- The controller also performs a post-deployment live permission probe: it
+  requires the direct identity binding to be exactly unbound, writes the same
+  unbound value, rereads it, and stops before Connect authentication or smoke
+  execution if the permission is missing.
+- `0.1.21` is permanently failed and will not be reused. Its rerun recovery
+  must finish and independent two-region zero-resource checks must pass before
+  authorizing `0.1.22`.

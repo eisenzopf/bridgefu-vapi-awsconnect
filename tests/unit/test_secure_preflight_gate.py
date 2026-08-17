@@ -363,6 +363,7 @@ class SecurePreflightGateTests(unittest.TestCase):
         run_controller.validate_inputs = mock.Mock()
         run_controller.preflight = mock.Mock()
         run_controller.deploy = mock.Mock()
+        run_controller.verify_post_deploy_iam_contract = mock.Mock()
         run_controller.build_site = mock.Mock(return_value=(Path("site"), "digest"))
         run_controller.authenticate_agent = mock.Mock(return_value=Path("storage"))
         run_controller.reset_test_database = mock.Mock()
