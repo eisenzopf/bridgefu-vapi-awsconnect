@@ -238,6 +238,18 @@ def root_invocation() -> review.RootInvocation:
 
 
 class DeploymentReviewTests(unittest.TestCase):
+    def test_review_error_exposes_only_fixed_or_fingerprinted_safe_reason(self):
+        known = review.DeploymentReviewError(
+            "CREATE change set contains an unsafe Dynamic action"
+        )
+        self.assertEqual(known.safe_reason, "unsafe_dynamic_action")
+
+        sensitive = "unexpected arn:aws:example:us-west-2:123456789012:value"
+        unknown = review.DeploymentReviewError(sensitive)
+        self.assertRegex(unknown.safe_reason, r"^review_[0-9a-f]{16}$")
+        self.assertNotIn("arn", unknown.safe_reason)
+        self.assertNotIn("123456789012", unknown.safe_reason)
+
     def test_parser_accepts_all_ten_release_source_templates(self):
         paths = [
             ROOT / "cloudformation" / "template.yaml",
@@ -464,7 +476,111 @@ AWSTemplateFormatVersion: '2010-09-09'
     def test_create_change_set_cannot_contain_update_action(self):
         aws = ExactCreateHierarchy()
         aws.descriptions["product"]["Changes"][0]["ResourceChange"]["Action"] = "Modify"
-        with self.assertRaisesRegex(review.DeploymentReviewError, "non-Add"):
+        with self.assertRaisesRegex(review.DeploymentReviewError, "unsafe action"):
+            run_review(aws)
+
+    def test_create_change_set_accepts_only_sealed_conditional_dynamic_action(self):
+        aws = ExactCreateHierarchy()
+        template = aws.templates["handoff-service"]
+        template["Conditions"] = {
+            "RetainData": {"Fn::Equals": ["ProductionRetain", "ProductionRetain"]}
+        }
+        template["Resources"]["ProductionHandoffTable"] = {
+            "Type": "AWS::DynamoDB::Table",
+            "Condition": "RetainData",
+            "Properties": {"BillingMode": "PAY_PER_REQUEST"},
+        }
+        aws.remote_templates["handoff-service"] = copy.deepcopy(template)
+        aws.descriptions["handoff-service"]["Changes"].append(
+            {
+                "Type": "Resource",
+                "ResourceChange": {
+                    "Action": "Dynamic",
+                    "LogicalResourceId": "ProductionHandoffTable",
+                    "ResourceType": "AWS::DynamoDB::Table",
+                    "Scope": [],
+                    "Details": [],
+                },
+            }
+        )
+        run_review(aws)
+
+    def test_dynamic_action_must_be_exactly_conditional_and_nonphysical(self):
+        mutations = {
+            "missing_condition": lambda resource, change, template: resource.pop(
+                "Condition"
+            ),
+            "unknown_condition": lambda resource, change, template: resource.update(
+                {"Condition": "UnknownCondition"}
+            ),
+            "physical_resource": lambda resource, change, template: change.update(
+                {"PhysicalResourceId": "physical"}
+            ),
+            "nested_change_set": lambda resource, change, template: change.update(
+                {"ChangeSetId": change_set_arn("runtime")}
+            ),
+            "replacement": lambda resource, change, template: change.update(
+                {"Replacement": "Conditional"}
+            ),
+            "policy_action": lambda resource, change, template: change.update(
+                {"PolicyAction": "Retain"}
+            ),
+            "scope": lambda resource, change, template: change.update(
+                {"Scope": ["Properties"]}
+            ),
+            "details": lambda resource, change, template: change.update(
+                {"Details": [{}]}
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                aws = ExactCreateHierarchy()
+                template = aws.templates["handoff-service"]
+                template["Conditions"] = {
+                    "RetainData": {
+                        "Fn::Equals": ["ProductionRetain", "ProductionRetain"]
+                    }
+                }
+                resource = {
+                    "Type": "AWS::DynamoDB::Table",
+                    "Condition": "RetainData",
+                    "Properties": {"BillingMode": "PAY_PER_REQUEST"},
+                }
+                template["Resources"]["ProductionHandoffTable"] = resource
+                change = {
+                    "Action": "Dynamic",
+                    "LogicalResourceId": "ProductionHandoffTable",
+                    "ResourceType": "AWS::DynamoDB::Table",
+                    "Scope": [],
+                    "Details": [],
+                }
+                mutate(resource, change, template)
+                aws.remote_templates["handoff-service"] = copy.deepcopy(template)
+                aws.descriptions["handoff-service"]["Changes"].append(
+                    {"Type": "Resource", "ResourceChange": change}
+                )
+                with self.assertRaisesRegex(
+                    review.DeploymentReviewError, "unsafe Dynamic"
+                ):
+                    run_review(aws)
+
+    def test_dynamic_action_cannot_replace_a_nested_stack_add(self):
+        aws = ExactCreateHierarchy()
+        candidate = aws.templates["qualification-root"]["Resources"]["Candidate"]
+        candidate["Condition"] = "CreateCandidate"
+        aws.templates["qualification-root"]["Conditions"] = {
+            "CreateCandidate": {"Fn::Equals": ["yes", "yes"]}
+        }
+        aws.remote_templates["qualification-root"] = copy.deepcopy(
+            aws.templates["qualification-root"]
+        )
+        change = next(
+            item["ResourceChange"]
+            for item in aws.descriptions["qualification-root"]["Changes"]
+            if item["ResourceChange"]["LogicalResourceId"] == "Candidate"
+        )
+        change.update({"Action": "Dynamic", "Scope": [], "Details": []})
+        with self.assertRaisesRegex(review.DeploymentReviewError, "unsafe Dynamic"):
             run_review(aws)
 
     def test_root_must_be_available_review_in_progress_create(self):

@@ -1580,7 +1580,7 @@ delete_exact_unexecuted_review() {
       status="$?"
       set -e
       if [[ "$status" != 0 ]] && grep -Eq \
-        '^(aws: \[ERROR\]: )?An error occurred \(ChangeSetNotFoundException\) when calling the DescribeChangeSet operation: ChangeSet .+ does not exist$' \
+        '^(aws: \[ERROR\]: )?An error occurred \(ChangeSetNotFound(Exception)?\) when calling the DescribeChangeSet operation: ChangeSet .+ does not exist$' \
         "$change_set_error"; then
         break
       fi
@@ -1589,7 +1589,7 @@ delete_exact_unexecuted_review() {
       sleep 2
     done
   elif grep -Eq \
-    '^(aws: \[ERROR\]: )?An error occurred \(ChangeSetNotFoundException\) when calling the DescribeChangeSet operation: ChangeSet .+ does not exist$' \
+    '^(aws: \[ERROR\]: )?An error occurred \(ChangeSetNotFound(Exception)?\) when calling the DescribeChangeSet operation: ChangeSet .+ does not exist$' \
     "$change_set_error"; then
     :
   else

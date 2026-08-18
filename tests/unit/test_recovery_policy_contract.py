@@ -1328,6 +1328,7 @@ test "$strict_status" = 3
 
     def test_unexecuted_review_cleanup_deletes_change_set_then_empty_root_shell(self):
         source = QUALIFICATION_REAPER_PATH.read_text()
+        self.assertIn("ChangeSetNotFound(Exception)?", source)
         function = source.split("delete_exact_unexecuted_review() {", 1)[1].split(
             "for pair in us-west-2:w us-east-1:e; do", 1
         )[0]
@@ -1364,7 +1365,7 @@ aws() {{
             "ExecutionStatus": "AVAILABLE",
         }, separators=(",", ":"))}'
       else
-        printf '%s\\n' 'aws: [ERROR]: An error occurred (ChangeSetNotFoundException) when calling the DescribeChangeSet operation: ChangeSet [{change_set_id}] does not exist' >&2
+        printf '%s\\n' 'aws: [ERROR]: An error occurred (ChangeSetNotFound) when calling the DescribeChangeSet operation: ChangeSet [{change_set_id}] does not exist' >&2
         return 254
       fi
       ;;

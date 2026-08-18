@@ -276,6 +276,30 @@ class QualificationCleanupContractTests(unittest.TestCase):
         ):
             ambiguous.exists(["route53", "get-hosted-zone", "--id", "Z123"])
 
+    def test_cloudformation_change_set_not_found_is_exact_absence(self):
+        for code in ("ChangeSetNotFound", "ChangeSetNotFoundException"):
+            with self.subTest(code=code):
+                aws = CONTROLLER.Aws(
+                    "us-west-2",
+                    ProbeRunner(
+                        "aws: [ERROR]: An error occurred "
+                        f"({code}) when calling the DescribeChangeSet operation: "
+                        "ChangeSet [arn:aws:cloudformation:us-west-2:123456789012:"
+                        "changeSet/test/id] does not exist"
+                    ),
+                )
+                self.assertFalse(
+                    aws.exists(
+                        [
+                            "cloudformation",
+                            "describe-change-set",
+                            "--change-set-name",
+                            "arn:aws:cloudformation:us-west-2:123456789012:"
+                            "changeSet/test/id",
+                        ]
+                    )
+                )
+
     def test_early_cleanup_initializes_vapi_for_exact_output_ids(self):
         controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
         controller.outputs = {"VapiAssistantId": "assistant_1234"}

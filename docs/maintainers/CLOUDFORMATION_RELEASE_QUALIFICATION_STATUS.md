@@ -29,12 +29,24 @@ The prior private candidates are retired; none created a `v0.1.22` Git tag or a
 GitHub Release. The latest candidate `0.1.22` attempt reused the verified private
 Bridgefu v0.9.0/rvoip 0.3.8 AMI content cache without recompiling, produced fresh
 private AMIs in both regions, staged the immutable release objects, and passed
-all 20 remote template validations. Oregon then stopped before creating a
-qualification stack because the controller encoded the JSON-valued
-`ScreenPopFieldsJson` parameter with AWS CLI shorthand syntax. The AWS CLI
-rejected the request before CloudFormation received it. Recovery removed both
-candidate AMIs and every candidate object version; the verified private content
-cache remains available for the next attempt.
+all 20 remote template validations. Oregon then created the exact nested CREATE
+change-set hierarchy but stopped before execution. AWS reported `Action:
+Dynamic` for the two mutually exclusive, explicitly conditional handoff tables
+whose condition depends on an unresolved parent-stack output. The reviewer
+incorrectly required literal `Add` for every CREATE change. A private,
+non-executed reproduction proved that the sealed template equals AWS's Original
+template and that allowing only resource-empty `Dynamic` changes bound to an
+exact sealed `Condition` lets the complete ten-template review pass while all
+other dynamic/update/import/remove shapes remain rejected.
+
+Cleanup successfully deleted the nested review hierarchy but then encountered
+AWS CLI v2's live `ChangeSetNotFound` error code. The controller and reaper had
+recognized only older `ValidationError`/`ChangeSetNotFoundException` forms, so
+they did not issue `DeleteStack` for the empty root review shell. Both absence
+parsers now accept the exact service-specific code, and regression tests cover
+the current CLI response. The observed root shell and isolated reproduction
+stacks were verified resource-empty and deleted, and every diagnostic S3 object
+version was purged.
 
 Both retained Oregon smoke paths had already passed on the Bridgefu/rvoip 0.3.8
 runtime before those candidate-control failures:
@@ -50,14 +62,14 @@ immutable, two-region release qualification.
 The DNS-vacancy defect, bounded CloudFormation drift-detection handoff, 16-vCPU
 immutable builder, exact Rust caches, private content-addressed AMI cache, and
 cache snapshot verifier correction are merged through protected `main`.
-Exact-main CI passed all four checks. The CloudFormation invocation correction
-is currently under local validation: it constructs the complete
-`CreateChangeSet` request as one canonical JSON document, runs that exact
-document through the installed AWS CLI service-model parser before mutation,
-and submits the identical document with `--cli-input-json`. Candidate version
-`0.1.22` is vacant, no qualification mutation is active, and recovery proved the
-failed candidate absent. The release is therefore at the pre-candidate boundary,
-not yet at a release or publication boundary.
+Exact-main CI passed all four checks. The canonical `CreateChangeSet` JSON,
+installed AWS CLI parser gate, false/null import normalization, and empty review
+shell cleanup are merged and passed their live boundaries. The newly discovered
+conditional-Dynamic and current missing-change-set-code corrections have passed
+the complete local test, lint, and deterministic CloudFormation validation gates
+and await protected-main review. Candidate version `0.1.22` is vacant again, no qualification
+mutation is active, and the release remains at the
+pre-candidate boundary rather than a release or publication boundary.
 
 ## Exact source under evaluation
 
@@ -75,7 +87,7 @@ not yet at a release or publication boundary.
 
 - Repository: `bridgefu-vapi-awsconnect`
 - Current protected-main release-control commit:
-  `6184a7c023bb38c3d1bce97ddade3bf991fb9eca`
+  `a3cef334d4a2b72b7cbb1395e14b94b572b361b4`
 - Target branch: `origin/main`
 - Next eligible version: `0.1.22`, only after every pre-candidate gate below
   passes and the exact audited commit is merged to `origin/main`.
@@ -87,12 +99,12 @@ not yet at a release or publication boundary.
 | Recipe-first reconciliation | PASSED | Applicable safeguards are preserved and obsolete branch scope is explicitly rejected |
 | Secret and repository hygiene | PASSED | History, working-tree, and exact staged-source scans pass with only reviewed synthetic test fixtures |
 | Local contract and static gates | PASSED | Complete fail-closed preflight passed on the final combined worktree |
-| Exact merged-main CI | PASSED | All four required checks passed on current protected-main commit `6184a7c023bb38c3d1bce97ddade3bf991fb9eca` |
+| Exact merged-main CI | PASSED | All four required checks passed on current protected-main commit `a3cef334d4a2b72b7cbb1395e14b94b572b361b4` |
 | Retained diagnostic cleanup | PASSED | The exact Oregon `TestDelete` root is absent and its Vapi, ACM, S3, and direct resource checks pass |
 | Persistent IAM control plane | PASSED | Reviewed, no-replacement role-stack changes deployed and reverified |
 | Exact remote template validation | PASSED | All ten exact rendered templates passed AWS validation in both supported regions (20/20) |
 | Private candidate AMI build | PASSED | Exact private cache reuse, fresh two-region copies, immutable staging, and 20/20 remote template validation passed |
-| Fresh Oregon qualification | FAILED | Merge the canonical JSON `CreateChangeSet` request and real AWS CLI parser gate, then reach direct secure preflight and both Vapi smoke paths before zero proof |
+| Fresh Oregon qualification | FAILED | Merge the exact conditional-`Dynamic` review contract and current `ChangeSetNotFound` cleanup handling, then reach direct secure preflight and both Vapi smoke paths before zero proof |
 | Fresh Virginia qualification | NOT STARTED | Same immutable bits and checks pass only after Oregon |
 | Candidate sealing | NOT STARTED | Signed dual-region evidence and zero-resource receipts |
 | Customer publication | NOT STARTED | Public AMIs/snapshots, immutable objects, and `latest` updated last |
@@ -290,9 +302,8 @@ AWS authority.
 
 ## Remaining path to the customer template
 
-1. Merge the live-AWS review-normalization and unexecuted-review cleanup
-   corrections through protected `main`, then update the persistent publisher
-   role stack to the exact v7 policy contract.
+1. Merge the conditional-`Dynamic` review and current AWS CLI absence-code
+   corrections through protected `main`. No persistent IAM change is required.
 2. Start one new private candidate from that exact protected-main commit using
    future tag version input `0.1.22`. This is not a Git tag or GitHub Release.
 3. Qualify Oregon, destroy it, and prove stable zero resources.
@@ -324,34 +335,38 @@ AWS authority.
 
 ## Current live gate and next permitted action
 
-The current protected-main revision passed all exact-main CI jobs. Its private
-candidate then reused the verified private AMI cache, created fresh private AMIs
-in both regions, staged exact-version assets, and passed all twenty remote
-`ValidateTemplate` calls in eight minutes.
+Protected-main revision `a3cef334d4a2b72b7cbb1395e14b94b572b361b4`
+passed all exact-main CI jobs. Its private candidate reused the verified private
+AMI cache, created fresh private AMIs in both regions, staged exact-version
+assets, and passed all twenty remote `ValidateTemplate` calls in under eight
+minutes. Oregon also passed the canonical AWS CLI request parser and exact
+control-plane verification.
 
-Oregon passed the prior AWS CLI serialization failure: AWS accepted the
-canonical `CreateChangeSet` JSON and constructed the complete root/nested review
-hierarchy. The fail-closed reviewer stopped before execution because AWS
-normalizes an omitted false `ImportExistingResources` request to JSON `null` in
-`DescribeChangeSet`, while the new comparator accepted only literal `false`.
-A separate resource-empty live change set reproduced the exact response. The
-corrected contract accepts only `null` or literal `false` and continues to
-reject true, numeric, string, collection, or otherwise malformed values.
+AWS accepted the root CREATE request and generated all ten root/nested change
+sets. The review stopped before execution at the handoff-service child because
+CloudFormation returned `Action: Dynamic` for `ProductionHandoffTable` and
+`TestHandoffTable`. Those resources have exact sealed `RetainData` and
+`DeleteData` conditions whose value is supplied through the new parent stack;
+AWS documents Dynamic as the shape used when the exact nested resource action
+cannot yet be determined. A private reproduction against the exact rendered
+catalog confirmed both records have no physical ID, child change set, scope,
+details, replacement, or policy action. The corrected reviewer accepts Dynamic
+only for that general sealed safety shape: an existing logical resource with
+matching type, an explicit condition that exists in the same sealed template,
+an empty new-stack change record, and no nested-stack edge. It continues to
+reject Dynamic for unconditioned resources, nested stacks, physical resources,
+or any update/removal/import semantics. The complete live ten-template review
+passes with this correction.
 
-The same live reproduction proved that `DeleteChangeSet` removes nested review
-change sets but retains the root `REVIEW_IN_PROGRESS` stack shell. Controller
-cleanup now waits for the exact change set hierarchy to disappear, verifies the
-exact root stack contains zero resources, deletes that full StackId, and proves
-all reviewed stack identities absent. Recovery receives the same exact bounded
-path and no longer waits for an ACM certificate that cannot exist in an
-unexecuted review. The two observed root review shells were explicitly verified
-empty and deleted; the failed candidate's private AMIs and object versions were
-removed, while the verified private compile cache remains.
+The failed run also exposed a cleanup compatibility defect. Current AWS CLI v2
+returns `ChangeSetNotFound` after asynchronous nested change-set deletion, while
+the controller/reaper recognized only older missing-change-set forms. The exact
+current and legacy service codes are now accepted only for
+`DescribeChangeSet`; ambiguous errors still fail closed. The empty root shell,
+isolated diagnostic stack, and diagnostic object versions have been removed.
 
-The next permitted actions are: merge these corrections through protected main,
-deploy publisher policy contract
-`2026-08-18-review-normalization-and-cleanup-v7`, verify it exactly, and launch
-one new Oregon-first private candidate using future tag version `0.1.22`. No Git
-tag, customer-visible object, or publication is permitted until Oregon and
-Virginia both pass, zero-resource proof is sealed, and the signed receipt is
-reviewed.
+The next permitted actions are: complete the full local gate, merge these two
+corrections through protected main, wait for exact-main CI, and launch one new
+Oregon-first private candidate using future tag version `0.1.22`. No Git tag,
+customer-visible object, or publication is permitted until Oregon and Virginia
+both pass, zero-resource proof is sealed, and the signed receipt is reviewed.

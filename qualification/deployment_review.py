@@ -26,9 +26,29 @@ from typing import Any
 
 import yaml
 
+_SAFE_REASON_CODES = {
+    "CREATE change set contains an unsafe Dynamic action": "unsafe_dynamic_action",
+    "CREATE change set contains an unsafe action": "unsafe_resource_action",
+    "CloudFormation template differs from sealed catalog": "template_catalog_mismatch",
+    "change set references an unsealed template": "unsealed_template_reference",
+    "root change-set invocation differs from request": "root_invocation_mismatch",
+    "sealed template catalog is missing or orphaned": "template_hierarchy_mismatch",
+}
+
 
 class DeploymentReviewError(RuntimeError):
     """The proposed CloudFormation deployment cannot be proven exact."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        # Only a fixed code crosses the qualification evidence boundary.  The
+        # fallback fingerprint remains actionable against source literals while
+        # preventing a future exception message from exposing an ARN, parameter,
+        # URL, or other deployment value.
+        self.safe_reason = _SAFE_REASON_CODES.get(
+            message,
+            "review_" + hashlib.sha256(message.encode("utf-8")).hexdigest()[:16],
+        )
 
 
 PRODUCER = "bridgefu-cloudformation-deployment-review@1"
@@ -510,28 +530,77 @@ def _nested_template_urls(template: Mapping[str, Any]) -> dict[str, str]:
 
 
 def _nested_change_sets(
-    description: Mapping[str, Any], nested_urls: Mapping[str, str]
+    description: Mapping[str, Any],
+    template: Mapping[str, Any],
+    nested_urls: Mapping[str, str],
 ) -> dict[str, tuple[str, str | None]]:
     changes = description.get("Changes")
     if not isinstance(changes, list):
         raise DeploymentReviewError("change-set resource inventory is invalid")
+    resources = template.get("Resources")
+    conditions = template.get("Conditions", {})
+    if not isinstance(resources, Mapping) or not isinstance(conditions, Mapping):
+        raise DeploymentReviewError("template resource inventory is invalid")
     selected: dict[str, tuple[str, str | None]] = {}
+    observed: set[str] = set()
     for item in changes:
         if not isinstance(item, Mapping) or item.get("Type") != "Resource":
             raise DeploymentReviewError("change-set resource inventory is invalid")
         change = item.get("ResourceChange")
         if not isinstance(change, Mapping):
             raise DeploymentReviewError("change-set resource inventory is invalid")
-        if change.get("Action") != "Add":
-            raise DeploymentReviewError("CREATE change set contains a non-Add action")
         logical_id = change.get("LogicalResourceId")
         resource_type = change.get("ResourceType")
-        if not isinstance(logical_id, str) or not isinstance(resource_type, str):
+        resource = resources.get(logical_id) if isinstance(logical_id, str) else None
+        if (
+            not isinstance(logical_id, str)
+            or not isinstance(resource_type, str)
+            or logical_id in observed
+        ):
             raise DeploymentReviewError("change-set resource identity is invalid")
-        if logical_id not in nested_urls:
+        if not isinstance(resource, Mapping):
             if resource_type == "AWS::CloudFormation::Stack" or change.get(
                 "ChangeSetId"
             ) not in (None, ""):
+                raise DeploymentReviewError(
+                    "change set contains an orphan nested-stack edge"
+                )
+            raise DeploymentReviewError("change-set resource identity is invalid")
+        if resource.get("Type") != resource_type:
+            raise DeploymentReviewError("change-set resource identity is invalid")
+        observed.add(logical_id)
+        action = change.get("Action")
+        if action == "Dynamic":
+            condition = resource.get("Condition")
+            if (
+                logical_id in nested_urls
+                or not isinstance(condition, str)
+                or not condition
+                or condition not in conditions
+                or change.get("ChangeSetId") not in (None, "")
+                or change.get("PhysicalResourceId") not in (None, "")
+                or change.get("Replacement") not in (None, "")
+                or change.get("PolicyAction") not in (None, "")
+                or change.get("Scope") != []
+                or change.get("Details") != []
+            ):
+                raise DeploymentReviewError(
+                    "CREATE change set contains an unsafe Dynamic action"
+                )
+            # A new REVIEW_IN_PROGRESS stack has no physical resources.  AWS
+            # can report Dynamic for an explicitly conditional resource when
+            # its condition depends on an unresolved parent-stack output.  In
+            # that exact sealed shape execution can only add or omit the
+            # resource; it cannot modify, replace, import, or remove one.
+            continue
+        if action != "Add":
+            raise DeploymentReviewError("CREATE change set contains an unsafe action")
+        if logical_id not in nested_urls:
+            if (
+                resource_type == "AWS::CloudFormation::Stack"
+                or change.get("ChangeSetId") not in (None, "")
+                or change.get("PhysicalResourceId") not in (None, "")
+            ):
                 raise DeploymentReviewError(
                     "change set contains an orphan nested-stack edge"
                 )
@@ -668,7 +737,7 @@ def review_create_change_set(
                 "CloudFormation template differs from sealed catalog"
             )
         nested_urls = _nested_template_urls(proposed)
-        nested_changes = _nested_change_sets(description, nested_urls)
+        nested_changes = _nested_change_sets(description, proposed, nested_urls)
 
         traversed_urls.add(template_url)
         traversed_change_sets.add(change_set_arn)
