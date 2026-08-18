@@ -26,11 +26,15 @@ Last updated: 2026-08-17 (America/Los_Angeles)
 ## Current summary
 
 The prior private candidates are retired; none created a `v0.1.22` Git tag or a
-GitHub Release. The latest candidate `0.1.22` attempt passed the repaired
-release-control IAM and CloudWatch Agent boundaries, compiled the exact Bridgefu
-v0.9.0/rvoip 0.3.8 runtime, and produced private AMIs in both regions. It then
-stopped in the Oregon read-only DNS-vacancy preflight before creating a
-qualification stack. Recovery removed the candidate AMIs and object versions.
+GitHub Release. The latest candidate `0.1.22` attempt reused the verified private
+Bridgefu v0.9.0/rvoip 0.3.8 AMI content cache without recompiling, produced fresh
+private AMIs in both regions, staged the immutable release objects, and passed
+all 20 remote template validations. Oregon then stopped before creating a
+qualification stack because the controller encoded the JSON-valued
+`ScreenPopFieldsJson` parameter with AWS CLI shorthand syntax. The AWS CLI
+rejected the request before CloudFormation received it. Recovery removed both
+candidate AMIs and every candidate object version; the verified private content
+cache remains available for the next attempt.
 
 Both retained Oregon smoke paths had already passed on the Bridgefu/rvoip 0.3.8
 runtime before those candidate-control failures:
@@ -43,14 +47,17 @@ Bridgefu Web SDK → Vapi → Bridgefu → Amazon Connect
 Those retained passes are diagnostic evidence, not a substitute for fresh,
 immutable, two-region release qualification.
 
-The DNS-vacancy defect, the bounded CloudFormation drift-detection handoff, the
-16-vCPU immutable builder, exact Rust caches, and private content-addressed AMI
-cache are merged through protected `main`. Exact-main CI passed all four checks
-and saved the default-branch qualification cache. Candidate version `0.1.22` is
-vacant, no qualification mutation is active, and obsolete diagnostic resources
-found during the final inventory were removed and proved absent. The release is
-therefore at the pre-candidate boundary, not yet at a release or publication
-boundary.
+The DNS-vacancy defect, bounded CloudFormation drift-detection handoff, 16-vCPU
+immutable builder, exact Rust caches, private content-addressed AMI cache, and
+cache snapshot verifier correction are merged through protected `main`.
+Exact-main CI passed all four checks. The CloudFormation invocation correction
+is currently under local validation: it constructs the complete
+`CreateChangeSet` request as one canonical JSON document, runs that exact
+document through the installed AWS CLI service-model parser before mutation,
+and submits the identical document with `--cli-input-json`. Candidate version
+`0.1.22` is vacant, no qualification mutation is active, and recovery proved the
+failed candidate absent. The release is therefore at the pre-candidate boundary,
+not yet at a release or publication boundary.
 
 ## Exact source under evaluation
 
@@ -68,7 +75,7 @@ boundary.
 
 - Repository: `bridgefu-vapi-awsconnect`
 - Current protected-main release-control commit:
-  `d76c9016802c135dd6f7f93cd5cb8a2898aa8900`
+  `6184a7c023bb38c3d1bce97ddade3bf991fb9eca`
 - Target branch: `origin/main`
 - Next eligible version: `0.1.22`, only after every pre-candidate gate below
   passes and the exact audited commit is merged to `origin/main`.
@@ -80,12 +87,12 @@ boundary.
 | Recipe-first reconciliation | PASSED | Applicable safeguards are preserved and obsolete branch scope is explicitly rejected |
 | Secret and repository hygiene | PASSED | History, working-tree, and exact staged-source scans pass with only reviewed synthetic test fixtures |
 | Local contract and static gates | PASSED | Complete fail-closed preflight passed on the final combined worktree |
-| Exact merged-main CI | PASSED | All four required checks passed on current protected-main commit `d76c9016802c135dd6f7f93cd5cb8a2898aa8900` |
+| Exact merged-main CI | PASSED | All four required checks passed on current protected-main commit `6184a7c023bb38c3d1bce97ddade3bf991fb9eca` |
 | Retained diagnostic cleanup | PASSED | The exact Oregon `TestDelete` root is absent and its Vapi, ACM, S3, and direct resource checks pass |
 | Persistent IAM control plane | PASSED | Reviewed, no-replacement role-stack changes deployed and reverified |
 | Exact remote template validation | PASSED | All ten exact rendered templates passed AWS validation in both supported regions (20/20) |
-| Private candidate AMI build | FAILED | Replace the agent-dependent GPG import, pass exact build-OS regression and protected-main CI, then build both private AMIs |
-| Fresh Oregon qualification | NOT STARTED | Direct secure preflight and both Vapi smoke paths pass, then zero proof |
+| Private candidate AMI build | PASSED | Exact private cache reuse, fresh two-region copies, immutable staging, and 20/20 remote template validation passed |
+| Fresh Oregon qualification | FAILED | Merge the canonical JSON `CreateChangeSet` request and real AWS CLI parser gate, then reach direct secure preflight and both Vapi smoke paths before zero proof |
 | Fresh Virginia qualification | NOT STARTED | Same immutable bits and checks pass only after Oregon |
 | Candidate sealing | NOT STARTED | Signed dual-region evidence and zero-resource receipts |
 | Customer publication | NOT STARTED | Public AMIs/snapshots, immutable objects, and `latest` updated last |
@@ -156,6 +163,24 @@ Local gate evidence on 2026-08-17:
   `m7g.2xlarge` to a pinned 16-vCPU/64-GiB `m7g.4xlarge`, with eight bounded Cargo
   jobs. This affects build time only; the customer runtime remains the reviewed
   `c7g.2xlarge`.
+- the first cache-backed candidate exposed an exact snapshot-tag modeling defect:
+  Packer propagates the deterministic AMI `Name` tag to the backing snapshot,
+  while the verifier expected only the six explicit snapshot tags. The corrected
+  verifier requires the full seven-tag AWS shape and rejects a missing or changed
+  name. It passed against the actual private cache AMI/snapshot response, merged
+  through protected main, and the next candidate reused that cache without a
+  compiler instance;
+- that cache-backed candidate completed both regional AMI copies, immutable
+  staging, and 20/20 remote template validation. Oregon then failed before stack
+  creation because the new change-set path used AWS CLI shorthand for a
+  JSON-valued CloudFormation parameter. Local mocks inspected argv strings but
+  did not exercise the CLI parser. The correction replaces all root change-set
+  shorthand fields with one canonical `--cli-input-json` document, parses the
+  identical document with the installed AWS CLI and
+  `--generate-cli-skeleton output` before setting the stack-created state, and
+  submits only after that parser gate passes. Focused tests prove parser-before-
+  mutation ordering and exact nested JSON preservation; the full 432-test Python
+  suite, Ruff, deterministic packaging, and CloudFormation validation pass.
 
 ## Audit safeguards incorporated in the worktree
 
