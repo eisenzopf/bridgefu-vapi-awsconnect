@@ -745,6 +745,11 @@ async function probeSnapshot(page) {
           sourceMarkerObservedAtMs: [...state.sourceMarkerObservedAtMs],
           sourceMarkerFrames: state.sourceMarkerFrames,
           dtmfSourceToAgentObserved: state.dtmfSourceToAgentObserved,
+          dtmfPositiveFrames: state.dtmfPositiveFrames,
+          dtmfLowMaxPower: state.dtmfLowMaxPower,
+          dtmfHighMaxPower: state.dtmfHighMaxPower,
+          dtmfLowMaxPurity: state.dtmfLowMaxPurity,
+          dtmfHighMaxPurity: state.dtmfHighMaxPurity,
           remoteAudioTracks: state.remoteAudioTracks,
           remoteAudioActiveFrames: state.remoteAudioActiveFrames,
           remoteAudioMaxRms: state.remoteAudioMaxRms,
@@ -777,6 +782,14 @@ async function probeSnapshot(page) {
     dtmfSourceToAgentObserved: snapshots.some(
       (item) => item.dtmfSourceToAgentObserved,
     ),
+    dtmfPositiveFrames: snapshots.reduce(
+      (total, item) => total + item.dtmfPositiveFrames,
+      0,
+    ),
+    dtmfLowMaxPower: Math.max(0, ...snapshots.map((item) => item.dtmfLowMaxPower)),
+    dtmfHighMaxPower: Math.max(0, ...snapshots.map((item) => item.dtmfHighMaxPower)),
+    dtmfLowMaxPurity: Math.max(0, ...snapshots.map((item) => item.dtmfLowMaxPurity)),
+    dtmfHighMaxPurity: Math.max(0, ...snapshots.map((item) => item.dtmfHighMaxPurity)),
     remoteAudioTracks: snapshots.reduce(
       (total, item) => total + item.remoteAudioTracks,
       0,
@@ -860,6 +873,11 @@ function installProbe() {
     sourceMarkerLastEdgeMs: 0,
     dtmfSourceToAgentObserved: false,
     dtmfConsecutiveFrames: 0,
+    dtmfPositiveFrames: 0,
+    dtmfLowMaxPower: 0,
+    dtmfHighMaxPower: 0,
+    dtmfLowMaxPurity: 0,
+    dtmfHighMaxPurity: 0,
     remoteAudioTracks: 0,
     remoteAudioActiveFrames: 0,
     remoteAudioMaxRms: 0,
@@ -933,7 +951,20 @@ function installProbe() {
       state.sourceMarkerActive = marker;
       const low = power(samples, context.sampleRate, 770);
       const high = power(samples, context.sampleRate, 1336);
-      const dtmf = rms > 0.01 && low > 0.00015 && high > 0.00015;
+      const meanEnergy = energy / samples.length;
+      const lowPurity = low / Math.max(meanEnergy, 1e-9);
+      const highPurity = high / Math.max(meanEnergy, 1e-9);
+      state.dtmfLowMaxPower = Math.max(state.dtmfLowMaxPower, low);
+      state.dtmfHighMaxPower = Math.max(state.dtmfHighMaxPower, high);
+      state.dtmfLowMaxPurity = Math.max(state.dtmfLowMaxPurity, lowPurity);
+      state.dtmfHighMaxPurity = Math.max(state.dtmfHighMaxPurity, highPurity);
+      const dtmf =
+        rms > 0.01 &&
+        low > 0.00005 &&
+        high > 0.00005 &&
+        lowPurity > 0.12 &&
+        highPurity > 0.12;
+      if (dtmf) state.dtmfPositiveFrames += 1;
       state.dtmfConsecutiveFrames = dtmf ? state.dtmfConsecutiveFrames + 1 : 0;
       if (state.dtmfConsecutiveFrames >= requiredDtmfAnalyserFrames) {
         state.dtmfSourceToAgentObserved = true;
@@ -1319,6 +1350,11 @@ async function observe(options) {
           `markers=${probe.sourceMarkerObservedAtMs.length} ` +
           `marker_frames=${probe.sourceMarkerFrames} ` +
           `dtmf=${probe.dtmfSourceToAgentObserved ? "yes" : "no"} ` +
+          `dtmf_frames=${probe.dtmfPositiveFrames} ` +
+          `dtmf_power=${probe.dtmfLowMaxPower.toExponential(3)}/` +
+          `${probe.dtmfHighMaxPower.toExponential(3)} ` +
+          `dtmf_purity=${probe.dtmfLowMaxPurity.toFixed(3)}/` +
+          `${probe.dtmfHighMaxPurity.toFixed(3)} ` +
           `tracks=${probe.remoteAudioTracks} ` +
           `sent_packets=${probe.audioPacketsSent} sent_bytes=${probe.audioBytesSent} ` +
           `received_packets=${probe.audioPacketsReceived} ` +

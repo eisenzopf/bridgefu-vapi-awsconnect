@@ -417,6 +417,30 @@ added, and no call-quality claim is derived from this gate.
 
 The next permitted actions are the complete local gate, protected review/merge,
 and a fresh Oregon-first candidate using future tag version `0.1.23`. The AMI
-input is unchanged and may reuse the verified build cache. No public Git tag,
+cache identity is release-version-bound, so that candidate must compile one new
+AMI even though the source inputs are otherwise unchanged. No public Git tag,
 AMI permission, release object, or `latest` pointer is permitted until both
 regions pass and the signed receipt is reviewed.
+
+## 2026-08-18 v0.1.23 Oregon DTMF-presence result
+
+The audio-presence correction passed the complete local gate, protected review,
+merge, and exact-main CI. Candidate `0.1.23` compiled its version-bound AMI on
+the 16-vCPU builder, staged and remotely validated every exact template, and
+deployed the Oregon customer template to `CREATE_COMPLETE`.
+
+The Oregon Bridgefu Web SDK call reached Amazon Connect with a remote audio
+track, bidirectional RTP, active audio, one source marker episode, and 52
+positive marker samples. The Agent Workspace analyser did not classify the
+separate 350 ms in-band DTMF-5 probe, so the Web scenario failed closed and
+Virginia did not start. Teardown succeeded and all three stable zero-resource
+observations reported every resource class absent. The candidate was not sealed
+or published.
+
+The local correction keeps one five-second audio marker and changes only the
+independent DTMF presence probe: its duration is one second, the Agent Workspace
+detector uses the same bounded two-frequency power-and-purity criteria as the
+already-proven reverse detector, and three consecutive 20 ms observations are
+still mandatory. Closed numeric maximums are included only in failure output so
+a future miss is diagnosable without audio, SIP targets, or customer data. This
+does not measure audio fidelity or call quality.
