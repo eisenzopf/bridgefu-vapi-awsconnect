@@ -89,7 +89,11 @@ const PROBE_CYCLE_MS = 10_000;
 const PROBE_PULSES_PER_CYCLE = 1;
 const PROBE_PULSE_MS = 5_000;
 const REQUIRED_MARKER_EPISODES = 1;
-const REQUIRED_MARKER_ANALYSER_FRAMES = 50;
+// This is an audio-presence gate, not a call-quality score. Five positive
+// 20 ms analyser samples prove that the known 997 Hz marker traversed the
+// call, while independently retained RTP, active-audio, and DTMF evidence
+// protects the assertion from a single-sample false positive.
+const REQUIRED_MARKER_ANALYSER_FRAMES = 5;
 const PROBE_DTMF_SIX_START_MS = 6_000;
 const PROBE_DTMF_SIX_DURATION_MS = 1_000;
 

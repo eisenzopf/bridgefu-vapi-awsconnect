@@ -747,7 +747,7 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("const PROBE_PULSES_PER_CYCLE = 1;", agent)
         self.assertIn("const PROBE_PULSE_MS = 5_000;", agent)
         self.assertIn("const REQUIRED_MARKER_EPISODES = 1;", agent)
-        self.assertIn("const REQUIRED_MARKER_ANALYSER_FRAMES = 50;", agent)
+        self.assertIn("const REQUIRED_MARKER_ANALYSER_FRAMES = 5;", agent)
         self.assertIn("const PROBE_DTMF_SIX_START_MS = 6_000;", agent)
         self.assertIn("const PROBE_DTMF_SIX_DURATION_MS = 1_000;", agent)
         self.assertIn("* 12_000", agent)

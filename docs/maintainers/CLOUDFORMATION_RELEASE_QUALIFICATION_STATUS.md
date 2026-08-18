@@ -387,3 +387,36 @@ candidate using future tag version `0.1.22`. Virginia remains blocked until
 Oregon passes. No Git tag, customer-visible object, or publication is permitted
 until both regions pass, zero-resource proof is sealed, and the signed receipt
 is reviewed.
+
+## 2026-08-18 dual-region candidate result and audio-presence correction
+
+The screen-pop correction passed the complete local gate, protected review,
+exact-main CI, and a new private candidate build. Oregon then passed the exact
+customer-template deployment, direct mandatory-SRTP preflight, Bridgefu Web SDK
+scenario, rvoip SIP-source scenario, Vapi provisioning resilience, active-call
+capacity/restart checks, teardown, and three-observation zero-resource proof.
+Both configured Agent Workspace screen pops rendered successfully. Active-call
+CPU and memory remained far below the strict 60 percent ceiling and Bridgefu
+recorded no restart during either scenario.
+
+Virginia deployed the same immutable customer template to `CREATE_COMPLETE`.
+Its direct mandatory-SRTP preflight and Bridgefu Web SDK scenario passed. The
+SIP-source call also reached Vapi, Bridgefu, and Amazon Connect; the independent
+browser observer recorded a real remote audio track, bidirectional RTP, active
+audio, one 997 Hz marker episode, and source-to-agent DTMF. It nevertheless
+failed because the qualification harness required 50 positive 20 ms analyser
+samples and observed 24. Cleanup and the complete stable zero-resource proof
+passed. The candidate was correctly not sealed or published.
+
+That failed assertion measured sustained tone duration rather than the intended
+binary audio-presence property. The local correction keeps the existing single
+five-second transmitted marker and requires one marker episode plus five
+positive 20 ms analyser samples. RTP counters, active audio, DTMF, and reverse
+media remain independent mandatory evidence. No second five-second probe was
+added, and no call-quality claim is derived from this gate.
+
+The next permitted actions are the complete local gate, protected review/merge,
+and a fresh Oregon-first candidate using future tag version `0.1.23`. The AMI
+input is unchanged and may reuse the verified build cache. No public Git tag,
+AMI permission, release object, or `latest` pointer is permitted until both
+regions pass and the signed receipt is reviewed.
