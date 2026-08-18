@@ -185,6 +185,10 @@ jobs:
             (.source_ami_id | test("^ami-[0-9a-f]{17}$"))' \
             target/ami-build-input-verification.json >/dev/null
           source_base_ami="$(jq -r .source_ami.id image/build-inputs.json)"
+          builder_instance_type="$(jq -r .builder.instance_type image/build-inputs.json)"
+          cargo_build_jobs="$(jq -r .builder.cargo_jobs image/build-inputs.json)"
+          test "$builder_instance_type" = m7g.4xlarge
+          test "$cargo_build_jobs" = 8
           test "$(uname -s)" = Linux
           test "$(uname -m)" = x86_64
           packer_plugin_version="$(jq -r .packer.amazon_plugin_version \
@@ -212,6 +216,8 @@ jobs:
           packer init image/bridgefu.pkr.hcl
           packer validate \
             -var source_ami_id="$source_base_ami" \
+            -var builder_instance_type="$builder_instance_type" \
+            -var cargo_build_jobs="$cargo_build_jobs" \
             -var bridgefu_commit="$bridgefu_commit" \
             -var bridgefu_cargo_lock_sha256="$bridgefu_lock" \
             -var candidate_id=candidate-0.1.0-dev-ci-validation \

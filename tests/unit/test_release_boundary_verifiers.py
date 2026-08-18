@@ -254,6 +254,38 @@ class ReleaseControlPlaneVerifierTests(unittest.TestCase):
                 "123456789012",
             )
 
+    def test_resource_drift_retries_cloudformation_operation_handoff(self):
+        class DriftCli:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def json(self, *arguments: str) -> Any:
+                self.calls += 1
+                self.assert_arguments(arguments)
+                if self.calls < 3:
+                    raise control.ControlPlaneError(
+                        "AWS control-plane read failed: cloudformation "
+                        "detect-stack-resource-drift"
+                    )
+                return {"StackResourceDrift": {"StackResourceDriftStatus": "IN_SYNC"}}
+
+            @staticmethod
+            def assert_arguments(arguments: tuple[str, ...]) -> None:
+                if arguments[:2] != (
+                    "cloudformation",
+                    "detect-stack-resource-drift",
+                ):
+                    raise AssertionError(arguments)
+
+        cli = DriftCli()
+        delays: list[int] = []
+        result = control._detect_resource_drift(
+            cli, "publisher-stack", "RecoveryRole", sleep=delays.append
+        )
+        self.assertEqual(result["StackResourceDriftStatus"], "IN_SYNC")
+        self.assertEqual(cli.calls, 3)
+        self.assertEqual(delays, [5, 5])
+
 
 class QualificationRelationVerifierTests(unittest.TestCase):
     def test_span_and_all_cross_artifact_relations_are_recomputed(self):
@@ -367,9 +399,7 @@ class CandidateReceiptVerifierTests(unittest.TestCase):
             "bridgefu_commit": bridgefu_commit,
             "qualified_at": "2026-08-17T00:02:00Z",
             "workflow": {"run_id": run_id, "run_attempt": run_attempt},
-            "regional_amis": {
-                region: {"ami_id": ami} for region, ami in amis.items()
-            },
+            "regional_amis": {region: {"ami_id": ami} for region, ami in amis.items()},
             "qualification": {},
             "release_objects": [],
         }
@@ -381,9 +411,7 @@ class CandidateReceiptVerifierTests(unittest.TestCase):
             image_hash = hashlib.sha256(ami.encode("ascii")).hexdigest()
             counts = {key: 0 for key in relations.ZERO_RESOURCE_KEYS}
             final_stamp = (
-                "2026-08-17T00:01:10Z"
-                if span_seconds == 60
-                else "2026-08-17T00:01:09Z"
+                "2026-08-17T00:01:10Z" if span_seconds == 60 else "2026-08-17T00:01:09Z"
             )
             proof = {
                 "execution_id": execution,

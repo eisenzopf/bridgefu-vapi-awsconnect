@@ -224,27 +224,29 @@ def exact_route53_records(
             "--start-record-name",
             normalized,
             "--max-items",
-            "100",
+            "1",
         ],
         timeout=120,
     )
     values = (
         response.get("ResourceRecordSets") if isinstance(response, Mapping) else None
     )
-    next_token = response.get("NextToken") if isinstance(response, Mapping) else None
-    if (
-        not isinstance(values, list)
-        or len(values) > 100
-        or next_token not in (None, "")
-    ):
+    if not isinstance(values, list) or len(values) > 1:
         raise SafeguardError("Route53 record inventory is invalid")
     exact: list[dict[str, Any]] = []
     for value in values:
         if not isinstance(value, Mapping):
             raise SafeguardError("Route53 record inventory is invalid")
-        candidate = _dns_name(value.get("Name"))
-        if candidate != normalized:
+        raw_name = value.get("Name")
+        if not isinstance(raw_name, str) or len(raw_name) > 1024:
+            raise SafeguardError("Route53 record inventory is invalid")
+        # Route53 returns the first name at or after StartRecordName. That may
+        # legitimately be an unrelated ACM validation label (leading `_`) or
+        # an escaped wildcard (`\\052`). Compare it with the already-validated
+        # target before applying the stricter host-name parser.
+        if raw_name.rstrip(".").lower() + "." != normalized:
             continue
+        candidate = _dns_name(raw_name)
         record_type = value.get("Type")
         if not isinstance(record_type, str) or not re.fullmatch(
             r"[A-Z0-9]{1,16}", record_type

@@ -16,6 +16,11 @@
     "owner_id": "137112412989",
     "region": "us-west-2"
   },
+  "builder": {
+    "cargo_jobs": 8,
+    "instance_type": "m7g.4xlarge",
+    "vcpu_count": 16
+  },
   "cloudwatch_agent": {
     "gpg_fingerprint": "937616F3450B7D806CBD9725D58167303B789C72",
     "gpg_material_sha256": "eff4d11ce021a8419119e499bf7bc4a2ec6946672ba251f6ebdc3d719e29778e",

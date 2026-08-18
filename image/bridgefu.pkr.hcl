@@ -20,6 +20,22 @@ variable "source_ami_id" {
   }
 }
 
+variable "builder_instance_type" {
+  type = string
+  validation {
+    condition     = var.builder_instance_type == "m7g.4xlarge"
+    error_message = "Builder_instance_type must use the reviewed 16-vCPU builder."
+  }
+}
+
+variable "cargo_build_jobs" {
+  type = number
+  validation {
+    condition     = var.cargo_build_jobs == 8
+    error_message = "Cargo_build_jobs must use the reviewed parallelism."
+  }
+}
+
 variable "bridgefu_repository" {
   type    = string
   default = "https://github.com/eisenzopf/bridgefu.git"
@@ -63,9 +79,9 @@ variable "distribution_repository_commit" {
 
 source "amazon-ebs" "bridgefu_arm64" {
   region = var.aws_region
-  # Give four bounded Cargo jobs 8 GiB each for release linking. This temporary
+  # Give eight bounded Cargo jobs 8 GiB each for release linking. This temporary
   # build instance does not determine the customer runtime instance type.
-  instance_type = "m7g.2xlarge"
+  instance_type = var.builder_instance_type
   ssh_username  = "ec2-user"
   ami_name      = "bridgefu-vapi-awsconnect-${var.release_version}-${formatdate("YYYYMMDDhhmmss", timestamp())}"
 
@@ -132,6 +148,7 @@ build {
       "BRIDGEFU_CARGO_LOCK_SHA256=${var.bridgefu_cargo_lock_sha256}",
       "BRIDGEFU_RELEASE_VERSION=${var.release_version}",
       "BRIDGEFU_SOURCE_AMI_ID=${var.source_ami_id}",
+      "BRIDGEFU_BUILD_JOBS=${var.cargo_build_jobs}",
     ]
   }
 

@@ -38,6 +38,7 @@ class PreflightAws:
         self.account_id = ACCOUNT_ID
         self.private_zone = False
         self.occupied_record_names: set[str] = set()
+        self.next_route53_record_names: dict[str, str] = {}
         self.image_owner_id = ACCOUNT_ID
         self.image_release = RELEASE
         self.offered_zones = {"us-west-2a", "us-west-2b"}
@@ -83,8 +84,20 @@ class PreflightAws:
             }
         if (service, operation) == ("route53", "list-resource-record-sets"):
             name = command[command.index("--start-record-name") + 1]
+            if command[command.index("--max-items") + 1] != "1":
+                raise AssertionError("DNS vacancy lookup must inspect one record")
             if name in self.occupied_record_names:
                 return {"ResourceRecordSets": [{"Name": name, "Type": "A"}]}
+            if name in self.next_route53_record_names:
+                return {
+                    "ResourceRecordSets": [
+                        {
+                            "Name": self.next_route53_record_names[name],
+                            "Type": "CNAME",
+                        }
+                    ],
+                    "NextToken": "opaque-safe-pagination-token",
+                }
             return {"ResourceRecordSets": []}
         if (service, operation) == ("ec2", "describe-images"):
             return {
@@ -183,6 +196,75 @@ def run_preflight(
         instance_type=INSTANCE_TYPE,
         resolve_ns=resolver,
     )
+
+
+class Route53RecordAws:
+    def __init__(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        next_page_marker: str | None = None,
+    ):
+        self.records = records
+        self.next_page_marker = next_page_marker
+        self.command: list[str] | None = None
+
+    def json(self, command: list[str], timeout: int | None = None) -> dict[str, Any]:
+        del timeout
+        self.command = command
+        result: dict[str, Any] = {"ResourceRecordSets": copy.deepcopy(self.records)}
+        if self.next_page_marker is not None:
+            result["NextToken"] = self.next_page_marker
+        return result
+
+
+class Route53VacancyTests(unittest.TestCase):
+    def test_unrelated_acm_validation_record_does_not_invalidate_vacancy(self) -> None:
+        aws = Route53RecordAws(
+            [
+                {
+                    "Name": "_249e3f07bf33c5327ff0df02a46c3eec.kb.example.com.",
+                    "Type": "CNAME",
+                }
+            ],
+            next_page_marker="opaque-safe-pagination-marker",
+        )
+
+        self.assertEqual(
+            safeguards.exact_route53_records(
+                aws, HOSTED_ZONE_ID, "bfq-test.example.com"
+            ),
+            [],
+        )
+        self.assertIsNotNone(aws.command)
+        command = aws.command or []
+        self.assertEqual(command[command.index("--max-items") + 1], "1")
+
+    def test_unrelated_escaped_wildcard_does_not_invalidate_vacancy(self) -> None:
+        aws = Route53RecordAws(
+            [{"Name": r"\052.preview.example.com.", "Type": "A"}],
+            next_page_marker="opaque-safe-pagination-marker",
+        )
+
+        self.assertEqual(
+            safeguards.exact_route53_records(
+                aws, HOSTED_ZONE_ID, "bfq-test.example.com"
+            ),
+            [],
+        )
+
+    def test_exact_record_is_reported_occupied(self) -> None:
+        aws = Route53RecordAws(
+            [{"Name": "BFQ-Test.Example.Com.", "Type": "AAAA"}],
+            next_page_marker="opaque-safe-pagination-marker",
+        )
+
+        self.assertEqual(
+            safeguards.exact_route53_records(
+                aws, HOSTED_ZONE_ID, "bfq-test.example.com"
+            ),
+            [{"name": "bfq-test.example.com.", "type": "AAAA"}],
+        )
 
 
 class TelemetryAws:

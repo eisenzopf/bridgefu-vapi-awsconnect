@@ -293,8 +293,11 @@ class QualificationAssetTests(unittest.TestCase):
     def test_image_build_has_memory_headroom_and_bounded_cargo_jobs(self):
         packer = (ROOT / "image" / "bridgefu.pkr.hcl").read_text()
         install = (ROOT / "image" / "install.sh").read_text()
-        self.assertIn('instance_type = "m7g.2xlarge"', packer)
-        self.assertIn("cargo build --locked --release --jobs 4 --bin bridgefu", install)
+        self.assertIn("instance_type = var.builder_instance_type", packer)
+        self.assertIn(
+            'cargo build --locked --release --jobs "$BRIDGEFU_BUILD_JOBS"', install
+        )
+        self.assertIn("BRIDGEFU_BUILD_JOBS < 8", install)
 
     def test_certificate_passphrase_preserves_exact_secret_bytes(self):
         refresh = (ROOT / "image" / "runtime" / "bridgefu-cert-refresh").read_text()
