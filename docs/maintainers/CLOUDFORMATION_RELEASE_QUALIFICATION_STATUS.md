@@ -25,10 +25,12 @@ Last updated: 2026-08-17 (America/Los_Angeles)
 
 ## Current summary
 
-The prior candidates are retired. The latest `0.1.22` attempt passed the repaired
-release-control IAM boundary and compiled the exact Bridgefu v0.9.0/rvoip 0.3.8
-runtime, but failed before AMI creation while verifying the pinned CloudWatch
-Agent package. Neither regional qualification ran. Recovery completed.
+The prior private candidates are retired; none created a `v0.1.22` Git tag or a
+GitHub Release. The latest candidate `0.1.22` attempt passed the repaired
+release-control IAM and CloudWatch Agent boundaries, compiled the exact Bridgefu
+v0.9.0/rvoip 0.3.8 runtime, and produced private AMIs in both regions. It then
+stopped in the Oregon read-only DNS-vacancy preflight before creating a
+qualification stack. Recovery removed the candidate AMIs and object versions.
 
 Both retained Oregon smoke paths had already passed on the Bridgefu/rvoip 0.3.8
 runtime before those candidate-control failures:
@@ -41,15 +43,14 @@ Bridgefu Web SDK → Vapi → Bridgefu → Amazon Connect
 Those retained passes are diagnostic evidence, not a substitute for fresh,
 immutable, two-region release qualification.
 
-Work is stopped at the failed AMI-build gate. The exact cause is reproduced on
-the ARM64 Amazon Linux 2023 build OS: `gnupg2-minimal` provides `gpg` but omits
-`gpg-agent`; importing the pinned public key imports it and then exits 2 when the
-missing agent cannot start. `set -e` stopped provisioning, while stderr
-redirection hid the diagnostic. The local correction uses the same minimal
-package to dearmor the SHA-pinned public key and verifies the detached signature
-through an explicit keyring with `--no-autostart`. That exact flow passes on the
-build OS, and the complete local preflight passes on the corrected tree. The fix
-must still pass protected-main CI before another candidate is permitted.
+The DNS-vacancy defect, the bounded CloudFormation drift-detection handoff, the
+16-vCPU immutable builder, exact Rust caches, and private content-addressed AMI
+cache are merged through protected `main`. Exact-main CI passed all four checks
+and saved the default-branch qualification cache. Candidate version `0.1.22` is
+vacant, no qualification mutation is active, and obsolete diagnostic resources
+found during the final inventory were removed and proved absent. The release is
+therefore at the pre-candidate boundary, not yet at a release or publication
+boundary.
 
 ## Exact source under evaluation
 
@@ -67,7 +68,7 @@ must still pass protected-main CI before another candidate is permitted.
 
 - Repository: `bridgefu-vapi-awsconnect`
 - Current protected-main release-control commit:
-  `135a78d50039de4c5126b471c5e18caef0000b80`
+  `d76c9016802c135dd6f7f93cd5cb8a2898aa8900`
 - Target branch: `origin/main`
 - Next eligible version: `0.1.22`, only after every pre-candidate gate below
   passes and the exact audited commit is merged to `origin/main`.
@@ -79,7 +80,7 @@ must still pass protected-main CI before another candidate is permitted.
 | Recipe-first reconciliation | PASSED | Applicable safeguards are preserved and obsolete branch scope is explicitly rejected |
 | Secret and repository hygiene | PASSED | History, working-tree, and exact staged-source scans pass with only reviewed synthetic test fixtures |
 | Local contract and static gates | PASSED | Complete fail-closed preflight passed on the final combined worktree |
-| Exact merged-main CI | PASSED | All four required checks passed on current protected-main commit `135a78d50039de4c5126b471c5e18caef0000b80` |
+| Exact merged-main CI | PASSED | All four required checks passed on current protected-main commit `d76c9016802c135dd6f7f93cd5cb8a2898aa8900` |
 | Retained diagnostic cleanup | PASSED | The exact Oregon `TestDelete` root is absent and its Vapi, ACM, S3, and direct resource checks pass |
 | Persistent IAM control plane | PASSED | Reviewed, no-replacement role-stack changes deployed and reverified |
 | Exact remote template validation | PASSED | All ten exact rendered templates passed AWS validation in both supported regions (20/20) |
@@ -264,16 +265,17 @@ AWS authority.
 
 ## Remaining path to the customer template
 
-1. Merge the Route 53 vacancy, bounded drift-retry, and faster immutable-builder
-   corrections through protected `main` and require exact-commit CI.
-2. Reconfirm failed-candidate cleanup and start one new private candidate from
-   the exact merged commit.
-3. Qualify Oregon, destroy it, and prove stable zero resources.
-4. Qualify Virginia with the same immutable bits, destroy it, and prove stable
+1. Start one new private candidate from exact protected-main commit
+   `d76c9016802c135dd6f7f93cd5cb8a2898aa8900`, using future tag version input
+   `0.1.22`. This is not a Git tag or GitHub Release.
+2. Qualify Oregon, destroy it, and prove stable zero resources.
+3. Qualify Virginia with the same immutable bits, destroy it, and prove stable
    zero resources.
-5. Seal and review the signed receipt.
-6. Tag the exact qualified commit and approve publication.
-7. Publish public AMI/snapshot permissions and immutable release objects, then
+4. Seal and review the signed receipt.
+5. Only after both regions pass, create Git tag `v0.1.22` on the exact qualified
+   commit and approve publication. The newest existing Git tag remains
+   `v0.1.13`; the repository currently has no GitHub Release objects.
+6. Publish public AMI/snapshot permissions and immutable release objects, then
    update `latest` pointers last.
 
 ## Historical conclusions retained without live identifiers
@@ -295,20 +297,28 @@ AWS authority.
 
 ## Next permitted action
 
-The Route 53 vacancy, bounded drift-retry, and 16-vCPU builder patch is merged
-through protected `main` and all four exact-commit checks passed. The follow-up
-speed branch is still local and unqualified. It adds exact compiler/Cargo-lock
-caches for the Rust qualification clients and a private content-addressed AMI
-build cache. The AMI cache hashes every image input, the exact Bridgefu lock, and
-the release version; a cache hit is accepted only when the self-owned AMI and
-snapshot are unique, private, and exactly tagged. Every candidate still receives
-fresh candidate-owned AMI copies, so cache objects cannot be sealed or
-published. Expired cache entries are reaped after 14 days under the shared
-qualification mutation mutex and only after exact ownership/private-permission
-validation.
+The Route 53 vacancy, bounded drift-retry, 16-vCPU builder, exact Rust caches,
+and private content-addressed AMI build cache are merged through protected
+`main` at `d76c9016802c135dd6f7f93cd5cb8a2898aa8900`. All four exact-commit checks
+passed. The default-branch qualification cache was written successfully, so the
+candidate workflow can restore the exact compiler/Cargo-lock-bound native and
+static artifacts. The AMI cache hashes every image input, the exact Bridgefu
+lock, and the future release version; a cache hit is accepted only when the
+self-owned AMI and snapshot are unique, private, and exactly tagged. Every
+candidate still receives fresh candidate-owned AMI copies, so cache objects
+cannot be sealed or published. Expired cache entries are reaped after 14 days
+under the shared qualification mutation mutex and only after exact
+ownership/private-permission validation.
 
-Run the complete local gate for the speed branch, merge it through protected
-`main`, and require all exact-commit checks. Then reconfirm version vacancy and
-zero active mutation before starting the next Oregon-first candidate. No
-regional qualification or publication is permitted until those exact bits pass
-the Oregon gate.
+Read-only AWS inspection reconfirmed that future tag version `0.1.22` has no
+release object versions or AMIs, no qualification stack or Connect instance is
+active, and the persistent publisher/qualification contract versions match
+source and the protected GitHub environment bindings. One inert orphaned nested
+review stack and one obsolete private two-region diagnostic AMI/snapshot pair
+were removed; exact follow-up inspection proved them absent. There is no
+`v0.1.22` tag yet and no GitHub Release object.
+
+The next permitted action is one Oregon-first private candidate using future tag
+version input `0.1.22` from the exact protected-main commit. No Git tag,
+customer-visible object, or publication is permitted until Oregon and Virginia
+both pass, zero-resource proof is sealed, and the signed receipt is reviewed.
