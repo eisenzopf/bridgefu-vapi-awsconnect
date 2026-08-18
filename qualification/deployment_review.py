@@ -340,8 +340,15 @@ def _verify_root_invocation(
         or description.get("OnStackFailure") != expected["on_stack_failure"]
         or description.get("IncludeNestedStacks") != expected["include_nested_stacks"]
         or notification_arns != expected["notification_arns"]
-        or description.get("ImportExistingResources", False)
-        != expected["import_existing_resources"]
+        # AWS currently serializes an omitted false ImportExistingResources
+        # request as JSON null in DescribeChangeSet.  Bind the only two
+        # semantically false service-model shapes and continue rejecting true
+        # or any other value.
+        or (
+            description.get("ImportExistingResources") is not None
+            and description.get("ImportExistingResources") is not False
+        )
+        or expected["import_existing_resources"] is not False
         or not rollback_is_empty
         or description.get("Description") not in (None, "")
     ):

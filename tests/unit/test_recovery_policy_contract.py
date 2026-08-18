@@ -125,6 +125,12 @@ CLI_ACTIONS = {
     ("acm", "describe-certificate"): {"acm:DescribeCertificate"},
     ("acm", "list-tags-for-certificate"): {"acm:ListTagsForCertificate"},
     ("cloudformation", "delete-stack"): {"cloudformation:DeleteStack"},
+    ("cloudformation", "delete-change-set"): {
+        "cloudformation:DeleteChangeSet"
+    },
+    ("cloudformation", "describe-change-set"): {
+        "cloudformation:DescribeChangeSet"
+    },
     ("cloudformation", "describe-stacks"): {"cloudformation:DescribeStacks"},
     ("cloudformation", "list-stack-resources"): {"cloudformation:ListStackResources"},
     ("cloudformation", "wait"): {"cloudformation:DescribeStacks"},
@@ -1269,8 +1275,11 @@ fi
         self.assertNotIn("if discover_and_journal_exact_stack_acm_records", caller)
         self.assertIn("run_strict load_exact_acm_validation_journal", caller)
         self.assertIn("run_strict discover_and_journal_exact_stack_acm_records", caller)
+        self.assertIn("run_strict delete_exact_unexecuted_review", caller)
+        self.assertIn('if [[ "$stack_status" = REVIEW_IN_PROGRESS ]]', caller)
         self.assertIn("3|4) ;;", caller)
-        self.assertIn("CREATE_IN_PROGRESS|REVIEW_IN_PROGRESS)", caller)
+        self.assertIn("CREATE_IN_PROGRESS)", caller)
+        self.assertNotIn("CREATE_IN_PROGRESS|REVIEW_IN_PROGRESS)", caller)
         self.assertIn(
             "CREATE_FAILED|ROLLBACK_COMPLETE|ROLLBACK_FAILED|DELETE_FAILED)\n"
             '                      test "$strict_status" = 3',
@@ -1306,9 +1315,81 @@ aws() {{
 run_strict describe_stack_exact us-west-2 bridgefu-bfq-w-test-1 stack.json
 test "$strict_status" = 3
 """
-        completed = subprocess.run(
-            ["bash"], input=program, text=True, capture_output=True, check=False
+        with tempfile.TemporaryDirectory() as directory:
+            completed = subprocess.run(
+                ["bash"],
+                input=program,
+                text=True,
+                capture_output=True,
+                check=False,
+                cwd=directory,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_unexecuted_review_cleanup_deletes_change_set_then_empty_root_shell(self):
+        source = QUALIFICATION_REAPER_PATH.read_text()
+        function = source.split("delete_exact_unexecuted_review() {", 1)[1].split(
+            "for pair in us-west-2:w us-east-1:e; do", 1
+        )[0]
+        stack_id = (
+            "arn:aws:cloudformation:us-west-2:123456789012:stack/"
+            "bridgefu-bfq-w-test-1/00000000-0000-4000-8000-000000000001"
         )
+        change_set_id = (
+            "arn:aws:cloudformation:us-west-2:123456789012:changeSet/"
+            "bridgefu-bfq-w-test-1-review/00000000-0000-4000-8000-000000000002"
+        )
+        program = f"""set -euo pipefail
+account_id=123456789012
+descriptions=0
+delete_exact_unexecuted_review() {{{function}
+run_with_recovery_deadline() {{ "$@"; }}
+aws() {{
+  printf '%s\\n' "$*" >>calls.log
+  case "$1 $2" in
+    'cloudformation list-stack-resources')
+      printf '%s\\n' '{{"StackResourceSummaries":[]}}'
+      ;;
+    'cloudformation describe-change-set')
+      descriptions="$((descriptions + 1))"
+      if [[ "$descriptions" = 1 ]]; then
+        printf '%s\\n' '{json.dumps({
+            "ChangeSetId": change_set_id,
+            "ChangeSetName": "bridgefu-bfq-w-test-1-review",
+            "StackId": stack_id,
+            "ParentChangeSetId": None,
+            "RootChangeSetId": None,
+            "IncludeNestedStacks": True,
+            "Status": "CREATE_COMPLETE",
+            "ExecutionStatus": "AVAILABLE",
+        }, separators=(",", ":"))}'
+      else
+        printf '%s\\n' 'aws: [ERROR]: An error occurred (ChangeSetNotFoundException) when calling the DescribeChangeSet operation: ChangeSet [{change_set_id}] does not exist' >&2
+        return 254
+      fi
+      ;;
+    'cloudformation delete-change-set'|'cloudformation delete-stack') ;;
+    'cloudformation wait') ;;
+    *) return 97 ;;
+  esac
+}}
+cat >stack.json <<'JSON'
+{{"Stacks":[{{"StackName":"bridgefu-bfq-w-test-1","StackStatus":"REVIEW_IN_PROGRESS","StackId":"{stack_id}"}}]}}
+JSON
+delete_exact_unexecuted_review us-west-2 bfq-w-test-1 stack.json
+grep -Fx 'cloudformation delete-change-set --region us-west-2 --change-set-name {change_set_id}' calls.log
+grep -Fx 'cloudformation delete-stack --region us-west-2 --stack-name {stack_id}' calls.log
+grep -Fx 'cloudformation wait stack-delete-complete --region us-west-2 --stack-name {stack_id}' calls.log
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            completed = subprocess.run(
+                ["bash"],
+                input=program,
+                text=True,
+                capture_output=True,
+                check=False,
+                cwd=directory,
+            )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_incomplete_acm_metadata_is_retryable_but_conflicts_are_not(self):

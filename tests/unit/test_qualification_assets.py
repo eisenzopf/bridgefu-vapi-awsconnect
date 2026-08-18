@@ -401,7 +401,9 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("release/verify_release_buckets.py", candidate)
         verifier = (ROOT / "release" / "verify_release_control_plane.py").read_text()
         self.assertIn("PublisherPolicyContractVersion", verifier)
-        self.assertIn("2026-08-17-bound-release-control-plane-v6", verifier)
+        self.assertIn(
+            "2026-08-18-review-normalization-and-cleanup-v7", verifier
+        )
         self.assertIn("QualificationPolicyContractVersion", verifier)
         self.assertIn("2026-08-17-bound-qualification-control-plane-v4", verifier)
         self.assertIn('"cloudformation",\n        "get-template"', verifier)
