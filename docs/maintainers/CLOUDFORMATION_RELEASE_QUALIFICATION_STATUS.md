@@ -444,3 +444,29 @@ already-proven reverse detector, and three consecutive 20 ms observations are
 still mandatory. Closed numeric maximums are included only in failure output so
 a future miss is diagnosable without audio, SIP targets, or customer data. This
 does not measure audio fidelity or call quality.
+
+## 2026-08-18 v0.1.24 Oregon Agent Workspace keypad regression
+
+The DTMF-presence correction passed the complete local gate, protected review,
+merge, exact-main CI, candidate build, immutable template staging, and both-region
+remote template validation. Oregon deployed the exact customer template to
+`CREATE_COMPLETE`, passed the direct mandatory-SRTP preflight, and entered the
+Bridgefu Web SDK scenario. Before attempting the reverse DTMF control, the Agent
+Workspace observer had already proved a remote audio track, bidirectional RTP,
+the single five-second source marker, active audio, and source-to-agent DTMF.
+
+The run then failed only while sending agent-to-source DTMF. The current harness
+called the Connect Streams API first and, after that failed, searched for a
+number-pad iframe that Agent Workspace does not attach until its keypad control
+is opened. The earlier recipe-first live harness contained the proven sequence:
+open the keypad, click the nested digit, then use Streams only as a fallback.
+That operational learning was not preserved when the stricter reverse-DTMF gate
+was added to this repository. Cleanup succeeded and all three stable
+zero-resource observations reported every resource class absent.
+
+The local correction restores the proven keypad-first sequence before the media
+wait. The Streams fallback now reports only a closed non-sensitive result
+category (`unavailable`, connection state, rejection, timeout, throw, or sent)
+instead of discarding every failure reason. The media gate remains presence-only:
+one five-second marker, one one-second source DTMF interval, RTP in both
+directions, and no audio-quality claim.
