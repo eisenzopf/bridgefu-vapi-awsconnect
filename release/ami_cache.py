@@ -192,7 +192,11 @@ def verify_cache(
     ):
         raise AmiCacheError("cache snapshot shape is invalid")
     snapshot_tags = _tags(snapshot.get("Tags"), "cache snapshot")
-    if snapshot_tags != expected_tags:
+    # Packer propagates the AMI Name tag to the backing snapshot even when the
+    # explicit snapshot_tags map contains only the shared ownership tags. Bind
+    # that deterministic name just as strictly as the AMI name instead of
+    # rejecting the real AWS response shape.
+    if snapshot_tags != {**expected_tags, "Name": expected_name}:
         raise AmiCacheError("cache snapshot tags do not match the content identity")
     if snapshot_permissions.get("CreateVolumePermissions") != []:
         raise AmiCacheError("cache snapshot is not private")

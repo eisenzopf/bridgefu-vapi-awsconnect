@@ -60,7 +60,9 @@ class AmiCacheTests(unittest.TestCase):
                     "OwnerId": account,
                     "State": "completed",
                     "Encrypted": False,
-                    "Tags": tags[1:],
+                    # Packer propagates the deterministic AMI Name tag onto the
+                    # EBS snapshot in addition to snapshot_tags.
+                    "Tags": tags,
                 }
             ]
         }
@@ -118,6 +120,21 @@ class AmiCacheTests(unittest.TestCase):
         self.assertTrue(result["verified"])
         self.assertTrue(result["private"])
         self.assertEqual(result["ami_id"], "ami-0123456789abcdef0")
+
+    def test_snapshot_requires_the_packer_propagated_deterministic_name(self):
+        missing = self.cache_documents()
+        missing["snapshot_document"]["Snapshots"][0]["Tags"] = [
+            tag
+            for tag in missing["snapshot_document"]["Snapshots"][0]["Tags"]
+            if tag["Key"] != "Name"
+        ]
+        changed = self.cache_documents()
+        for tag in changed["snapshot_document"]["Snapshots"][0]["Tags"]:
+            if tag["Key"] == "Name":
+                tag["Value"] = "bridgefu-vapi-awsconnect-build-wrong"
+        for value in (missing, changed):
+            with self.subTest(value=value), self.assertRaises(SUBJECT.AmiCacheError):
+                SUBJECT.verify_cache(**value)
 
     def test_public_foreign_or_candidate_cache_is_rejected(self):
         cases = []
