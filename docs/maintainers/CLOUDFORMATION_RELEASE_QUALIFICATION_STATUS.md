@@ -299,11 +299,11 @@ AWS authority.
 
 ## Remaining path to the customer template
 
-1. Merge the qualification Web-media IAM correction through protected `main`,
-   update the persistent qualification-role stack through a reviewed
-   no-execute change set, and re-run the exact deployed control-plane verifier.
-2. Start one new private candidate from that exact protected-main commit using
-   future tag version input `0.1.22`. This is not a Git tag or GitHub Release.
+1. Merge the generated Agent Workspace view-contract correction through
+   protected `main` and require exact-main CI.
+2. Verify recovery removed the failed private candidate, then start one new
+   private candidate from that exact protected-main commit using future tag
+   version input `0.1.22`. This is not a Git tag or GitHub Release.
 3. Qualify Oregon, destroy it, and prove stable zero resources.
 4. Qualify Virginia with the same immutable bits, destroy it, and prove stable
    zero resources.
@@ -346,13 +346,10 @@ authenticated and Available, and the direct mandatory-SRTP probe proved
 SIPS/TLS, `RTP/SAVP`, SDES-SRTP contexts, audio, DTMF, ACK/BYE, and clean
 runtime restoration.
 
-The direct observer nevertheless failed because the probe's deterministic
-marker ended after 12 seconds. Amazon Connect connected the agent roughly one
-second before the probe sent BYE, leaving insufficient established-media time
-for Chromium to observe the remote marker and outbound RTP. The product did not
-restart or fail secure negotiation. The local correction keeps the marker on
-the wire for a bounded 32 seconds and sends DTMF and BYE afterward; its Rust and
-Python contracts pass.
+The earlier direct observer failure was corrected by extending the deterministic
+marker window from 12 to 32 seconds. The next Oregon run passed the complete
+direct mandatory-SRTP preflight and advanced into the Web scenario, proving the
+timing correction and secure product path.
 
 Cleanup deleted the full stack and all owned resources, but stable zero proof
 then hit a second qualification defect. The vacancy helper applied ordinary
@@ -365,10 +362,28 @@ including all CloudFormation-owned resources, Vapi, S3 versions, Route53, and
 tagged-resource checks, now returns exactly zero live resources. Future stable
 proof failures also report only a fixed non-sensitive subsystem category.
 
-The automatic recovery workflow completed successfully and removed the failed
-private candidate. The next permitted actions are to merge these two
-qualification-harness corrections through protected main, require exact-main
-CI, and launch one new Oregon-first private candidate using future tag version
-`0.1.22`. Virginia remains blocked until Oregon passes. No Git tag,
-customer-visible object, or publication is permitted until both regions pass,
-zero-resource proof is sealed, and the signed receipt is reviewed.
+That later Oregon run failed at the exact Agent Workspace screen-pop assertion.
+The complete customer stack was `CREATE_COMPLETE`, the direct secure preflight
+passed, and cleanup plus three stable zero-resource observations passed; no
+candidate resources were retained. The failure artifact did not preserve which
+heading/context/field assertion was missing, which is itself a qualification
+observability defect.
+
+The pre-deployment source audit found that Configuration embedded dynamic
+`$.Attributes.screen_pop_label_N` references inside HTML `TemplateString`
+markup even though field labels are immutable deployment configuration. The
+existing unit test explicitly required that risky token, so it approved source
+syntax rather than the rendered Agent Workspace contract. The local correction
+renders HTML-escaped configured labels literally, retains dynamic references
+only for per-contact values, and validates the full generated Connect flow.
+The browser observer now preserves a private screenshot and fixed booleans for
+heading, context-true/context-false, and each ordered field on failure, without
+logging field values. Focused Python, Node syntax, Ruff, and diff checks pass;
+the complete gate and protected-main merge remain pending.
+
+The next permitted actions are the full local pre-deployment gate, protected
+main review/merge, recovery verification, and one new Oregon-first private
+candidate using future tag version `0.1.22`. Virginia remains blocked until
+Oregon passes. No Git tag, customer-visible object, or publication is permitted
+until both regions pass, zero-resource proof is sealed, and the signed receipt
+is reviewed.

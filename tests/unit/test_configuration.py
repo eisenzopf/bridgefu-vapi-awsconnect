@@ -95,8 +95,14 @@ class ConfigurationTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"AWS_REGION": "us-west-2"}):
             result = handler.render(self.properties(), boto3_module=FakeBoto3())
         self.assertEqual(result["FieldCount"], "1")
-        self.assertIn("screen_pop_label_1", result["AgentGuideTemplateString"])
-        self.assertNotIn("screen_pop_label_2", result["AgentGuideTemplateString"])
+        self.assertEqual(
+            result["AgentGuideTemplateString"],
+            "<p><strong>Department:</strong> "
+            "$.Attributes.screen_pop_value_1</p>",
+        )
+        self.assertNotIn(
+            "$.Attributes.screen_pop_label_", result["AgentGuideTemplateString"]
+        )
         self.assertEqual(result["RoutingFieldKey"], "department")
         self.assertEqual(result["RoutingNextAction"], "choose-reviewed-route")
         decision = json.loads(result["RoutingDecisionActionJson"][1:])
@@ -105,6 +111,29 @@ class ConfigurationTests(unittest.TestCase):
         transfer = json.loads(result["RoutingTransferActionsJson"][1:])
         self.assertEqual(transfer["Identifier"], "transfer-to-route-1")
         self.assertIn("billing-flow", transfer["Parameters"]["ContactFlowId"])
+
+    def test_agent_guide_renders_escaped_static_labels_and_dynamic_values(self):
+        properties = self.properties()
+        properties["ScreenPopFieldsJson"] = json.dumps(
+            [
+                {
+                    "key": "department",
+                    "label": 'Sales \\ Returns & "Support"',
+                    "description": "Selected department",
+                    "type": "text",
+                    "max_length": 128,
+                    "required": True,
+                }
+            ]
+        )
+        properties["RoutingJson"] = "{}"
+        with mock.patch.dict(os.environ, {"AWS_REGION": "us-west-2"}):
+            result = handler.render(properties, boto3_module=FakeBoto3())
+        self.assertEqual(
+            result["AgentGuideTemplateString"],
+            "<p><strong>Sales \\\\ Returns &amp; &quot;Support&quot;:</strong> "
+            "$.Attributes.screen_pop_value_1</p>",
+        )
 
     def test_no_routing_bypasses_the_compare_action(self):
         properties = self.properties()

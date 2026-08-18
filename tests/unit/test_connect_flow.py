@@ -18,6 +18,24 @@ def wrapper_source() -> str:
     return textwrap.dedent(block)
 
 
+def guide_source() -> str:
+    text = CONNECT_TEMPLATE.read_text()
+    resource = text.split("  AgentGuideFlow:\n", 1)[1]
+    block = resource.split("      Content: !Sub |\n", 1)[1].split(
+        "\n      Tags:\n", 1
+    )[0]
+    return textwrap.dedent(block)
+
+
+def render_guide(agent_guide_template: str) -> dict:
+    content = guide_source().replace(
+        "${AgentGuideTemplateString}", agent_guide_template
+    )
+    if "${" in content:
+        raise AssertionError("agent guide contains an unresolved substitution")
+    return json.loads(content)
+
+
 def render_wrapper(
     *, next_action: str, decision_action: str = "", transfer_actions: str = ""
 ) -> dict:
@@ -61,6 +79,30 @@ def assert_action_graph(test: unittest.TestCase, document: dict) -> dict:
 
 
 class ConnectFlowContractTests(unittest.TestCase):
+    def test_agent_guide_embeds_literal_labels_and_runtime_value_references(self):
+        encoded_rows = (
+            "<p><strong>Customer:</strong> "
+            "$.Attributes.screen_pop_value_1</p>"
+            "<p><strong>Issue \\\\ summary:</strong> "
+            "$.Attributes.screen_pop_value_2</p>"
+        )
+        document = render_guide(encoded_rows)
+        actions = assert_action_graph(self, document)
+        view_data = actions["show-context"]["Parameters"]["ViewData"]
+        self.assertEqual(view_data["Heading"], "Bridgefu caller context")
+        self.assertEqual(
+            view_data["Sections"][0]["TemplateString"],
+            encoded_rows.replace("\\\\", "\\"),
+        )
+        self.assertNotIn(
+            "$.Attributes.screen_pop_label_",
+            view_data["Sections"][0]["TemplateString"],
+        )
+        self.assertIn(
+            "$.Attributes.context_available",
+            view_data["Sections"][1]["TemplateString"],
+        )
+
     def test_default_wrapper_is_a_complete_non_routed_flow(self):
         document = render_wrapper(next_action="transfer-to-customer-flow")
         actions = assert_action_graph(self, document)

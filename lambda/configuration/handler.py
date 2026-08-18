@@ -230,15 +230,23 @@ def render(properties, *, boto3_module=None):
         account,
         connect,
     )
+    # Labels are immutable deployment configuration, so render them literally.
+    # Connect resolves the value references at contact time. Keeping a JSONPath
+    # expression out of the HTML label also gives the pre-deployment renderer an
+    # exact, testable Agent Workspace contract.
     rows = "".join(
-        "<p><strong>$.Attributes.screen_pop_label_"
-        f"{index}:</strong> $.Attributes.screen_pop_value_{index}</p>"
-        for index, _field in enumerate(fields, 1)
+        f"<p><strong>{html.escape(field.label, quote=True)}:</strong> "
+        f"$.Attributes.screen_pop_value_{index}</p>"
+        for index, field in enumerate(fields, 1)
     )
-    if len(rows) > 4096:
+    # The nested Connect template substitutes this value inside a JSON string.
+    # Strip only json.dumps' outer quotes so a configured backslash cannot
+    # change or invalidate the generated contact-flow document.
+    encoded_rows = json.dumps(rows, ensure_ascii=False)[1:-1]
+    if len(encoded_rows) > 4096:
         raise ConfigurationError("agent_guide_too_large")
     return {
-        "AgentGuideTemplateString": rows,
+        "AgentGuideTemplateString": encoded_rows,
         "RoutingFieldKey": routing_key,
         "RoutingNextAction": next_action,
         "RoutingDecisionActionJson": decision_action,
