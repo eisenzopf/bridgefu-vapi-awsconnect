@@ -45,8 +45,13 @@ fi
 
 rustc --version
 cargo --version
+if [[ ! "${BRIDGEFU_BUILD_JOBS:-}" =~ ^[0-9]+$ ]] ||
+  ((BRIDGEFU_BUILD_JOBS < 8 || BRIDGEFU_BUILD_JOBS > 16)); then
+  echo "Bridgefu build parallelism is invalid" >&2
+  exit 1
+fi
 (cd "$build_root/bridgefu" && \
-  cargo build --locked --release --jobs 4 --bin bridgefu)
+  cargo build --locked --release --jobs "$BRIDGEFU_BUILD_JOBS" --bin bridgefu)
 sudo install -o root -g root -m 0755 \
   "$build_root/bridgefu/target/release/bridgefu" /usr/local/bin/bridgefu
 ldd /usr/local/bin/bridgefu | grep -Eq 'libopus\.so\.[0-9]+ => /'

@@ -133,6 +133,28 @@ Local gate evidence on 2026-08-17:
   no-autostart keyring validates the same key fingerprint and detached signature.
   Packer created no AMI and cleaned its source instance, temporary security
   group, and key pair; the release reaper completed successfully.
+- the CloudWatch Agent correction subsequently passed exact-main CI and a fresh
+  candidate produced available private AMIs in both regions, proving the image
+  build and regional copy boundary;
+- Oregon then stopped in read-only DNS preflight before creating a qualification
+  stack. The vacancy query requested 100 Route 53 records and applied the strict
+  ordinary-hostname parser to every later record before comparing its name.
+  Valid unrelated ACM validation labels beginning with `_` and Route 53's
+  escaped wildcard labels therefore caused the generic `DNS name is invalid`
+  failure. The corrected query reads only the first ordered record and compares
+  its bounded raw Route 53 name with the already-validated target before strict
+  parsing. Exact-match, ACM-label, escaped-wildcard, and pagination regressions
+  cover the boundary;
+- failed-candidate recovery removed the two private AMIs and candidate objects.
+  Its qualification no-op job independently exposed a transient CloudFormation
+  drift-detection handoff: a preceding control-plane inspection temporarily made
+  the stack unavailable for another resource drift request. The verifier now
+  retries that bounded AWS state rather than treating its first occurrence as a
+  permanent cleanup failure.
+- the temporary Packer builder is increased from the minimum eight-vCPU
+  `m7g.2xlarge` to a pinned 16-vCPU/64-GiB `m7g.4xlarge`, with eight bounded Cargo
+  jobs. This affects build time only; the customer runtime remains the reviewed
+  `c7g.2xlarge`.
 
 ## Audit safeguards incorporated in the worktree
 
@@ -242,9 +264,10 @@ AWS authority.
 
 ## Remaining path to the customer template
 
-1. Merge the small readiness-ledger and deterministic bucket-verifier follow-up
-   through the now-protected `main` branch and require exact-commit CI.
-2. Start one new private candidate from the exact merged commit.
+1. Merge the Route 53 vacancy, bounded drift-retry, and faster immutable-builder
+   corrections through protected `main` and require exact-commit CI.
+2. Reconfirm failed-candidate cleanup and start one new private candidate from
+   the exact merged commit.
 3. Qualify Oregon, destroy it, and prove stable zero resources.
 4. Qualify Virginia with the same immutable bits, destroy it, and prove stable
    zero resources.
@@ -265,14 +288,16 @@ AWS authority.
 - CloudWatch-first evidence collection, database reset per scenario, deterministic
   speech input, agent availability, screen pop, bidirectional audio, DTMF, and
   hangup checks were established during retained debugging.
-- The two most recent candidate failures occurred at release-control boundaries,
+- The recent candidate failures occurred at release-control boundaries,
   before a fresh customer-stack smoke qualification could disprove the product.
 - Recovery completed and independent checks found no resources from those failed
   candidates. Exact proof remains in private evidence, not this public ledger.
 
 ## Next permitted action
 
-Merge the locally passing CloudWatch Agent verification correction through
-protected `main` and require all four exact-commit checks. Reconfirm version
-vacancy and zero active mutation, then start one fresh private `0.1.22` candidate.
-No regional qualification or publication is permitted until that AMI gate passes.
+Run the complete local gate for the Route 53, drift-retry, and larger-builder
+patch; merge it through protected `main`; require all exact-commit checks; then
+reconfirm version vacancy and zero active mutation. Because recovery correctly
+deleted the prior private AMIs, the next official candidate must create new ones.
+No regional qualification or publication is permitted until those exact bits
+pass the Oregon gate.

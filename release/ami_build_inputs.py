@@ -36,7 +36,9 @@ def load(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as error:
         raise BuildInputError("AMI build inputs are unreadable") from error
     root = _exact_keys(
-        value, {"schema", "packer", "source_ami", "cloudwatch_agent"}, "root"
+        value,
+        {"schema", "packer", "source_ami", "builder", "cloudwatch_agent"},
+        "root",
     )
     if root["schema"] != SCHEMA:
         raise BuildInputError("AMI build input schema is invalid")
@@ -50,11 +52,12 @@ def load(path: Path) -> dict[str, Any]:
         {"darwin_arm64", "linux_amd64", "linux_arm64"},
         "Packer plugin hashes",
     )
-    if packer["core_version"] != "1.12.0" or packer[
-        "amazon_plugin_version"
-    ] != "1.3.9":
+    if packer["core_version"] != "1.12.0" or packer["amazon_plugin_version"] != "1.3.9":
         raise BuildInputError("Packer versions changed without review")
-    if any(not isinstance(digest, str) or not SHA256.fullmatch(digest) for digest in plugin_hashes.values()):
+    if any(
+        not isinstance(digest, str) or not SHA256.fullmatch(digest)
+        for digest in plugin_hashes.values()
+    ):
         raise BuildInputError("Packer plugin hash is invalid")
     source = _exact_keys(
         root["source_ami"],
@@ -75,6 +78,17 @@ def load(path: Path) -> dict[str, Any]:
         )
     ):
         raise BuildInputError("source AMI identity is invalid")
+    builder = _exact_keys(
+        root["builder"],
+        {"instance_type", "vcpu_count", "cargo_jobs"},
+        "AMI builder",
+    )
+    if builder != {
+        "instance_type": "m7g.4xlarge",
+        "vcpu_count": 16,
+        "cargo_jobs": 8,
+    }:
+        raise BuildInputError("AMI builder capacity changed without review")
     agent = _exact_keys(
         root["cloudwatch_agent"],
         {
@@ -96,19 +110,22 @@ def load(path: Path) -> dict[str, Any]:
         item = agent[name]
         if not isinstance(item, str) or not HTTPS.match(item) or "/latest/" in item:
             raise BuildInputError("CloudWatch Agent URL is not immutable")
-    if version_path not in agent["package_url"] or version_path not in agent[
-        "signature_url"
-    ]:
+    if (
+        version_path not in agent["package_url"]
+        or version_path not in agent["signature_url"]
+    ):
         raise BuildInputError("CloudWatch Agent package URL is not version-bound")
-    if any(
-        not isinstance(agent[name], str) or not SHA256.fullmatch(agent[name])
-        for name in (
-            "package_sha256",
-            "signature_sha256",
-            "gpg_material_sha256",
+    if (
+        any(
+            not isinstance(agent[name], str) or not SHA256.fullmatch(agent[name])
+            for name in (
+                "package_sha256",
+                "signature_sha256",
+                "gpg_material_sha256",
+            )
         )
-    ) or not isinstance(agent["gpg_fingerprint"], str) or not FINGERPRINT.fullmatch(
-        agent["gpg_fingerprint"]
+        or not isinstance(agent["gpg_fingerprint"], str)
+        or not FINGERPRINT.fullmatch(agent["gpg_fingerprint"])
     ):
         raise BuildInputError("CloudWatch Agent verification input is invalid")
     return json.loads(json.dumps(value, separators=(",", ":"), sort_keys=True))
@@ -152,7 +169,9 @@ def verify_source_ami(value: Mapping[str, Any]) -> None:
         "RootDeviceType": "ebs",
         "VirtualizationType": "hvm",
     }
-    if not isinstance(image, Mapping) or any(image.get(key) != item for key, item in expected.items()):
+    if not isinstance(image, Mapping) or any(
+        image.get(key) != item for key, item in expected.items()
+    ):
         raise BuildInputError("source AMI no longer matches the reviewed identity")
 
 

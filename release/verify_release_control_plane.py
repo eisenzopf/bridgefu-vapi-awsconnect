@@ -14,7 +14,8 @@ import argparse
 import json
 import re
 import subprocess
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -188,16 +189,7 @@ def _verify_role(
 ) -> dict[str, Any]:
     _, role_path_and_name = _role_arn(role_arn, account, logical_id)
     role_name = role_path_and_name.rsplit("/", 1)[-1]
-    drift = cli.json(
-        "cloudformation",
-        "detect-stack-resource-drift",
-        "--region",
-        STACK_REGION,
-        "--stack-name",
-        stack,
-        "--logical-resource-id",
-        logical_id,
-    ).get("StackResourceDrift", {})
+    drift = _detect_resource_drift(cli, stack, logical_id)
     if drift.get("StackResourceDriftStatus") != "IN_SYNC":
         raise ControlPlaneError(f"{logical_id} has CloudFormation drift")
     role = cli.json("iam", "get-role", "--role-name", role_name).get("Role")
@@ -228,6 +220,37 @@ def _verify_role(
         if not isinstance(document, Mapping):
             raise ControlPlaneError(f"{logical_id} inline policy is unreadable")
     return dict(role)
+
+
+def _detect_resource_drift(
+    cli: AwsCli,
+    stack: str,
+    logical_id: str,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Mapping[str, Any]:
+    """Wait through CloudFormation's bounded post-operation drift-detection race."""
+    for attempt in range(19):
+        try:
+            response = cli.json(
+                "cloudformation",
+                "detect-stack-resource-drift",
+                "--region",
+                STACK_REGION,
+                "--stack-name",
+                stack,
+                "--logical-resource-id",
+                logical_id,
+            )
+            drift = response.get("StackResourceDrift", {})
+            if not isinstance(drift, Mapping):
+                raise ControlPlaneError("resource drift result is invalid")
+            return drift
+        except ControlPlaneError:
+            if attempt == 18:
+                raise
+            sleep(5)
+    raise AssertionError("unreachable drift retry state")
 
 
 def verify(args: argparse.Namespace, cli: AwsCli) -> dict[str, Any]:
@@ -344,8 +367,8 @@ def verify(args: argparse.Namespace, cli: AwsCli) -> dict[str, Any]:
         ("us-west-2", "VapiApiKeySecretArnUsWest2", "VapiApiKeySecretArn"),
         (
             "us-east-1",
-            "VapiApiKeySecretArn" "UsEast1",
-            "VapiApiKeySecretArn" "UsEast1",
+            "VapiApiKeySecretArnUsEast1",
+            "VapiApiKeySecretArnUsEast1",
         ),
     ):
         value = publisher_parameters.get(publisher_key, "")
