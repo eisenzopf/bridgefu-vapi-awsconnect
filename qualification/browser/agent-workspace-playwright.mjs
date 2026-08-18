@@ -409,6 +409,40 @@ async function syntheticContextAbsent(page, session) {
   return true;
 }
 
+function yesNo(value) {
+  return value ? "yes" : "no";
+}
+
+async function screenPopSnapshot(page, session) {
+  const fields = [];
+  for (const field of REQUIRED_FIELDS) {
+    fields.push(
+      await visibleLabeledValue(
+        page,
+        SCREEN_POP_LABELS[field],
+        session.expected_context[field],
+      ),
+    );
+  }
+  return {
+    heading: await visibleTextIncludes(page, ["Bridgefu caller context"]),
+    contextTrue: await visibleLabeledValue(page, "Context available:", "true"),
+    contextFalse: await visibleLabeledValue(page, "Context available:", "false"),
+    fields,
+  };
+}
+
+async function capturePrivateScreenshot(page, screenshotPath) {
+  try {
+    await page.screenshot({ path: screenshotPath, fullPage: false });
+    chmodSync(screenshotPath, 0o600);
+    return true;
+  } catch {
+    rmSync(screenshotPath, { force: true });
+    return false;
+  }
+}
+
 async function clickButton(page, patterns) {
   for (const frame of page.frames()) {
     for (const pattern of patterns) {
@@ -1224,26 +1258,31 @@ async function observe(options) {
         await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
       }
     } else {
-      await waitUntil(
-        async () => {
-          if (
-            !(await visibleTextIncludes(page, ["Bridgefu caller context"]))
-            || !(await visibleLabeledValue(page, "Context available:", "true"))
-          ) return false;
-          for (const field of REQUIRED_FIELDS) {
-            if (
-              !(await visibleLabeledValue(
-                page,
-                SCREEN_POP_LABELS[field],
-                session.expected_context[field],
-              ))
-            ) return false;
-          }
-          return true;
-        },
-        Math.min(timeoutMs, 60_000),
-        "Agent Workspace did not render the exact synthetic screen pop",
-      );
+      try {
+        await waitUntil(
+          async () => {
+            const snapshot = await screenPopSnapshot(page, session);
+            return (
+              snapshot.heading
+              && snapshot.contextTrue
+              && snapshot.fields.every(Boolean)
+            );
+          },
+          Math.min(timeoutMs, 60_000),
+          "Agent Workspace did not render the exact synthetic screen pop",
+        );
+      } catch {
+        const snapshot = await screenPopSnapshot(page, session);
+        const screenshotCaptured = await capturePrivateScreenshot(page, screenshotPath);
+        fail(
+          "Agent Workspace did not render the exact synthetic screen pop " +
+            `heading=${yesNo(snapshot.heading)} ` +
+            `context_true=${yesNo(snapshot.contextTrue)} ` +
+            `context_false=${yesNo(snapshot.contextFalse)} ` +
+            `fields=${snapshot.fields.map((value) => (value ? "1" : "0")).join("")} ` +
+            `screenshot=${yesNo(screenshotCaptured)}`,
+        );
+      }
     }
     try {
       await waitUntil(
@@ -1296,8 +1335,9 @@ async function observe(options) {
       agentDtmfSentAtMs.push(Date.now());
     }
     const mediaProbe = await probeSnapshot(page);
-    await page.screenshot({ path: screenshotPath, fullPage: false });
-    chmodSync(screenshotPath, 0o600);
+    if (!(await capturePrivateScreenshot(page, screenshotPath))) {
+      fail("Agent Workspace screenshot capture failed");
+    }
     const screenshotSha256 = sha256File(screenshotPath);
     let localEndCompleted = false;
     let remoteEndObserved = false;

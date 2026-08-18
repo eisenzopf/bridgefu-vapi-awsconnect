@@ -834,12 +834,19 @@ class QualificationAssetTests(unittest.TestCase):
             QUALIFICATION / "browser" / "agent-workspace-playwright.mjs"
         ).read_text()
         for diagnostic in (
+            "heading=",
+            "context_true=",
+            "context_false=",
+            "fields=",
+            "screenshot=",
             "received_packets=",
             "received_bytes=",
             "active_frames=",
             "max_rms=",
         ):
             self.assertIn(diagnostic, agent)
+        self.assertIn("capturePrivateScreenshot(page, screenshotPath)", agent)
+        self.assertNotIn("session.expected_context[field]}`", agent)
 
 
 if __name__ == "__main__":
