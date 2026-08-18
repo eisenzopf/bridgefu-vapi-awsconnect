@@ -3229,15 +3229,6 @@ def call_contains_transfer(value: Any, scenario: str = "vapi-sip-transfer") -> b
     return "prepare_handoff" in names and "transferCall" in names and transfer
 
 
-def create_failure_arguments(retain_on_failure: bool) -> list[str]:
-    # The controller owns cleanup. Keeping rollback disabled until it has read
-    # the stack events is what makes a normal failed run diagnosable. CREATE
-    # change sets express that policy as OnStackFailure=DO_NOTHING; the retain
-    # flag controls whether cleanup follows evidence capture.
-    del retain_on_failure
-    return ["--on-stack-failure", "DO_NOTHING"]
-
-
 def collect_cloudformation_failure_events(
     aws: Aws, stack_name: str, *, maximum_stacks: int = 8, maximum_events: int = 50
 ) -> tuple[list[dict[str, Any]], str | None]:
@@ -4374,36 +4365,44 @@ class Controller:
                 ).encode()
             ).hexdigest()[:48]
         )
+        create_request = {
+            "Capabilities": ["CAPABILITY_NAMED_IAM"],
+            "ChangeSetName": change_set_name,
+            "ChangeSetType": "CREATE",
+            "ClientToken": create_token,
+            "IncludeNestedStacks": True,
+            "OnStackFailure": "DO_NOTHING",
+            "Parameters": [
+                {"ParameterKey": key, "ParameterValue": value}
+                for key, value in parameters
+            ],
+            "RoleARN": self.args.cloudformation_role_arn,
+            "StackName": self.stack_name,
+            "Tags": [
+                {"Key": "ManagedBy", "Value": "bridgefu-qualification"},
+                {
+                    "Key": "BridgefuExecutionId",
+                    "Value": self.args.execution_id,
+                },
+            ],
+            "TemplateURL": self.args.template_url,
+        }
+        create_document = json.dumps(
+            create_request, separators=(",", ":"), sort_keys=True
+        )
         arguments = [
             "cloudformation",
             "create-change-set",
-            "--stack-name",
-            self.stack_name,
-            "--change-set-name",
-            change_set_name,
-            "--change-set-type",
-            "CREATE",
-            "--include-nested-stacks",
-            "--template-url",
-            self.args.template_url,
-            "--capabilities",
-            "CAPABILITY_NAMED_IAM",
-            "--role-arn",
-            self.args.cloudformation_role_arn,
-            *create_failure_arguments(self.args.retain_on_failure),
-            "--client-token",
-            create_token,
-            "--tags",
-            "Key=ManagedBy,Value=bridgefu-qualification",
-            f"Key=BridgefuExecutionId,Value={self.args.execution_id}",
-            "--parameters",
-            *[
-                f"ParameterKey={key},ParameterValue={value}"
-                for key, value in parameters
-            ],
+            "--cli-input-json",
+            create_document,
         ]
         if self.sealed_template_catalog is None:
             raise QualificationError("sealed template catalog is unavailable")
+        # Exercise the installed AWS CLI's real service-model parser against
+        # the exact document that will be submitted. This makes structured
+        # parameter/tag encoding a pre-mutation gate instead of relying on a
+        # mocked argv contract or CloudFormation receiving a malformed request.
+        self.aws.json([*arguments, "--generate-cli-skeleton", "output"], timeout=60)
         self.created_stack = True
         try:
             created = self.aws.json(arguments, timeout=180)

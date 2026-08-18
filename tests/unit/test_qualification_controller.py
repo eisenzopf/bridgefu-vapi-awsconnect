@@ -2067,16 +2067,6 @@ class QualificationControllerTests(unittest.TestCase):
                     "qualification/bfq-test1234/",
                 )
 
-    def test_failed_environment_retention_must_be_explicit(self):
-        self.assertEqual(
-            CONTROLLER.create_failure_arguments(False),
-            ["--on-stack-failure", "DO_NOTHING"],
-        )
-        self.assertEqual(
-            CONTROLLER.create_failure_arguments(True),
-            ["--on-stack-failure", "DO_NOTHING"],
-        )
-
     def test_root_default_parameters_are_explicit_and_match_the_sealed_source(self):
         template = CONTROLLER.deployment_review.parse_template_body(
             (ROOT / "qualification" / "cloudformation" / "template.yaml").read_text(
@@ -2091,6 +2081,55 @@ class QualificationControllerTests(unittest.TestCase):
         self.assertEqual(
             parameters["ScreenPopFieldsJson"]["Default"],
             CONTROLLER.QUALIFICATION_SCREEN_POP_FIELDS_JSON,
+        )
+
+    def test_deploy_requires_real_cli_parser_before_marking_stack_created(self):
+        class RejectingAws:
+            def __init__(self):
+                self.calls = []
+
+            def json(self, arguments, timeout=900):
+                self.calls.append((arguments, timeout))
+                raise CONTROLLER.QualificationError("AWS CLI parser rejected request")
+
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.args = SimpleNamespace(
+            execution_id="bfq-test1234",
+            region="us-west-2",
+            release="1.2.3",
+            template_url="https://example.test/template.yaml?versionId=version-1",
+            vapi_secret_arn=(  # noqa: S106 - test ARN, not a secret value.
+                "arn:aws:secretsmanager:us-west-2:123456789012:secret:vapi"
+            ),
+            hosted_zone_id="Z1234",
+            hosted_zone_name="example.test",
+            instance_type="c7g.2xlarge",
+            cloudformation_role_arn=("arn:aws:iam::123456789012:role/qualification"),
+        )
+        controller.stack_name = "bridgefu-bfq-test1234"
+        controller.sealed_template_catalog = (mock.sentinel.template,)
+        controller.created_stack = False
+        controller.aws = RejectingAws()
+
+        with self.assertRaisesRegex(
+            CONTROLLER.QualificationError, "CLI parser rejected"
+        ):
+            controller.deploy()
+
+        self.assertFalse(controller.created_stack)
+        self.assertEqual(len(controller.aws.calls), 1)
+        parser_call, timeout = controller.aws.calls[0]
+        self.assertEqual(timeout, 60)
+        self.assertEqual(parser_call[-2:], ["--generate-cli-skeleton", "output"])
+        request = json.loads(parser_call[3])
+        screen_pop = next(
+            item["ParameterValue"]
+            for item in request["Parameters"]
+            if item["ParameterKey"] == "ScreenPopFieldsJson"
+        )
+        self.assertEqual(
+            json.loads(screen_pop),
+            json.loads(CONTROLLER.QUALIFICATION_SCREEN_POP_FIELDS_JSON),
         )
 
     def test_deploy_reviews_exact_create_change_set_and_uses_full_stack_id(self):
@@ -2127,6 +2166,8 @@ class QualificationControllerTests(unittest.TestCase):
                 def json(self, arguments, timeout=900):
                     self.json_calls.append((arguments, timeout))
                     if "create-change-set" in arguments:
+                        if "--generate-cli-skeleton" in arguments:
+                            return {"StackId": "", "Id": ""}
                         return {"Id": change_set_arn, "StackId": stack_id}
                     if "describe-change-set" in arguments:
                         return {
@@ -2242,13 +2283,17 @@ class QualificationControllerTests(unittest.TestCase):
             ):
                 controller.deploy()
 
-            create = next(
+            creates = [
                 call
                 for call, _ in controller.aws.json_calls
                 if "create-change-set" in call
+            ]
+            self.assertEqual(len(creates), 2)
+            parser_check, create = creates
+            self.assertEqual(
+                parser_check,
+                [*create, "--generate-cli-skeleton", "output"],
             )
-            self.assertIn("--include-nested-stacks", create)
-            self.assertIn("--on-stack-failure", create)
             self.assertNotIn("create-stack", create)
             self.assertEqual(controller.stack_id, stack_id)
             self.assertEqual(controller.root_change_set_arn, change_set_arn)
@@ -2288,16 +2333,48 @@ class QualificationControllerTests(unittest.TestCase):
                     on_stack_failure="DO_NOTHING",
                 ),
             )
-            parameter_offset = create.index("--parameters") + 1
-            explicit_parameters = set(create[parameter_offset:])
-            self.assertIn(
-                "ParameterKey=SipSecurity,ParameterValue=sips_optional_srtp",
-                explicit_parameters,
+            self.assertEqual(
+                create[:3],
+                ["cloudformation", "create-change-set", "--cli-input-json"],
             )
-            self.assertIn(
-                "ParameterKey=ScreenPopFieldsJson,ParameterValue="
-                + CONTROLLER.QUALIFICATION_SCREEN_POP_FIELDS_JSON,
+            self.assertEqual(len(create), 4)
+            create_request = json.loads(create[3])
+            explicit_parameters = create_request["Parameters"]
+            self.assertEqual(
                 explicit_parameters,
+                [
+                    {"ParameterKey": key, "ParameterValue": value}
+                    for key, value in (
+                        ("DeploymentId", "bfq-test1234"),
+                        (
+                            "VapiApiKeySecretArn",
+                            "arn:aws:secretsmanager:us-west-2:123456789012:secret:vapi",
+                        ),
+                        ("PublicHostedZoneId", "Z1234"),
+                        ("SipHostname", "bfq-test1234.example.test"),
+                        ("InstanceType", "c7g.2xlarge"),
+                        ("SipSecurity", CONTROLLER.QUALIFICATION_SIP_SECURITY),
+                        (
+                            "ScreenPopFieldsJson",
+                            CONTROLLER.QUALIFICATION_SCREEN_POP_FIELDS_JSON,
+                        ),
+                    )
+                ],
+            )
+            self.assertEqual(
+                create_request["ChangeSetName"], change_set_arn.split("/")[1]
+            )
+            self.assertEqual(create_request["StackName"], controller.stack_name)
+            self.assertEqual(create_request["ChangeSetType"], "CREATE")
+            self.assertEqual(create_request["Capabilities"], ["CAPABILITY_NAMED_IAM"])
+            self.assertEqual(create_request["OnStackFailure"], "DO_NOTHING")
+            self.assertIs(create_request["IncludeNestedStacks"], True)
+            self.assertEqual(
+                create_request["Tags"],
+                [
+                    {"Key": "ManagedBy", "Value": "bridgefu-qualification"},
+                    {"Key": "BridgefuExecutionId", "Value": "bfq-test1234"},
+                ],
             )
             runtime_review.assert_called_once_with(
                 controller.aws,
