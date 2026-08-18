@@ -524,23 +524,44 @@ async function clickNestedNumberPadDigit(page, digit, timeoutMs) {
 }
 
 async function sendDigitsViaConnectStreams(page, digits) {
+  let observed = "streams-unavailable";
   for (const frame of page.frames()) {
     try {
-      const sent = await frame.evaluate(async (value) => {
+      const result = await frame.evaluate(async (value) => {
         const streams = globalThis.connect;
-        if (typeof streams?.Agent !== "function") return false;
-        const agent = new streams.Agent();
+        if (typeof streams?.Agent !== "function") return "streams-unavailable";
+        let agent;
+        try {
+          agent = new streams.Agent();
+        } catch {
+          return "agent-unavailable";
+        }
         const contacts =
           typeof agent.getContacts === "function" ? agent.getContacts() : [];
+        if (!Array.isArray(contacts) || contacts.length === 0) {
+          return "contact-unavailable";
+        }
+        let contactResult = "connection-unavailable";
         for (const contact of contacts) {
           const connection =
             contact.getActiveInitialConnection?.()
             ?? contact.getInitialConnection?.();
+          if (!connection) continue;
+          if (typeof connection.sendDigits !== "function") {
+            contactResult = "method-unavailable";
+            continue;
+          }
+          if (typeof connection.isActive === "function" && !connection.isActive()) {
+            contactResult = "connection-inactive";
+            continue;
+          }
           if (
-            !connection
-            || typeof connection.sendDigits !== "function"
-            || (typeof connection.isActive === "function" && !connection.isActive())
-          ) continue;
+            typeof connection.isConnected === "function"
+            && !connection.isConnected()
+          ) {
+            contactResult = "connection-not-connected";
+            continue;
+          }
           return await new Promise((resolvePromise) => {
             let finished = false;
             const settle = (result) => {
@@ -548,33 +569,34 @@ async function sendDigitsViaConnectStreams(page, digits) {
               finished = true;
               resolvePromise(result);
             };
-            const timer = setTimeout(() => settle(false), 3000);
+            const timer = setTimeout(() => settle("timeout"), 3000);
             const callbacks = {
               success: () => {
                 clearTimeout(timer);
-                settle(true);
+                settle("sent");
               },
               failure: () => {
                 clearTimeout(timer);
-                settle(false);
+                settle("rejected");
               },
             };
             try {
               connection.sendDigits(value, callbacks);
             } catch {
               clearTimeout(timer);
-              settle(false);
+              settle("threw");
             }
           });
         }
-        return false;
+        return contactResult;
       }, digits);
-      if (sent) return true;
+      if (result === "sent") return result;
+      if (result !== "streams-unavailable") observed = result;
     } catch {
-      // The Streams API is hosted in one of the Agent Workspace frames.
+      observed = "frame-unavailable";
     }
   }
-  return false;
+  return observed;
 }
 
 async function buttonVisible(page, patterns) {
@@ -1319,6 +1341,31 @@ async function observe(options) {
         );
       }
     }
+    const agentDtmfSentAtMs = [];
+    if (session.scenario_id === "bridgefu-web-sdk-handoff") {
+      // Agent Workspace does not attach the nested number-pad frame until its
+      // keypad control is opened. This keypad-first sequence is the proven
+      // Agent Workspace path; Streams remains a bounded API fallback.
+      const keypadOpened = await clickButtonWithin(
+        page,
+        [/Number pad/i, /Keypad/i, /Dial pad/i, /Dialpad/i],
+        5_000,
+      );
+      const keypadDigitSent = keypadOpened
+        ? (await clickNestedNumberPadDigit(page, "6", 5_000))
+          || (await clickButtonWithin(page, [/^6$/], 1_000))
+        : false;
+      const streamsResult = keypadDigitSent
+        ? "not-attempted"
+        : await sendDigitsViaConnectStreams(page, "6");
+      if (!keypadDigitSent && streamsResult !== "sent") {
+        fail(
+          "Agent Workspace could not send the reverse DTMF probe "
+            + `keypad_open=${yesNo(keypadOpened)} streams=${streamsResult}`,
+        );
+      }
+      agentDtmfSentAtMs.push(Date.now());
+    }
     try {
       await waitUntil(
         async () => {
@@ -1362,17 +1409,6 @@ async function observe(options) {
           `active_frames=${probe.remoteAudioActiveFrames} ` +
           `max_rms=${probe.remoteAudioMaxRms.toFixed(6)}`,
       );
-    }
-    const agentDtmfSentAtMs = [];
-    if (session.scenario_id === "bridgefu-web-sdk-handoff") {
-      const sentThroughStreams = await sendDigitsViaConnectStreams(page, "6");
-      const sentThroughKeypad = sentThroughStreams
-        ? false
-        : await clickNestedNumberPadDigit(page, "6", 10_000);
-      if (!sentThroughStreams && !sentThroughKeypad) {
-        fail("Agent Workspace could not send the reverse DTMF probe");
-      }
-      agentDtmfSentAtMs.push(Date.now());
     }
     const mediaProbe = await probeSnapshot(page);
     if (!(await capturePrivateScreenshot(page, screenshotPath))) {
