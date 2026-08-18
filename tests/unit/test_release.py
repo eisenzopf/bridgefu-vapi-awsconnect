@@ -570,9 +570,9 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertNotIn("AWS_CANDIDATE_ROLE_ARN", reaper)
         self.assertNotIn("AWS_PUBLISH_ROLE_ARN", reaper)
         self.assertNotIn("AWS_QUALIFICATION_ROLE_ARN", reaper)
-        self.assertEqual(workflow.count("environment: release-recovery"), 3)
+        self.assertEqual(workflow.count("environment: release-recovery"), 4)
         self.assertEqual(
-            workflow.count("role-to-assume: ${{ vars.AWS_RECOVERY_ROLE_ARN }}"), 3
+            workflow.count("role-to-assume: ${{ vars.AWS_RECOVERY_ROLE_ARN }}"), 4
         )
         policy = (ROOT / "publisher" / "oidc-role.yaml").read_text()
         recovery = policy.split("  RecoveryRole:\n", 1)[1].split("\nOutputs:\n", 1)[0]
@@ -952,8 +952,12 @@ class ReleaseContractTests(unittest.TestCase):
         reaper = (ROOT / ".github" / "workflows" / "release-reaper.yml").read_text()
         packer = (ROOT / "image" / "bridgefu.pkr.hcl").read_text()
         for tag in ("BridgefuCandidateId", "BridgefuRepositoryCommit"):
-            self.assertIn(tag, packer)
+            self.assertIn(tag, candidate)
             self.assertIn(tag, reaper)
+            self.assertNotIn(tag, packer)
+        for tag in ("BridgefuAmiBuildCache", "BridgefuAmiBuildSha256"):
+            self.assertIn(tag, packer)
+            self.assertIn(tag, candidate)
         self.assertIn("journal_ami us-west-2", candidate)
         self.assertIn(".release_objects +=", candidate)
         self.assertIn(".candidate_objects +=", candidate)

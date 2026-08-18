@@ -41,6 +41,24 @@ jobs:
           cache-dependency-path: qualification/package-lock.json
       - uses: hashicorp/setup-packer@1aa358be5cf73883762b302a3a03abd66e75b232 # v3.1.0
         with: {version: '1.12.0'}
+      - name: Bind the qualification-client cache to the exact compiler
+        id: qualification-rust
+        run: |
+          commit="$(rustc -vV | sed -n 's/^commit-hash: //p')"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            qualification/sip-client/target
+            qualification/direct-secure-probe/target
+          key: >-
+            rust-qualification-${{ runner.os }}-${{ runner.arch }}-
+            ${{ steps.qualification-rust.outputs.commit }}-
+            ${{ hashFiles('qualification/sip-client/Cargo.lock', 'qualification/direct-secure-probe/Cargo.lock') }}
       - name: Resolve immutable candidate inputs
         id: inputs
         env:
@@ -197,10 +215,61 @@ jobs:
           source_base_ami="$(jq -r .source_ami.id image/build-inputs.json)"
           builder_instance_type="$(jq -r .builder.instance_type image/build-inputs.json)"
           cargo_build_jobs="$(jq -r .builder.cargo_jobs image/build-inputs.json)"
+          python release/ami_cache.py digest --root . \
+            --release-version "$VERSION" > target/candidate/ami-content.json
+          ami_build_sha256="$(jq -er '.ami_build_sha256 |
+            select(test("^[0-9a-f]{64}$"))' target/candidate/ami-content.json)"
           test "$builder_instance_type" = m7g.4xlarge
           test "$cargo_build_jobs" = 8
           test "$(uname -s)" = Linux
           test "$(uname -m)" = aarch64
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          east_bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
+          state_key="candidates/runs/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/state.json"
+          EXPECTED_AWS_ACCOUNT_ID="$account_id" \
+            KEEP_AMI_BUILD_SHA256="$ami_build_sha256" \
+            bash release/prune_ami_cache.sh
+          verify_cache_ami() {
+            cache_ami="$1"
+            aws ec2 describe-images --owners self --region us-west-2 \
+              --image-ids "$cache_ami" > target/candidate/cache-image.json
+            aws ec2 describe-image-attribute --region us-west-2 \
+              --image-id "$cache_ami" --attribute launchPermission \
+              > target/candidate/cache-image-permissions.json
+            cache_snapshot="$(jq -er \
+              '.Images[0].BlockDeviceMappings | if length == 1 then
+               .[0].Ebs.SnapshotId else error("cache block device is not unique") end' \
+              target/candidate/cache-image.json)"
+            aws ec2 describe-snapshots --owner-ids self --region us-west-2 \
+              --snapshot-ids "$cache_snapshot" > target/candidate/cache-snapshot.json
+            aws ec2 describe-snapshot-attribute --region us-west-2 \
+              --snapshot-id "$cache_snapshot" --attribute createVolumePermission \
+              > target/candidate/cache-snapshot-permissions.json
+            python release/ami_cache.py verify \
+              --image target/candidate/cache-image.json \
+              --image-permissions target/candidate/cache-image-permissions.json \
+              --snapshot target/candidate/cache-snapshot.json \
+              --snapshot-permissions target/candidate/cache-snapshot-permissions.json \
+              --account-id "$account_id" \
+              --build-sha256 "$ami_build_sha256" \
+              --bridgefu-commit '${{ steps.inputs.outputs.bridgefu_commit }}' \
+              --release-version "$VERSION" \
+              > target/candidate/ami-cache-verification.json
+            test "$(jq -r .ami_id target/candidate/ami-cache-verification.json)" = \
+              "$cache_ami"
+          }
+          cache_images="$(aws ec2 describe-images --owners self --region us-west-2 \
+            --filters \
+              Name=tag:BridgefuAmiBuildCache,Values=bridgefu-ami-cache-v1 \
+              "Name=tag:BridgefuAmiBuildSha256,Values=$ami_build_sha256")"
+          cache_count="$(jq '.Images | length' <<<"$cache_images")"
+          test "$cache_count" -le 1
+          if [[ "$cache_count" = 1 ]]; then
+            cache_ami="$(jq -er '.Images[0].ImageId' <<<"$cache_images")"
+            verify_cache_ami "$cache_ami"
+            echo "Reusing verified private AMI build cache $cache_ami."
+          else
+            echo "No exact AMI build cache exists; compiling once."
           packer_plugin_version="$(jq -r .packer.amazon_plugin_version \
             image/build-inputs.json)"
           test "$packer_plugin_version" = 1.3.9
@@ -232,16 +301,33 @@ jobs:
             -var cargo_build_jobs="$cargo_build_jobs" \
             -var bridgefu_commit=${{ steps.inputs.outputs.bridgefu_commit }} \
             -var bridgefu_cargo_lock_sha256=${{ steps.inputs.outputs.bridgefu_lock }} \
-            -var candidate_id="$CANDIDATE_ID" \
-            -var distribution_repository_commit="$GITHUB_SHA" \
+            -var ami_build_sha256="$ami_build_sha256" \
             -var release_version="$VERSION" \
             image/bridgefu.pkr.hcl
           artifact_id="$(jq -er '.builds[-1].artifact_id' target/packer-manifest.json)"
-          source_ami="${artifact_id##*:}"
+            cache_ami="${artifact_id##*:}"
+            [[ "$cache_ami" =~ ^ami-[0-9a-f]{17}$ ]]
+            verify_cache_ami "$cache_ami"
+          fi
+          candidate_tag_specifications="$(jq -nc \
+            --arg name "bridgefu-vapi-awsconnect-$VERSION" \
+            --arg candidate "$CANDIDATE_ID" --arg commit "$GITHUB_SHA" \
+            --arg bridgefu '${{ steps.inputs.outputs.bridgefu_commit }}' \
+            --arg release "$VERSION" \
+            '[{ResourceType:"image",Tags:[
+              {Key:"Name",Value:$name},
+              {Key:"ManagedBy",Value:"bridgefu-vapi-awsconnect"},
+              {Key:"BridgefuCommit",Value:$bridgefu},
+              {Key:"BridgefuCandidateId",Value:$candidate},
+              {Key:"BridgefuRepositoryCommit",Value:$commit},
+              {Key:"BridgefuRelease",Value:$release},
+              {Key:"BridgefuRvoipVersion",Value:"0.3.8"}]}]')"
+          source_ami="$(aws ec2 copy-image --region us-west-2 \
+            --source-region us-west-2 --source-image-id "$cache_ami" \
+            --name "bridgefu-vapi-awsconnect-$VERSION-$GITHUB_RUN_ID" \
+            --tag-specifications "$candidate_tag_specifications" \
+            --query ImageId --output text)"
           [[ "$source_ami" =~ ^ami-[0-9a-f]{17}$ ]]
-          account_id="$(aws sts get-caller-identity --query Account --output text)"
-          east_bucket="bridgefu-vapi-awsconnect-$account_id-us-east-1"
-          state_key="candidates/runs/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/state.json"
           journal_ami() {
             region="$1"
             ami="$2"
@@ -255,11 +341,7 @@ jobs:
             aws s3api put-object --bucket "$east_bucket" --key "$state_key" \
               --body target/candidate/state.json --region us-east-1 >/dev/null
           }
-          source_snapshots="$(aws ec2 describe-images --owners self \
-            --region us-west-2 --image-ids "$source_ami" \
-            --query 'Images[0].BlockDeviceMappings[].Ebs.SnapshotId' \
-            --output json)"
-          journal_ami us-west-2 "$source_ami" "$source_snapshots"
+          journal_ami us-west-2 "$source_ami" '[]'
           echo '{}' > target/candidate/region-release.json
           while read -r region; do
             if [[ "$region" = us-west-2 ]]; then

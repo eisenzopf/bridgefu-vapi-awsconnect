@@ -295,9 +295,20 @@ AWS authority.
 
 ## Next permitted action
 
-Run the complete local gate for the Route 53, drift-retry, and larger-builder
-patch; merge it through protected `main`; require all exact-commit checks; then
-reconfirm version vacancy and zero active mutation. Because recovery correctly
-deleted the prior private AMIs, the next official candidate must create new ones.
-No regional qualification or publication is permitted until those exact bits
-pass the Oregon gate.
+The Route 53 vacancy, bounded drift-retry, and 16-vCPU builder patch is merged
+through protected `main` and all four exact-commit checks passed. The follow-up
+speed branch is still local and unqualified. It adds exact compiler/Cargo-lock
+caches for the Rust qualification clients and a private content-addressed AMI
+build cache. The AMI cache hashes every image input, the exact Bridgefu lock, and
+the release version; a cache hit is accepted only when the self-owned AMI and
+snapshot are unique, private, and exactly tagged. Every candidate still receives
+fresh candidate-owned AMI copies, so cache objects cannot be sealed or
+published. Expired cache entries are reaped after 14 days under the shared
+qualification mutation mutex and only after exact ownership/private-permission
+validation.
+
+Run the complete local gate for the speed branch, merge it through protected
+`main`, and require all exact-commit checks. Then reconfirm version vacancy and
+zero active mutation before starting the next Oregon-first candidate. No
+regional qualification or publication is permitted until those exact bits pass
+the Oregon gate.
