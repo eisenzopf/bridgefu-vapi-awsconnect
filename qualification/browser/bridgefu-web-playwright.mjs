@@ -85,7 +85,10 @@ const PROBE_PULSE_MS = 5_000;
 const REQUIRED_MARKER_EPISODES = 1;
 const REQUIRED_MARKER_ANALYSER_FRAMES = 50;
 const DTMF_START_MS = 6_000;
-const DTMF_DURATION_MS = 350;
+// One second gives the independent browser analyser many opportunities to
+// observe both DTMF frequencies after the complete transcoding path. This is
+// still a binary presence probe, not a second sustained audio test.
+const DTMF_DURATION_MS = 1_000;
 // The fake microphone starts before the peer connection is established. Require
 // media to establish before the proven five-second first speech boundary.
 // Repeat the same bounded request across the Vapi SIP bridge-establishment
