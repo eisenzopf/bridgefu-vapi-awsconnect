@@ -24,6 +24,19 @@ SPEC.loader.exec_module(CONTROLLER)
 
 
 class QualificationControllerTests(unittest.TestCase):
+    def test_sanitize_diagnostic_redacts_encoded_aws_authorization_message(self):
+        encoded = "PO8KhF73vYE1RQtSaq64QMz9UeIf6q2dSEbC9UUk59O60D8Vo4qFC5kLNv5LiE"
+        value = CONTROLLER.sanitize_diagnostic(
+            "UnauthorizedOperation. Encoded authorization failure message: "
+            + encoded
+        )
+        self.assertEqual(
+            value,
+            "UnauthorizedOperation. Encoded authorization failure message: "
+            "[REDACTED]",
+        )
+        self.assertNotIn(encoded, value)
+
     def test_background_processes_start_in_an_owned_session(self):
         process = mock.Mock()
         with mock.patch.object(

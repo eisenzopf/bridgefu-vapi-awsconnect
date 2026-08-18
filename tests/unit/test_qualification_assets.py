@@ -405,7 +405,7 @@ class QualificationAssetTests(unittest.TestCase):
             "2026-08-18-review-normalization-and-cleanup-v7", verifier
         )
         self.assertIn("QualificationPolicyContractVersion", verifier)
-        self.assertIn("2026-08-17-bound-qualification-control-plane-v4", verifier)
+        self.assertIn("2026-08-18-web-media-ingress-v5", verifier)
         self.assertIn('"cloudformation",\n        "get-template"', verifier)
         self.assertIn('"detect-stack-resource-drift"', verifier)
         verifier_tree = ast.parse(verifier)
@@ -450,6 +450,41 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("QualificationRunnerRole", verifier)
         self.assertIn("RecoveryRole", verifier)
         self.assertIn("QualificationPolicyContractVersion:", qualification)
+
+    def test_web_media_ingress_is_limited_to_owned_qualification_groups(self):
+        role = (ROOT / "publisher" / "qualification-role.yaml").read_text()
+        statement = role.split(
+            "- Sid: ManageOnlyOwnedQualificationWebMediaIngress", 1
+        )[1].split("\n              - Sid:", 1)[0]
+        self.assertIn("- ec2:AuthorizeSecurityGroupIngress", statement)
+        self.assertIn("- ec2:RevokeSecurityGroupIngress", statement)
+        self.assertIn(
+            "arn:${AWS::Partition}:ec2:*:${AWS::AccountId}:security-group/*",
+            statement,
+        )
+        self.assertIn(
+            "aws:ResourceTag/Project: bridgefu-vapi-awsconnect", statement
+        )
+        self.assertIn(
+            "aws:ResourceTag/ManagedBy: bridgefu-cloudformation", statement
+        )
+        self.assertIn("aws:ResourceTag/BridgefuExecutionId: bfq-*", statement)
+        self.assertNotIn("Resource: '*'", statement)
+
+        controller = (QUALIFICATION / "controller.py").read_text()
+        authorize = controller.split("    def authorize_web_media", 1)[1].split(
+            "    def create_direct_route", 1
+        )[0]
+        self.assertIn('"FromPort": 20000', authorize)
+        self.assertIn('"ToPort": 20399', authorize)
+        self.assertIn(
+            'source = str(socket.inet_ntoa(socket.inet_aton(raw))) + "/32"',
+            authorize,
+        )
+        cleanup = controller.split("    def cleanup_web_runtime", 1)[1].split(
+            "    def authorize_web_media", 1
+        )[0]
+        self.assertIn('"revoke-security-group-ingress"', cleanup)
 
     def test_live_workflows_install_the_exact_session_manager_plugin(self):
         version = "1.2.835.0"

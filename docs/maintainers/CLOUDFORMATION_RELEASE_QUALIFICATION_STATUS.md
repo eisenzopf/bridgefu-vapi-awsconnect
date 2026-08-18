@@ -302,8 +302,9 @@ AWS authority.
 
 ## Remaining path to the customer template
 
-1. Merge the conditional-`Dynamic` review and current AWS CLI absence-code
-   corrections through protected `main`. No persistent IAM change is required.
+1. Merge the qualification Web-media IAM correction through protected `main`,
+   update the persistent qualification-role stack through a reviewed
+   no-execute change set, and re-run the exact deployed control-plane verifier.
 2. Start one new private candidate from that exact protected-main commit using
    future tag version input `0.1.22`. This is not a Git tag or GitHub Release.
 3. Qualify Oregon, destroy it, and prove stable zero resources.
@@ -335,53 +336,38 @@ AWS authority.
 
 ## Current live gate and next permitted action
 
-Protected-main revision `67b50fcf3102b459d1ad9eafb43f5cbf2dc4aede`
-passed all exact-main CI jobs. Its private candidate reused the verified private
-AMI cache, created fresh private AMIs in both regions, staged exact-version
-assets, and passed all twenty remote `ValidateTemplate` calls. Oregon passed
-the exact control-plane gate, the corrected ten-template nested change-set
-review, full CloudFormation creation, runtime deployment binding, Connect agent
-authentication, and the direct mandatory-SRTP preflight.
+Protected main contains the live-compilation removal and exact deleted-stack
+tombstone cleanup fixes. Its next private candidate reused the verified AMI
+cache and passed source, IAM, bucket, immutable-artifact, two-region remote
+template, and Oregon no-execute nested-change-set review gates. The complete
+Oregon customer-product stack reached `CREATE_COMPLETE`; both public and
+private DNS records and the ACM certificate completed successfully. The exact
+candidate AMI/runtime binding passed, the Connect agent was authenticated and
+Available, and the direct mandatory-SRTP preflight proved SIPS/TLS,
+`RTP/SAVP`, SDES-SRTP contexts, audio, DTMF, ACK/BYE, and cleanup.
 
-The Oregon run then stopped before the actual Bridgefu Web SDK smoke. The
-qualification controller attempted `cargo run --bin bridgefu ... validate`
-from the pinned Bridgefu source checkout. That caused a fresh Rust build on the
-live GitHub runner. `rvoip-amazon-connect` generates protobuf bindings during
-its build and the runner did not contain `protoc`, so the build script failed.
-This was a qualification-runner dependency and architecture defect, not a
-customer-template, AMI, WebRTC, Vapi-transfer, or Amazon Connect call failure.
-The short Vapi call observed immediately beforehand was the bounded temporary
-SIP endpoint readiness probe; it was not the Web smoke.
+The run then stopped before browser startup. `authorize_web_media()` correctly
+attempted to add one temporary runner `/32` for UDP ports 20000-20399 to the
+stack-owned Bridgefu security group, but the persistent qualification runner
+role lacked `ec2:AuthorizeSecurityGroupIngress`. No Web SDK source call reached
+Vapi or Amazon Connect; the only Vapi call was the earlier temporary-endpoint
+readiness call. Virginia and receipt sealing remained blocked.
 
-The local fix removes all Bridgefu compilation from live qualification. The
-controller still builds and encodes the secret-free configuration, but the
-exact candidate Bridgefu binary already installed in the AMI is now the sole
-semantic validator. Its remote install script validates the candidate file
-before stopping the service or replacing configuration. A regression prohibits
-`cargo` and the source checkout from the live install path and proves candidate
-validation precedes installation.
+The local correction grants authorize and revoke only on security-group ARNs
+whose resource tags prove Project `bridgefu-vapi-awsconnect`, ManagedBy
+`bridgefu-cloudformation`, and a `bfq-*` execution. The controller still limits
+the actual permission to the discovered public `/32` and UDP 20000-20399, and
+cleanup revokes the identical permission. AWS IAM Access Analyzer reports zero
+findings for the new statement. Failure redaction now removes AWS encoded
+authorization blobs before evidence is persisted. Focused and full unit,
+Ruff, ShellCheck, actionlint, deterministic package, CloudFormation lint, and
+validation gates pass locally.
 
-Teardown exposed a second deterministic defect. CloudFormation retains deleted
-stacks in history and continues returning `DELETE_COMPLETE` when queried by the
-full StackId. The zero-resource verifier incorrectly treated every successful
-`DescribeStacks` response as a live stack. It therefore blocked exact ACM/S3
-cleanup even after the stack was absent by name. The controller now normalizes
-only an exact, identity-bound `DELETE_COMPLETE` tombstone as absent; every other
-state remains live and fail-closed. The reaper also now recovers exact
-phone/assistant/tool ownership after the stack is already gone, but only when
-the durable pre-create intent and post-create ownership journals both validate.
-Ambiguous request-only state remains fail-closed.
-
-The failed candidate's private AMIs and release objects were removed. The
-patched exact reaper was run against the remaining qualification ownership
-records. Independent AWS checks now report zero Oregon/Virginia live stacks,
-zero execution-owned public DNS records, and zero versioned qualification
-objects. Both regional `releases/0.1.22/` prefixes contain zero versions, so the
-future version input remains unused and may be retried after the fix is merged.
-
-The next permitted actions are: pass the complete local gate, merge the runner
-and cleanup corrections through protected main, wait for exact-main CI, and
-launch one new Oregon-first private candidate using future tag version
+The failed Oregon stack was fully deleted; stack-owned Vapi resources, runtime,
+Lambda ENIs, VPC endpoints, network, and disposable Connect resources all
+reached absence. The next permitted actions are to merge this exact IAM fix,
+update and review the persistent qualification-role stack, wait for exact-main
+CI, and launch one new Oregon-first private candidate using future tag version
 `0.1.22`. Virginia remains blocked until Oregon passes. No Git tag,
 customer-visible object, or publication is permitted until both regions pass,
 zero-resource proof is sealed, and the signed receipt is reviewed.
