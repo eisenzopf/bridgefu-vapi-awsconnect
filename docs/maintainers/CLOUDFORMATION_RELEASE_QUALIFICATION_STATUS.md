@@ -6,7 +6,7 @@ stack names, call identifiers, Vapi object identifiers, signed URLs, or retained
 diagnostic payloads. Exact operational evidence belongs in the private,
 execution-scoped evidence store and signed candidate receipt.
 
-Last updated: 2026-08-17 (America/Los_Angeles)
+Last updated: 2026-08-18 (America/Los_Angeles)
 
 ## Status rules
 
@@ -25,51 +25,48 @@ Last updated: 2026-08-17 (America/Los_Angeles)
 
 ## Current summary
 
-The prior private candidates are retired; none created a `v0.1.22` Git tag or a
-GitHub Release. The latest candidate `0.1.22` attempt reused the verified private
-Bridgefu v0.9.0/rvoip 0.3.8 AMI content cache without recompiling, produced fresh
-private AMIs in both regions, staged the immutable release objects, and passed
-all 20 remote template validations. Oregon then created the exact nested CREATE
-change-set hierarchy but stopped before execution. AWS reported `Action:
-Dynamic` for the two mutually exclusive, explicitly conditional handoff tables
-whose condition depends on an unresolved parent-stack output. The reviewer
-incorrectly required literal `Add` for every CREATE change. A private,
-non-executed reproduction proved that the sealed template equals AWS's Original
-template and that allowing only resource-empty `Dynamic` changes bound to an
-exact sealed `Condition` lets the complete ten-template review pass while all
-other dynamic/update/import/remove shapes remain rejected.
+No candidate has created a `v0.1.22` Git tag, GitHub Release, public AMI, or
+customer-visible `latest` pointer. The latest private attempt reused the
+verified Bridgefu v0.9.0/rvoip 0.3.8 AMI cache, produced fresh private AMIs in
+both regions, staged the immutable objects, passed all 20 remote template
+validations, deployed the exact Oregon hierarchy, and passed the mandatory
+direct SIPS/TLS/SDES-SRTP preflight plus Vapi authenticated SIP readiness.
 
-Cleanup successfully deleted the nested review hierarchy but then encountered
-AWS CLI v2's live `ChangeSetNotFound` error code. The controller and reaper had
-recognized only older `ValidationError`/`ChangeSetNotFoundException` forms, so
-they did not issue `DeleteStack` for the empty root review shell. Both absence
-parsers now accept the exact service-specific code, and regression tests cover
-the current CLI response. The observed root shell and isolated reproduction
-stacks were verified resource-empty and deleted, and every diagnostic S3 object
-version was purged.
+The Web scenario then failed before Chromium or the real Vapi call because the
+qualification runner could not call `ssm:StartSession` for its two bounded port
+forwarding tunnels. A complete source-to-policy API intent audit found the full
+missing boundary in one pass: `ssm:StartSession`, `ssm:ResumeSession`,
+`ssm:TerminateSession`, `ssmmessages:OpenDataChannel`, and the later one-use
+context operations `dynamodb:PutItem`/`dynamodb:DeleteItem`. The proposed v6
+role scopes StartSession to execution-tagged Bridgefu instances and the one AWS
+port-forwarding document; scopes session lifecycle to the caller's own session;
+uses `Resource: "*"` only for OpenDataChannel because AWS does not support a
+resource ARN for that action; and constrains DynamoDB writes to `bf1_*` keys in
+`bridgefu-bfq-*` tables. AWS Access Analyzer reports no findings, and IAM Policy
+Simulator proves the positive and foreign-key negative cases.
 
-Both retained Oregon smoke paths had already passed on the Bridgefu/rvoip 0.3.8
-runtime before those candidate-control failures:
+Teardown removed the complete stack and all immediate resource classes, but its
+stable zero proof then rejected `AWS::Route53::RecordSet` as an unverified
+inventory type. The controller already checks the two exact public names and
+the private hosted-zone deletion; the allowlist omitted the record-set type.
+The proposed correction accepts only those two execution-derived names and
+fails closed on any foreign name. Replaying the exact deleted-stack inventory
+through the corrected verifier returns zero live resource classes. Automated
+recovery subsequently completed successfully and removed the failed candidate
+artifacts.
+
+Both retained Oregon smoke paths previously passed on the same
+Bridgefu/rvoip 0.3.8 runtime:
 
 ```text
 rvoip SIP client → Vapi → Bridgefu → Amazon Connect
 Bridgefu Web SDK → Vapi → Bridgefu → Amazon Connect
 ```
 
-Those retained passes are diagnostic evidence, not a substitute for fresh,
-immutable, two-region release qualification.
-
-The DNS-vacancy defect, bounded CloudFormation drift-detection handoff, 16-vCPU
-immutable builder, exact Rust caches, private content-addressed AMI cache, and
-cache snapshot verifier correction are merged through protected `main`.
-Exact-main CI passed all four checks. The canonical `CreateChangeSet` JSON,
-installed AWS CLI parser gate, false/null import normalization, and empty review
-shell cleanup are merged and passed their live boundaries. The newly discovered
-conditional-Dynamic and current missing-change-set-code corrections have passed
-the complete local test, lint, and deterministic CloudFormation validation gates
-and await protected-main review. Candidate version `0.1.22` is vacant again, no qualification
-mutation is active, and the release remains at the
-pre-candidate boundary rather than a release or publication boundary.
+Those retained passes remain diagnostic evidence, not a substitute for fresh,
+immutable, two-region qualification. The API-intent and zero-proof fixes are on
+a review branch and have not yet passed protected-main CI or a fresh Oregon
+qualification. Virginia, sealing, and publication remain blocked behind Oregon.
 
 ## Exact source under evaluation
 
@@ -87,7 +84,7 @@ pre-candidate boundary rather than a release or publication boundary.
 
 - Repository: `bridgefu-vapi-awsconnect`
 - Current protected-main release-control commit:
-  `a3cef334d4a2b72b7cbb1395e14b94b572b361b4`
+  `fa82e01d774c8b9e1e1539285b313c9cb5e0b2b9`
 - Target branch: `origin/main`
 - Next eligible version: `0.1.22`, only after every pre-candidate gate below
   passes and the exact audited commit is merged to `origin/main`.
@@ -99,12 +96,12 @@ pre-candidate boundary rather than a release or publication boundary.
 | Recipe-first reconciliation | PASSED | Applicable safeguards are preserved and obsolete branch scope is explicitly rejected |
 | Secret and repository hygiene | PASSED | History, working-tree, and exact staged-source scans pass with only reviewed synthetic test fixtures |
 | Local contract and static gates | PASSED | Complete fail-closed preflight passed on the final combined worktree |
-| Exact merged-main CI | PASSED | All four required checks passed on current protected-main commit `a3cef334d4a2b72b7cbb1395e14b94b572b361b4` |
+| Exact merged-main CI | PASSED | All four required checks passed on current protected-main commit `fa82e01d774c8b9e1e1539285b313c9cb5e0b2b9` |
 | Retained diagnostic cleanup | PASSED | The exact Oregon `TestDelete` root is absent and its Vapi, ACM, S3, and direct resource checks pass |
 | Persistent IAM control plane | PASSED | Reviewed, no-replacement role-stack changes deployed and reverified |
 | Exact remote template validation | PASSED | All ten exact rendered templates passed AWS validation in both supported regions (20/20) |
 | Private candidate AMI build | PASSED | Exact private cache reuse, fresh two-region copies, immutable staging, and 20/20 remote template validation passed |
-| Fresh Oregon qualification | FAILED | Merge the exact conditional-`Dynamic` review contract and current `ChangeSetNotFound` cleanup handling, then reach direct secure preflight and both Vapi smoke paths before zero proof |
+| Fresh Oregon qualification | FAILED | Merge/deploy the complete API-intent v6 role and exact Route53 record-set zero proof, then pass direct preflight and both Vapi smoke paths before teardown |
 | Fresh Virginia qualification | NOT STARTED | Same immutable bits and checks pass only after Oregon |
 | Candidate sealing | NOT STARTED | Signed dual-region evidence and zero-resource receipts |
 | Customer publication | NOT STARTED | Public AMIs/snapshots, immutable objects, and `latest` updated last |

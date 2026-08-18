@@ -64,6 +64,37 @@ class QualificationReleaseSafeguardTests(unittest.TestCase):
                 "arn:aws:mystery:us-west-2:123456789012:resource/unknown"
             )
 
+    def test_stack_owned_dns_records_are_exactly_the_bounded_names(self) -> None:
+        expected = CONTROLLER.validate_qualification_record_names(
+            [
+                "bfq-test-1234.example.test",
+                "control.bfq-test-1234.example.test.",
+            ],
+            "bfq-test-1234",
+            "example.test",
+        )
+        self.assertEqual(
+            expected,
+            (
+                "bfq-test-1234.example.test",
+                "control.bfq-test-1234.example.test",
+            ),
+        )
+        self.assertIn(
+            "AWS::Route53::RecordSet",
+            CONTROLLER.release_safeguards.DIRECT_VERIFIED_RESOURCE_TYPES,
+        )
+
+    def test_foreign_stack_owned_dns_record_fails_closed(self) -> None:
+        with self.assertRaisesRegex(
+            CONTROLLER.QualificationError, "ownership scope changed"
+        ):
+            CONTROLLER.validate_qualification_record_names(
+                ["foreign.example.test"],
+                "bfq-test-1234",
+                "example.test",
+            )
+
     def test_tagged_ec2_instance_uses_nested_instance_identity_and_tombstone(
         self,
     ) -> None:

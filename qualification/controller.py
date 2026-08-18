@@ -1276,6 +1276,27 @@ def sanitize_diagnostic(value: Any, maximum: int = DIAGNOSTIC_LIMIT) -> str:
     return cleaned
 
 
+def validate_qualification_record_names(
+    record_names: list[str], execution_id: str, hosted_zone_name: str
+) -> tuple[str, str]:
+    hostname = f"{execution_id}.{hosted_zone_name.rstrip('.')}".lower()
+    expected = (hostname, f"control.{hostname}")
+    if len(record_names) > 4:
+        raise QualificationError("qualification DNS ownership inventory is invalid")
+    normalized: list[str] = []
+    for value in record_names:
+        if (
+            not isinstance(value, str)
+            or not 1 <= len(value) <= 253
+            or re.search(r"[\x00-\x20\x7f]", value)
+        ):
+            raise QualificationError("qualification DNS ownership inventory is invalid")
+        normalized.append(value.rstrip(".").lower())
+    if set(normalized) - set(expected):
+        raise QualificationError("qualification DNS ownership scope changed")
+    return expected
+
+
 class CommandRunner:
     """Subprocess boundary kept injectable for fail-closed unit tests."""
 
@@ -8021,8 +8042,12 @@ class Controller:
             if self.aws.exists(["route53", "get-hosted-zone", "--id", private_zone]):
                 resources["route53_private_zones"].add(private_zone)
 
-        hostname = f"{self.args.execution_id}.{self.args.hosted_zone_name.rstrip('.')}"
-        public_names = [hostname, f"control.{hostname}"]
+        hostname, control_hostname = validate_qualification_record_names(
+            self._owned_ids("AWS::Route53::RecordSet"),
+            self.args.execution_id,
+            self.args.hosted_zone_name,
+        )
+        public_names = [hostname, control_hostname]
         if self.acm_validation_journal is not None:
             public_names.extend(
                 str(item["name"])

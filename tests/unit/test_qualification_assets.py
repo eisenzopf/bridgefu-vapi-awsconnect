@@ -405,7 +405,9 @@ class QualificationAssetTests(unittest.TestCase):
             "2026-08-18-review-normalization-and-cleanup-v7", verifier
         )
         self.assertIn("QualificationPolicyContractVersion", verifier)
-        self.assertIn("2026-08-18-web-media-ingress-v5", verifier)
+        self.assertIn(
+            "2026-08-18-complete-qualification-api-intents-v6", verifier
+        )
         self.assertIn('"cloudformation",\n        "get-template"', verifier)
         self.assertIn('"detect-stack-resource-drift"', verifier)
         verifier_tree = ast.parse(verifier)

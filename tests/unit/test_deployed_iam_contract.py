@@ -88,6 +88,20 @@ class DeployedIamContractTests(unittest.TestCase):
                 deployed, self.contract["qualification"], "qualification"
             )
 
+    def test_every_live_web_mutation_statement_is_part_of_the_deployed_gate(self):
+        self.assertEqual(
+            {
+                "ManageOnlyOwnedQualificationWebMediaIngress",
+                "StartOnlyTaggedQualificationPortForwarding",
+                "UseOnlyAwsPortForwardingDocument",
+                "UseOnlyOwnQualificationSessions",
+                "OpenQualificationSessionDataChannel",
+                "WriteOnlyOwnedQualificationHandoffContext",
+            }
+            - self.contract["qualification"].keys(),
+            set(),
+        )
+
     def test_verifier_is_executable_and_has_a_bounded_cli(self):
         self.assertTrue(SCRIPT.stat().st_mode & stat.S_IXUSR)
         result = subprocess.run(
