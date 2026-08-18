@@ -127,6 +127,65 @@ def expected_contract(
                     }
                 },
             ),
+            _statement(
+                "ManageOnlyOwnedQualificationWebMediaIngress",
+                [
+                    "ec2:AuthorizeSecurityGroupIngress",
+                    "ec2:RevokeSecurityGroupIngress",
+                ],
+                f"arn:{partition}:ec2:*:{account_id}:security-group/*",
+                {
+                    "StringEquals": {
+                        "aws:ResourceTag/Project": "bridgefu-vapi-awsconnect",
+                        "aws:ResourceTag/ManagedBy": "bridgefu-cloudformation",
+                    },
+                    "StringLike": {
+                        "aws:ResourceTag/BridgefuExecutionId": "bfq-*"
+                    },
+                },
+            ),
+            _statement(
+                "StartOnlyTaggedQualificationPortForwarding",
+                "ssm:StartSession",
+                f"arn:{partition}:ec2:*:{account_id}:instance/*",
+                {
+                    "StringEquals": {
+                        "ssm:resourceTag/Project": "bridgefu-vapi-awsconnect",
+                        "ssm:resourceTag/ManagedBy": "bridgefu-cloudformation",
+                    },
+                    "StringLike": {
+                        "ssm:resourceTag/BridgefuExecutionId": "bfq-*"
+                    },
+                },
+            ),
+            _statement(
+                "UseOnlyAwsPortForwardingDocument",
+                "ssm:StartSession",
+                f"arn:{partition}:ssm:*::document/AWS-StartPortForwardingSession",
+            ),
+            _statement(
+                "UseOnlyOwnQualificationSessions",
+                [
+                    "ssm:ResumeSession",
+                    "ssm:TerminateSession",
+                ],
+                f"arn:{partition}:ssm:*:{account_id}:session/${{aws:userid}}-*",
+            ),
+            _statement(
+                "OpenQualificationSessionDataChannel",
+                "ssmmessages:OpenDataChannel",
+                "*",
+            ),
+            _statement(
+                "WriteOnlyOwnedQualificationHandoffContext",
+                ["dynamodb:DeleteItem", "dynamodb:PutItem"],
+                f"arn:{partition}:dynamodb:*:{account_id}:table/bridgefu-bfq-*",
+                {
+                    "ForAllValues:StringLike": {
+                        "dynamodb:LeadingKeys": "bf1_*"
+                    }
+                },
+            ),
         )
     }
     recovery_read_prefix = [

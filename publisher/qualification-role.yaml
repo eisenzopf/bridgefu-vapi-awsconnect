@@ -252,6 +252,33 @@ Resources:
                   - ssm:GetCommandInvocation
                   - ssm:SendCommand
                 Resource: '*'
+              - Sid: StartOnlyTaggedQualificationPortForwarding
+                Effect: Allow
+                Action: ssm:StartSession
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:ec2:*:${AWS::AccountId}:instance/*
+                Condition:
+                  StringEquals:
+                    ssm:resourceTag/Project: bridgefu-vapi-awsconnect
+                    ssm:resourceTag/ManagedBy: bridgefu-cloudformation
+                  StringLike:
+                    ssm:resourceTag/BridgefuExecutionId: bfq-*
+              - Sid: UseOnlyAwsPortForwardingDocument
+                Effect: Allow
+                Action: ssm:StartSession
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:ssm:*::document/AWS-StartPortForwardingSession
+              - Sid: UseOnlyOwnQualificationSessions
+                Effect: Allow
+                Action:
+                  - ssm:ResumeSession
+                  - ssm:TerminateSession
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:session/${!aws:userid}-*
+              - Sid: OpenQualificationSessionDataChannel
+                Effect: Allow
+                Action: ssmmessages:OpenDataChannel
+                Resource: '*'
               - Sid: ManageOnlyOwnedQualificationWebMediaIngress
                 Effect: Allow
                 Action:
@@ -343,6 +370,16 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:dynamodb:*:${AWS::AccountId}:table/bridgefu-bfq-*'
                   - !Sub 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/bridgefu/bfq-*:*'
                   - !Sub 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/aws/lambda/bridgefu-bfq-*:*'
+              - Sid: WriteOnlyOwnedQualificationHandoffContext
+                Effect: Allow
+                Action:
+                  - dynamodb:DeleteItem
+                  - dynamodb:PutItem
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:dynamodb:*:${AWS::AccountId}:table/bridgefu-bfq-*
+                Condition:
+                  ForAllValues:StringLike:
+                    dynamodb:LeadingKeys: bf1_*
               - Sid: GenerateSyntheticSpeech
                 Effect: Allow
                 Action: polly:SynthesizeSpeech
@@ -354,4 +391,4 @@ Outputs:
   QualificationCloudFormationServiceRoleArn:
     Value: !GetAtt QualificationCloudFormationServiceRole.Arn
   QualificationPolicyContractVersion:
-    Value: 2026-08-18-web-media-ingress-v5
+    Value: 2026-08-18-complete-qualification-api-intents-v6

@@ -172,6 +172,7 @@ DIRECT_VERIFIED_RESOURCE_TYPES = {
     "AWS::Lambda::Function",
     "AWS::Logs::LogGroup",
     "AWS::Route53::HostedZone",
+    "AWS::Route53::RecordSet",
     "AWS::SNS::Topic",
     "AWS::SecretsManager::Secret",
     "Custom::BridgefuVapiResources",
