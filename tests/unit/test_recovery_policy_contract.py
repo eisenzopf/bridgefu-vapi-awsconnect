@@ -1107,6 +1107,25 @@ validate_vapi_phone_request_journal_exact {paths["phone-request"]} \
         self.assertNotIn("password", recovery.lower())
         self.assertNotIn('echo "$vapi_key"', recovery)
 
+    def test_vapi_recovery_survives_stack_deletion_only_with_ownership_seals(self):
+        recovery = QUALIFICATION_REAPER_PATH.read_text()
+        self.assertIn('3) direct_stack_present=false ;;', recovery)
+        self.assertIn('test "$direct_tool_journal_present" = true', recovery)
+        self.assertIn(
+            'test "$direct_assistant_journal_present" = true', recovery
+        )
+        self.assertIn(
+            'if [[ "${direct_stack_present:-false}" = true ]]', recovery
+        )
+        self.assertIn(
+            'phone_assistant="$(jq -r .assistant_id vapi-phone-intent.json)"',
+            recovery,
+        )
+        self.assertIn(
+            "A deleted stack cannot supply outputs, but the exact pre-create intent",
+            recovery,
+        )
+
     def test_vapi_intent_and_remote_identity_guards_reject_tampering(self):
         workflow = reaper_source()
 

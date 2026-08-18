@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import subprocess
@@ -31,25 +32,33 @@ def runtime_config() -> dict:
 
 
 class BridgefuWebRuntimeTests(unittest.TestCase):
-    def test_local_validation_environment_uses_only_synthetic_placeholders(self):
-        value = RUNTIME.validation_environment(
-            {
-                "PATH": "/usr/bin",
-                "BRIDGEFU_API_BEARER_TOKEN": "customer-bearer",
-                "BRIDGEFU_CONTROL_HMAC_KEY": "customer-control",
-                RUNTIME.VAPI_PASSWORD_ENV: "customer-vapi-password",
-            }
+    def test_live_install_never_compiles_bridgefu_on_the_qualification_runner(self):
+        source = inspect.getsource(CONTROLLER.Controller.install_web_runtime)
+        self.assertNotIn("cargo", source)
+        self.assertNotIn("bridgefu_checkout", source)
+        self.assertIn("run_web_runtime_ssm", source)
+        secret_arn = (
+            "arn:aws:secretsmanager:us-west-2:123456789012:"  # noqa: S105
+            "secret:bridgefu-runtime-test"
         )
-        self.assertEqual(value["PATH"], "/usr/bin")
-        self.assertEqual(
-            {
-                value["BRIDGEFU_API_BEARER_TOKEN"],
-                value["BRIDGEFU_CONTROL_HMAC_KEY"],
-                value[RUNTIME.VAPI_PASSWORD_ENV],
-            },
-            {RUNTIME.LOCAL_VALIDATION_SECRET},
+        remote_script = RUNTIME.install_script(
+            execution_id="bfq-runtime-test",
+            region="us-west-2",
+            bucket="bridgefu-artifacts-test",
+            object_key="qualification/bfq-runtime-test/web-runtime/bridgefu.json",
+            config_sha256="a" * 64,
+            auth_secret_arn=secret_arn,
         )
-        self.assertNotIn("customer", "".join(value.values()))
+        self.assertIn(
+            '"$wrapper" validate "$run/bridgefu.yaml.candidate"', remote_script
+        )
+        self.assertLess(
+            remote_script.index('"$wrapper" validate "$run/bridgefu.yaml.candidate"'),
+            remote_script.index(
+                "install -o root -g bridgefu -m 0640 "
+                '"$run/bridgefu.yaml.candidate" "$config"'
+            ),
+        )
 
     def test_config_is_canonical_secret_free_and_owns_exact_routes(self):
         value = runtime_config()

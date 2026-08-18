@@ -549,6 +549,7 @@ prepare_exact_direct_vapi_recovery() {
   direct_assistant_intent_present=false
   direct_assistant_request_present=false
   direct_assistant_journal_present=false
+  direct_stack_present=false
   direct_recovery_tool_id=""
   direct_recovery_assistant_id=""
   for direct_record in \
@@ -630,7 +631,33 @@ prepare_exact_direct_vapi_recovery() {
   fi
   run_strict describe_stack_exact "$direct_region" "$direct_stack_name" \
     vapi-direct-stack.json
-  test "$strict_status" = 0
+  case "$strict_status" in
+    0) direct_stack_present=true ;;
+    3) direct_stack_present=false ;;
+    *) return "$strict_status" ;;
+  esac
+  if [[ "$direct_stack_present" = false ]]; then
+    # The controller can delete the stack before purging its durable Vapi
+    # journals.  In that state the exact ownership journals, rather than
+    # vanished stack outputs, are the only safe recovery authority.  Never
+    # reconcile an ambiguous request without its post-create ownership seal.
+    test "$direct_tool_journal_present" = true
+    if [[ "$direct_assistant_request_present" = true ]]; then
+      test "$direct_assistant_journal_present" = true
+    fi
+    direct_stack_endpoint="$(jq -r .endpoint_url \
+      vapi-direct-tool-intent.json)"
+    direct_stack_credential="$(jq -r .credential_id \
+      vapi-direct-tool-intent.json)"
+    direct_recovery_tool_id="$(jq -r .tool_id vapi-direct-tool.json)"
+    if [[ "$direct_assistant_journal_present" = true ]]; then
+      direct_recovery_assistant_id="$(jq -r .assistant_id \
+        vapi-direct-assistant.json)"
+    fi
+    direct_vapi_curl_config="vapi-direct-$direct_region-curl.config"
+    load_vapi_curl_config "$direct_region" "$direct_vapi_curl_config"
+    return 0
+  fi
   direct_stack_endpoint="$(stack_output_exact vapi-direct-stack.json DirectHandoffUrl)"
   direct_stack_credential="$(stack_output_exact vapi-direct-stack.json VapiWebhookCredentialId)"
   direct_stack_model="$(stack_output_exact vapi-direct-stack.json VapiModel)"
@@ -790,29 +817,31 @@ finish_exact_direct_vapi_recovery() {
     return 0
   fi
   if [[ -n "${direct_recovery_assistant_id:-}" ]]; then
-    direct_binding="$(aws secretsmanager get-secret-value \
-      --region "$direct_region" --secret-id "$direct_identity_binding_arn" \
-      --query SecretString --output text)"
-    direct_org="$(jq -r .organization_id vapi-direct-assistant-intent.json)"
-    if jq -e '(keys | sort) == ["status"] and .status == "unbound"' \
-      <<<"$direct_binding" >/dev/null; then
-      :
-    else
-      jq -e --arg assistant "$direct_recovery_assistant_id" \
-        --arg org "$direct_org" '
-        (keys | sort) == ["assistant_id","organization_id","status"] and
-        .status == "bound" and .assistant_id == $assistant and
-        .organization_id == $org' <<<"$direct_binding" >/dev/null
-      aws secretsmanager put-secret-value --region "$direct_region" \
-        --secret-id "$direct_identity_binding_arn" \
-        --secret-string '{"status":"unbound"}' >/dev/null
+    if [[ "${direct_stack_present:-false}" = true ]]; then
       direct_binding="$(aws secretsmanager get-secret-value \
         --region "$direct_region" --secret-id "$direct_identity_binding_arn" \
         --query SecretString --output text)"
-      jq -e '(keys | sort) == ["status"] and .status == "unbound"' \
-        <<<"$direct_binding" >/dev/null
+      direct_org="$(jq -r .organization_id vapi-direct-assistant-intent.json)"
+      if jq -e '(keys | sort) == ["status"] and .status == "unbound"' \
+        <<<"$direct_binding" >/dev/null; then
+        :
+      else
+        jq -e --arg assistant "$direct_recovery_assistant_id" \
+          --arg org "$direct_org" '
+          (keys | sort) == ["assistant_id","organization_id","status"] and
+          .status == "bound" and .assistant_id == $assistant and
+          .organization_id == $org' <<<"$direct_binding" >/dev/null
+        aws secretsmanager put-secret-value --region "$direct_region" \
+          --secret-id "$direct_identity_binding_arn" \
+          --secret-string '{"status":"unbound"}' >/dev/null
+        direct_binding="$(aws secretsmanager get-secret-value \
+          --region "$direct_region" --secret-id "$direct_identity_binding_arn" \
+          --query SecretString --output text)"
+        jq -e '(keys | sort) == ["status"] and .status == "unbound"' \
+          <<<"$direct_binding" >/dev/null
+      fi
+      unset direct_binding
     fi
-    unset direct_binding
     direct_status="$(curl --config "$direct_vapi_curl_config" \
       --silent --proto '=https' --tlsv1.2 \
       --connect-timeout 5 --max-time 20 --max-filesize 524288 \
@@ -1087,14 +1116,23 @@ cleanup_exact_vapi_phone() {
   fi
   run_strict describe_stack_exact "$region" "$stack_name" \
     vapi-phone-stack.json
-  test "$strict_status" = 0
-  stack_assistant="$(jq -er '
-    [.Stacks[0].Outputs[]? |
-     select(.OutputKey == "VapiAssistantId") | .OutputValue] |
-    select(length == 1) | .[0] |
-    select(type == "string" and test("^[A-Za-z0-9_-]{1,128}$"))' \
-    vapi-phone-stack.json)"
-  phone_assistant="$stack_assistant"
+  case "$strict_status" in
+    0)
+      phone_assistant="$(jq -er '
+        [.Stacks[0].Outputs[]? |
+         select(.OutputKey == "VapiAssistantId") | .OutputValue] |
+        select(length == 1) | .[0] |
+        select(type == "string" and test("^[A-Za-z0-9_-]{1,128}$"))' \
+        vapi-phone-stack.json)"
+      ;;
+    3)
+      # A deleted stack cannot supply outputs, but the exact pre-create intent
+      # durably binds the assistant used by this qualification-owned phone.
+      test "$intent_journal_present" = true
+      phone_assistant="$(jq -r .assistant_id vapi-phone-intent.json)"
+      ;;
+    *) return "$strict_status" ;;
+  esac
   if [[ -n "$expected_assistant_id" ]]; then
     [[ "$expected_assistant_id" =~ ^[A-Za-z0-9_-]{1,128}$ ]]
     phone_assistant="$expected_assistant_id"
