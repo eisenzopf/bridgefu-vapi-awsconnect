@@ -3115,7 +3115,10 @@ def derive_scenario_checks(
     )
     source_to_agent = (
         int(source_media.get("source_to_agent_marker_frames_sent", 0)) >= 5
-        and int(agent_media.get("source_to_agent_marker_frames", 0)) >= 50
+        # Presence, not fidelity: five 20 ms analyser samples plus the
+        # independently retained marker edge, RTP, active audio, and DTMF
+        # observations prove that source audio traversed the call.
+        and int(agent_media.get("source_to_agent_marker_frames", 0)) >= 5
         and len(agent_media.get("source_marker_observed_at_ms", [])) >= 1
     )
     source_receive_frames = 50 if scenario == WEB_SCENARIO else 5

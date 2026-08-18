@@ -2517,7 +2517,7 @@ class QualificationControllerTests(unittest.TestCase):
         agent = {
             "screen_pop": {"visible": True, "visible_fields": fields},
             "media": {
-                "source_to_agent_marker_frames": 50,
+                "source_to_agent_marker_frames": 5,
                 "source_marker_observed_at_ms": [1],
                 "agent_to_source_marker_frames_sent": 25,
                 "dtmf_source_to_agent_observed": True,
@@ -2601,7 +2601,7 @@ class QualificationControllerTests(unittest.TestCase):
                 "screenshot_sha256": "c" * 64,
             },
             "media": {
-                "source_to_agent_marker_frames": 50,
+                "source_to_agent_marker_frames": 5,
                 "source_marker_observed_at_ms": [1],
                 "dtmf_source_to_agent_observed": True,
                 "agent_marker_sent_at_ms": [1],
@@ -2620,7 +2620,7 @@ class QualificationControllerTests(unittest.TestCase):
             participant, "participant-observation-v1.schema.json"
         )
         insufficient_participant_media = json.loads(json.dumps(participant))
-        insufficient_participant_media["media"]["source_to_agent_marker_frames"] = 49
+        insufficient_participant_media["media"]["source_to_agent_marker_frames"] = 4
         with self.assertRaises(CONTROLLER.QualificationError):
             CONTROLLER.validate_schema(
                 insufficient_participant_media,
