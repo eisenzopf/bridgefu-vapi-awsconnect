@@ -333,37 +333,41 @@ AWS authority.
 
 ## Current live gate and next permitted action
 
-Protected main contains the live-compilation removal and exact deleted-stack
-tombstone cleanup fixes. Its next private candidate reused the verified AMI
-cache and passed source, IAM, bucket, immutable-artifact, two-region remote
-template, and Oregon no-execute nested-change-set review gates. The complete
-Oregon customer-product stack reached `CREATE_COMPLETE`; both public and
-private DNS records and the ACM certificate completed successfully. The exact
-candidate AMI/runtime binding passed, the Connect agent was authenticated and
-Available, and the direct mandatory-SRTP preflight proved SIPS/TLS,
-`RTP/SAVP`, SDES-SRTP contexts, audio, DTMF, ACK/BYE, and cleanup.
+Protected main contains the complete qualification API-intent contract. The
+persistent qualification role was updated through a reviewed non-replacing
+change set; its exact deployed template, inline policies, RoleId, simulations,
+and CloudFormation drift check all passed. A subsequent private candidate
+reused the verified AMI cache and passed source, IAM, bucket,
+immutable-artifact, all two-region remote `ValidateTemplate` calls, and Oregon
+nested-change-set review gates. The complete Oregon customer-product stack
+reached `CREATE_COMPLETE`; public and private DNS and ACM validation completed.
+The exact candidate AMI/runtime binding passed, the Connect agent was
+authenticated and Available, and the direct mandatory-SRTP probe proved
+SIPS/TLS, `RTP/SAVP`, SDES-SRTP contexts, audio, DTMF, ACK/BYE, and clean
+runtime restoration.
 
-The run then stopped before browser startup. `authorize_web_media()` correctly
-attempted to add one temporary runner `/32` for UDP ports 20000-20399 to the
-stack-owned Bridgefu security group, but the persistent qualification runner
-role lacked `ec2:AuthorizeSecurityGroupIngress`. No Web SDK source call reached
-Vapi or Amazon Connect; the only Vapi call was the earlier temporary-endpoint
-readiness call. Virginia and receipt sealing remained blocked.
+The direct observer nevertheless failed because the probe's deterministic
+marker ended after 12 seconds. Amazon Connect connected the agent roughly one
+second before the probe sent BYE, leaving insufficient established-media time
+for Chromium to observe the remote marker and outbound RTP. The product did not
+restart or fail secure negotiation. The local correction keeps the marker on
+the wire for a bounded 32 seconds and sends DTMF and BYE afterward; its Rust and
+Python contracts pass.
 
-The local correction grants authorize and revoke only on security-group ARNs
-whose resource tags prove Project `bridgefu-vapi-awsconnect`, ManagedBy
-`bridgefu-cloudformation`, and a `bfq-*` execution. The controller still limits
-the actual permission to the discovered public `/32` and UDP 20000-20399, and
-cleanup revokes the identical permission. AWS IAM Access Analyzer reports zero
-findings for the new statement. Failure redaction now removes AWS encoded
-authorization blobs before evidence is persisted. Focused and full unit,
-Ruff, ShellCheck, actionlint, deterministic package, CloudFormation lint, and
-validation gates pass locally.
+Cleanup deleted the full stack and all owned resources, but stable zero proof
+then hit a second qualification defect. The vacancy helper applied ordinary
+hostname-label syntax to the already-sealed ACM validation CNAME owners. ACM
+correctly uses a leading underscore label, so the verifier raised `DNS name is
+invalid` even though the records were absent. The local correction permits one
+narrow leading-underscore Route53 record label while leaving hosted-zone and
+hostname validation strict. A replay of the complete deleted Oregon inventory,
+including all CloudFormation-owned resources, Vapi, S3 versions, Route53, and
+tagged-resource checks, now returns exactly zero live resources. Future stable
+proof failures also report only a fixed non-sensitive subsystem category.
 
-The failed Oregon stack was fully deleted; stack-owned Vapi resources, runtime,
-Lambda ENIs, VPC endpoints, network, and disposable Connect resources all
-reached absence. The next permitted actions are to merge this exact IAM fix,
-update and review the persistent qualification-role stack, wait for exact-main
+The automatic recovery workflow completed successfully and removed the failed
+private candidate. The next permitted actions are to merge these two
+qualification-harness corrections through protected main, require exact-main
 CI, and launch one new Oregon-first private candidate using future tag version
 `0.1.22`. Virginia remains blocked until Oregon passes. No Git tag,
 customer-visible object, or publication is permitted until both regions pass,

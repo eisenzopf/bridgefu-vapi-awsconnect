@@ -30,7 +30,12 @@ const MAX_REQUEST_BYTES: usize = 4 * 1024;
 const FRAME_SAMPLES: usize = 160;
 const FRAME_DURATION: Duration = Duration::from_millis(20);
 const MARKER_FREQUENCY: f32 = 997.0;
-const MARKER_BURSTS: usize = 12;
+// Keep the deterministic marker on the wire long enough for Amazon Connect to
+// route the contact, for the agent to accept it, and for Chromium to sample the
+// established WebRTC media. The first live qualification showed that twelve
+// seconds ended roughly one second after agent acceptance, which made the
+// observer race the BYE even though TLS/SRTP and Connect delivery succeeded.
+const MARKER_BURSTS: usize = 32;
 const MARKER_FRAMES_PER_BURST: usize = 10;
 const MARKER_SILENCE_FRAMES_PER_BURST: usize = 40;
 const MARKER_FRAMES: usize = MARKER_BURSTS * MARKER_FRAMES_PER_BURST;
@@ -1614,8 +1619,9 @@ mod tests {
     #[test]
     fn marker_window_allows_connect_flow_and_agent_acceptance() {
         let duration = FRAME_DURATION * MARKER_TOTAL_FRAMES as u32;
-        assert_eq!(MARKER_FRAMES, 120);
-        assert!(duration >= Duration::from_secs(12));
+        assert_eq!(MARKER_FRAMES, 320);
+        assert!(duration >= Duration::from_secs(32));
+        assert!(duration < Duration::from_secs(40));
     }
 
     #[test]

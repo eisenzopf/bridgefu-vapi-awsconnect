@@ -1276,6 +1276,25 @@ def sanitize_diagnostic(value: Any, maximum: int = DIAGNOSTIC_LIMIT) -> str:
     return cleaned
 
 
+def zero_resource_failure_category(error: Exception) -> str:
+    """Project a cleanup exception into a fixed, non-sensitive subsystem."""
+    message = str(error).lower()
+    for marker, category in (
+        ("route53", "route53_inventory"),
+        ("dns name", "route53_inventory"),
+        ("cloudformation", "cloudformation_inventory"),
+        ("vapi", "vapi_inventory"),
+        ("connect", "connect_inventory"),
+        ("s3", "s3_inventory"),
+        ("object version", "s3_inventory"),
+        ("ec2", "ec2_inventory"),
+        ("resource tag", "tagged_resource_inventory"),
+    ):
+        if marker in message:
+            return category
+    return "resource_inventory"
+
+
 def validate_qualification_record_names(
     record_names: list[str], execution_id: str, hosted_zone_name: str
 ) -> tuple[str, str]:
@@ -8405,8 +8424,14 @@ class Controller:
                 )
             except (KeyError, TypeError, ValueError):
                 errors.append("qualification resource ownership proof is invalid")
-            except (QualificationError, release_safeguards.SafeguardError):
-                errors.append("three stable zero-resource observations failed")
+            except (
+                QualificationError,
+                release_safeguards.SafeguardError,
+            ) as error:
+                errors.append(
+                    "three stable zero-resource observations failed "
+                    f"({zero_resource_failure_category(error)})"
+                )
         else:
             errors.append("exhaustive zero-resource proof prerequisites failed")
         proof_sha256 = (

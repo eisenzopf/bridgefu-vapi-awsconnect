@@ -24,6 +24,22 @@ SPEC.loader.exec_module(CONTROLLER)
 
 
 class QualificationControllerTests(unittest.TestCase):
+    def test_zero_resource_failure_category_is_bounded_and_non_sensitive(self):
+        self.assertEqual(
+            CONTROLLER.zero_resource_failure_category(
+                CONTROLLER.QualificationError("DNS name is invalid")
+            ),
+            "route53_inventory",
+        )
+        self.assertEqual(
+            CONTROLLER.zero_resource_failure_category(
+                CONTROLLER.QualificationError(
+                    "unexpected credential=private-canary and opaque failure"
+                )
+            ),
+            "resource_inventory",
+        )
+
     def test_sanitize_diagnostic_redacts_encoded_aws_authorization_message(self):
         encoded = "PO8KhF73vYE1RQtSaq64QMz9UeIf6q2dSEbC9UUk59O60D8Vo4qFC5kLNv5LiE"
         value = CONTROLLER.sanitize_diagnostic(

@@ -266,6 +266,28 @@ class Route53VacancyTests(unittest.TestCase):
             [{"name": "bfq-test.example.com.", "type": "AAAA"}],
         )
 
+    def test_exact_acm_validation_record_is_reported_occupied(self) -> None:
+        name = "_249e3f07bf33c5327ff0df02a46c3eec.bfq-test.example.com"
+        aws = Route53RecordAws(
+            [{"Name": f"{name}.", "Type": "CNAME"}],
+            next_page_marker="opaque-safe-pagination-marker",
+        )
+
+        self.assertEqual(
+            safeguards.exact_route53_records(aws, HOSTED_ZONE_ID, name),
+            [{"name": f"{name}.", "type": "CNAME"}],
+        )
+
+    def test_route53_record_name_rejects_nonleading_underscore(self) -> None:
+        with self.assertRaisesRegex(
+            safeguards.SafeguardError, "Route53 record name is invalid"
+        ):
+            safeguards.exact_route53_records(
+                Route53RecordAws([]),
+                HOSTED_ZONE_ID,
+                "bfq_test.example.com",
+            )
+
 
 class TelemetryAws:
     def __init__(

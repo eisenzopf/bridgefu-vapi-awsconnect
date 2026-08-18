@@ -198,6 +198,30 @@ def _dns_name(value: Any) -> str:
     return normalized
 
 
+def _route53_record_name(value: Any) -> str:
+    """Validate a host name or one ACM DNS-validation owner name.
+
+    ACM intentionally prefixes its validation CNAME owner with an underscore.
+    That is valid Route53 record syntax but is not a valid RFC host label, so it
+    must not be passed through the stricter hosted-zone/hostname validator.
+    Keep the exception narrow: only one leading underscore label is accepted.
+    """
+    if not isinstance(value, str):
+        raise SafeguardError("Route53 record name is invalid")
+    normalized = value.rstrip(".").lower() + "."
+    if (
+        len(normalized) > 254
+        or re.fullmatch(
+            r"(?:_[a-z0-9]{1,64}\.)?"
+            r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+",
+            normalized,
+        )
+        is None
+    ):
+        raise SafeguardError("Route53 record name is invalid")
+    return normalized
+
+
 def public_ns_records(name: str) -> list[str]:
     """Resolve the public NS RRset with a bounded, DNS-specific dependency."""
     try:
@@ -215,7 +239,7 @@ def public_ns_records(name: str) -> list[str]:
 def exact_route53_records(
     aws: Any, hosted_zone_id: str, name: str
 ) -> list[dict[str, Any]]:
-    normalized = _dns_name(name)
+    normalized = _route53_record_name(name)
     response = aws.json(
         [
             "route53",
@@ -247,7 +271,7 @@ def exact_route53_records(
         # target before applying the stricter host-name parser.
         if raw_name.rstrip(".").lower() + "." != normalized:
             continue
-        candidate = _dns_name(raw_name)
+        candidate = _route53_record_name(raw_name)
         record_type = value.get("Type")
         if not isinstance(record_type, str) or not re.fullmatch(
             r"[A-Z0-9]{1,16}", record_type
