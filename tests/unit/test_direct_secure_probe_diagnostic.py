@@ -49,7 +49,7 @@ def valid_result() -> dict:
             "keying": "SDES-SRTP",
             "contexts_installed": True,
             "audio_opened": True,
-            "marker_frames_sent": 120,
+            "marker_frames_sent": 320,
             "codec": "PCMU",
             "dtmf_requested": True,
             "in_band_dtmf_frames_sent": 15,
