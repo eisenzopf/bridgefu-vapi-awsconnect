@@ -1433,6 +1433,10 @@ class Aws:
             ("sns", "get-topic-attributes"): {"NotFound"},
             ("backup", "describe-backup-vault"): {"ResourceNotFoundException"},
             ("backup", "get-backup-plan"): {"ResourceNotFoundException"},
+            ("cloudformation", "describe-change-set"): {
+                "ChangeSetNotFound",
+                "ChangeSetNotFoundException",
+            },
         }
         if code in missing_codes.get(operation, set()):
             return False
@@ -4482,7 +4486,8 @@ class Controller:
             )
         except deployment_review.DeploymentReviewError as error:
             raise QualificationError(
-                "CloudFormation deployment review failed"
+                "CloudFormation deployment review failed "
+                f"reason={error.safe_reason}"
             ) from error
         self.deployment_review_evidence = dict(reviewed.proof)
         self.reviewed_change_set_arns = reviewed.change_set_arns
