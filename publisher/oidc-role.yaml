@@ -458,6 +458,12 @@ Resources:
                   - cloudformation:DescribeStacks
                   - cloudformation:ListStackResources
                 Resource: !Sub 'arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/bridgefu-bfq-*/*'
+              - Sid: DeleteOnlyDisposableQualificationChangeSets
+                Effect: Allow
+                Action:
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                Resource: !Sub 'arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:changeSet/bridgefu-bfq-*-review/*'
               - Sid: DiscoverAbsentQualificationStack
                 Effect: Allow
                 Action: cloudformation:DescribeStacks
@@ -502,4 +508,4 @@ Outputs:
   RecoveryRoleArn: {Value: !GetAtt RecoveryRole.Arn}
   SigningKeyArn: {Value: !GetAtt SigningKey.Arn}
   PublisherPolicyContractVersion:
-    Value: 2026-08-17-bound-release-control-plane-v6
+    Value: 2026-08-18-review-normalization-and-cleanup-v7

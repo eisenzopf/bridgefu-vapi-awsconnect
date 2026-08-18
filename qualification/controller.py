@@ -4321,7 +4321,44 @@ class Controller:
                     ["cloudformation", "describe-stacks", "--stack-name", value]
                 )
             ]
-            if not remaining_change_sets and not remaining_stacks:
+            if not remaining_change_sets:
+                break
+            if time.monotonic() >= deadline:
+                raise QualificationError(
+                    "qualification change-set hierarchy deletion timed out"
+                )
+            time.sleep(5)
+
+        # DeleteChangeSet removes the proposed nested change-set hierarchy but
+        # AWS retains the root REVIEW_IN_PROGRESS stack shell.  It has never
+        # executed and has no stack resources; delete that exact bound StackId
+        # explicitly and then prove every reviewed stack shell is absent.
+        resources = self.aws.json(
+            ["cloudformation", "list-stack-resources", "--stack-name", stack_id],
+            timeout=120,
+        )
+        summaries = (
+            resources.get("StackResourceSummaries")
+            if isinstance(resources, Mapping)
+            else None
+        )
+        if not isinstance(summaries, list) or summaries:
+            raise QualificationError(
+                "qualification unexecuted stack contains resources"
+            )
+        self.aws.text(
+            ["cloudformation", "delete-stack", "--stack-name", stack_id],
+            timeout=180,
+        )
+        while True:
+            remaining_stacks = [
+                value
+                for value in sorted(stacks_to_verify)
+                if self.aws.exists(
+                    ["cloudformation", "describe-stacks", "--stack-name", value]
+                )
+            ]
+            if not remaining_stacks:
                 return True
             if time.monotonic() >= deadline:
                 raise QualificationError(

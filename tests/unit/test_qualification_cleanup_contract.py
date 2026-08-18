@@ -46,7 +46,8 @@ class QualificationCleanupContractTests(unittest.TestCase):
 
         class Aws:
             def __init__(self):
-                self.deleted = False
+                self.change_set_deleted = False
+                self.stack_deleted = False
                 self.text_calls = []
 
             def json(self, arguments, timeout=120):
@@ -71,20 +72,26 @@ class QualificationCleanupContractTests(unittest.TestCase):
                         "Status": "CREATE_COMPLETE",
                         "IncludeNestedStacks": True,
                     }
+                if arguments[:2] == ["cloudformation", "list-stack-resources"]:
+                    return {"StackResourceSummaries": []}
                 raise AssertionError(arguments)
 
             def text(self, arguments, timeout=900):
                 self.text_calls.append((arguments, timeout))
-                self.deleted = True
+                if arguments[:2] == ["cloudformation", "delete-change-set"]:
+                    self.change_set_deleted = True
+                elif arguments[:2] == ["cloudformation", "delete-stack"]:
+                    self.stack_deleted = True
+                else:
+                    raise AssertionError(arguments)
                 return ""
 
             def exists(self, arguments):
-                if not self.deleted or arguments[1] not in {
-                    "describe-stacks",
-                    "describe-change-set",
-                }:
-                    raise AssertionError(arguments)
-                return False
+                if arguments[1] == "describe-change-set":
+                    return not self.change_set_deleted
+                if arguments[1] == "describe-stacks":
+                    return not self.stack_deleted
+                raise AssertionError(arguments)
 
         controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
         controller.args = SimpleNamespace(
@@ -110,7 +117,16 @@ class QualificationCleanupContractTests(unittest.TestCase):
                         root_change_set,
                     ],
                     180,
-                )
+                ),
+                (
+                    [
+                        "cloudformation",
+                        "delete-stack",
+                        "--stack-name",
+                        root_stack,
+                    ],
+                    180,
+                ),
             ],
         )
 

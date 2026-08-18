@@ -392,6 +392,23 @@ AWSTemplateFormatVersion: '2010-09-09'
         with self.assertRaisesRegex(review.DeploymentReviewError, "invocation differs"):
             run_review(aws)
 
+    def test_aws_null_normalization_of_false_import_flag_is_accepted(self):
+        aws = ExactCreateHierarchy()
+        aws.descriptions["qualification-root"]["ImportExistingResources"] = None
+        run_review(aws)
+
+    def test_only_null_or_false_import_flag_is_accepted(self):
+        for value in (True, 0, "false", [], {}):
+            with self.subTest(value=value):
+                aws = ExactCreateHierarchy()
+                aws.descriptions["qualification-root"][
+                    "ImportExistingResources"
+                ] = value
+                with self.assertRaisesRegex(
+                    review.DeploymentReviewError, "invocation differs"
+                ):
+                    run_review(aws)
+
     def test_wrong_nested_url_version_is_rejected(self):
         aws = ExactCreateHierarchy()
         wrong = template_url("disposable", "wrong-version")

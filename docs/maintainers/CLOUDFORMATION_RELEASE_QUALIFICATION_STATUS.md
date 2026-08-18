@@ -290,17 +290,19 @@ AWS authority.
 
 ## Remaining path to the customer template
 
-1. Start one new private candidate from exact protected-main commit
-   `d76c9016802c135dd6f7f93cd5cb8a2898aa8900`, using future tag version input
-   `0.1.22`. This is not a Git tag or GitHub Release.
-2. Qualify Oregon, destroy it, and prove stable zero resources.
-3. Qualify Virginia with the same immutable bits, destroy it, and prove stable
+1. Merge the live-AWS review-normalization and unexecuted-review cleanup
+   corrections through protected `main`, then update the persistent publisher
+   role stack to the exact v7 policy contract.
+2. Start one new private candidate from that exact protected-main commit using
+   future tag version input `0.1.22`. This is not a Git tag or GitHub Release.
+3. Qualify Oregon, destroy it, and prove stable zero resources.
+4. Qualify Virginia with the same immutable bits, destroy it, and prove stable
    zero resources.
-4. Seal and review the signed receipt.
-5. Only after both regions pass, create Git tag `v0.1.22` on the exact qualified
+5. Seal and review the signed receipt.
+6. Only after both regions pass, create Git tag `v0.1.22` on the exact qualified
    commit and approve publication. The newest existing Git tag remains
    `v0.1.13`; the repository currently has no GitHub Release objects.
-6. Publish public AMI/snapshot permissions and immutable release objects, then
+7. Publish public AMI/snapshot permissions and immutable release objects, then
    update `latest` pointers last.
 
 ## Historical conclusions retained without live identifiers
@@ -320,30 +322,36 @@ AWS authority.
 - Recovery completed and independent checks found no resources from those failed
   candidates. Exact proof remains in private evidence, not this public ledger.
 
-## Next permitted action
+## Current live gate and next permitted action
 
-The Route 53 vacancy, bounded drift-retry, 16-vCPU builder, exact Rust caches,
-and private content-addressed AMI build cache are merged through protected
-`main` at `d76c9016802c135dd6f7f93cd5cb8a2898aa8900`. All four exact-commit checks
-passed. The default-branch qualification cache was written successfully, so the
-candidate workflow can restore the exact compiler/Cargo-lock-bound native and
-static artifacts. The AMI cache hashes every image input, the exact Bridgefu
-lock, and the future release version; a cache hit is accepted only when the
-self-owned AMI and snapshot are unique, private, and exactly tagged. Every
-candidate still receives fresh candidate-owned AMI copies, so cache objects
-cannot be sealed or published. Expired cache entries are reaped after 14 days
-under the shared qualification mutation mutex and only after exact
-ownership/private-permission validation.
+The current protected-main revision passed all exact-main CI jobs. Its private
+candidate then reused the verified private AMI cache, created fresh private AMIs
+in both regions, staged exact-version assets, and passed all twenty remote
+`ValidateTemplate` calls in eight minutes.
 
-Read-only AWS inspection reconfirmed that future tag version `0.1.22` has no
-release object versions or AMIs, no qualification stack or Connect instance is
-active, and the persistent publisher/qualification contract versions match
-source and the protected GitHub environment bindings. One inert orphaned nested
-review stack and one obsolete private two-region diagnostic AMI/snapshot pair
-were removed; exact follow-up inspection proved them absent. There is no
-`v0.1.22` tag yet and no GitHub Release object.
+Oregon passed the prior AWS CLI serialization failure: AWS accepted the
+canonical `CreateChangeSet` JSON and constructed the complete root/nested review
+hierarchy. The fail-closed reviewer stopped before execution because AWS
+normalizes an omitted false `ImportExistingResources` request to JSON `null` in
+`DescribeChangeSet`, while the new comparator accepted only literal `false`.
+A separate resource-empty live change set reproduced the exact response. The
+corrected contract accepts only `null` or literal `false` and continues to
+reject true, numeric, string, collection, or otherwise malformed values.
 
-The next permitted action is one Oregon-first private candidate using future tag
-version input `0.1.22` from the exact protected-main commit. No Git tag,
-customer-visible object, or publication is permitted until Oregon and Virginia
-both pass, zero-resource proof is sealed, and the signed receipt is reviewed.
+The same live reproduction proved that `DeleteChangeSet` removes nested review
+change sets but retains the root `REVIEW_IN_PROGRESS` stack shell. Controller
+cleanup now waits for the exact change set hierarchy to disappear, verifies the
+exact root stack contains zero resources, deletes that full StackId, and proves
+all reviewed stack identities absent. Recovery receives the same exact bounded
+path and no longer waits for an ACM certificate that cannot exist in an
+unexecuted review. The two observed root review shells were explicitly verified
+empty and deleted; the failed candidate's private AMIs and object versions were
+removed, while the verified private compile cache remains.
+
+The next permitted actions are: merge these corrections through protected main,
+deploy publisher policy contract
+`2026-08-18-review-normalization-and-cleanup-v7`, verify it exactly, and launch
+one new Oregon-first private candidate using future tag version `0.1.22`. No Git
+tag, customer-visible object, or publication is permitted until Oregon and
+Virginia both pass, zero-resource proof is sealed, and the signed receipt is
+reviewed.

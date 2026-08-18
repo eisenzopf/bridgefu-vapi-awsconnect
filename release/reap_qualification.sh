@@ -1529,6 +1529,77 @@ cleanup_exact_acm_validation_records() {
       <<<"$listing" >/dev/null
   done < <(jq -r '.record_sets[].name' acm-validation-journal.json)
 }
+delete_exact_unexecuted_review() {
+  region="$1"
+  execution_id="$2"
+  stack_file="$3"
+  stack_name="bridgefu-$execution_id"
+  stack_id="$(jq -er --arg stack "$stack_name" --arg region "$region" \
+    --arg account "$account_id" '
+      .Stacks[0] |
+      select(.StackName == $stack and .StackStatus == "REVIEW_IN_PROGRESS") |
+      .StackId |
+      select(test("^arn:aws:cloudformation:" + $region + ":" + $account +
+        ":stack/" + $stack + "/[0-9a-f-]{36}$"))' "$stack_file")"
+  resources="$(aws cloudformation list-stack-resources --region "$region" \
+    --stack-name "$stack_id")"
+  jq -e '
+    (.StackResourceSummaries | type == "array" and length == 0) and
+    (.NextToken == null)' <<<"$resources" >/dev/null
+
+  change_set_name="bridgefu-$execution_id-review"
+  change_set_file="change-set-$region.json"
+  change_set_error="${change_set_file}.error"
+  set +e
+  aws cloudformation describe-change-set --region "$region" \
+    --change-set-name "$change_set_name" --stack-name "$stack_id" \
+    >"$change_set_file" 2>"$change_set_error"
+  status="$?"
+  set -e
+  if [[ "$status" = 0 ]]; then
+    change_set_id="$(jq -er --arg stack_id "$stack_id" \
+      --arg name "$change_set_name" --arg region "$region" \
+      --arg account "$account_id" '
+      select(.StackId == $stack_id and .ChangeSetName == $name and
+        .ParentChangeSetId == null and .RootChangeSetId == null and
+        .IncludeNestedStacks == true and
+        ((.Status == "CREATE_COMPLETE" and .ExecutionStatus == "AVAILABLE") or
+         (.Status == "FAILED" and .ExecutionStatus == "UNAVAILABLE"))) |
+      .ChangeSetId |
+      select(test("^arn:aws:cloudformation:" + $region + ":" + $account +
+        ":changeSet/" + $name + "/[0-9a-f-]{36}$"))' \
+      "$change_set_file")"
+    rm -f "$change_set_error"
+    aws cloudformation delete-change-set --region "$region" \
+      --change-set-name "$change_set_id"
+    for attempt in $(seq 1 180); do
+      set +e
+      aws cloudformation describe-change-set --region "$region" \
+        --change-set-name "$change_set_id" \
+        >"$change_set_file" 2>"$change_set_error"
+      status="$?"
+      set -e
+      if [[ "$status" != 0 ]] && grep -Eq \
+        '^(aws: \[ERROR\]: )?An error occurred \(ChangeSetNotFoundException\) when calling the DescribeChangeSet operation: ChangeSet .+ does not exist$' \
+        "$change_set_error"; then
+        break
+      fi
+      test "$status" = 0
+      test "$attempt" -lt 180
+      sleep 2
+    done
+  elif grep -Eq \
+    '^(aws: \[ERROR\]: )?An error occurred \(ChangeSetNotFoundException\) when calling the DescribeChangeSet operation: ChangeSet .+ does not exist$' \
+    "$change_set_error"; then
+    :
+  else
+    return 2
+  fi
+  rm -f "$change_set_file" "$change_set_error"
+  aws cloudformation delete-stack --region "$region" --stack-name "$stack_id"
+  run_with_recovery_deadline aws cloudformation wait \
+    stack-delete-complete --region "$region" --stack-name "$stack_id"
+}
 for pair in us-west-2:w us-east-1:e; do
   region="${pair%%:*}"
   short_region="${pair##*:}"
@@ -1556,6 +1627,17 @@ for pair in us-west-2:w us-east-1:e; do
     *) exit "$strict_status" ;;
   esac
   if [[ "$stack_present" = true ]]; then
+    stack_status="$(jq -er '.Stacks[0].StackStatus |
+      select(type == "string")' "stack-$short_region.json")"
+    if [[ "$stack_status" = REVIEW_IN_PROGRESS ]]; then
+      test "$acm_journal_present" = false
+      run_strict delete_exact_unexecuted_review "$region" "$execution_id" \
+        "stack-$short_region.json"
+      test "$strict_status" = 0
+      stack_present=false
+    fi
+  fi
+  if [[ "$stack_present" = true ]]; then
     if [[ "$acm_journal_present" = false ]]; then
       for attempt in $(seq 1 180); do
         run_strict discover_and_journal_exact_stack_acm_records \
@@ -1574,7 +1656,7 @@ for pair in us-west-2:w us-east-1:e; do
         stack_status="$(jq -er '.Stacks[0].StackStatus |
           select(type == "string")' "stack-$short_region.json")"
         case "$stack_status" in
-          CREATE_IN_PROGRESS|REVIEW_IN_PROGRESS)
+          CREATE_IN_PROGRESS)
             test "$attempt" -lt 180
             sleep 10
             ;;
