@@ -66,7 +66,7 @@ lint:
 	shellcheck image/install.sh image/runtime/bootstrap.sh \
 		image/runtime/bridgefu-load-secrets image/runtime/bridgefu-cert-refresh \
 		image/runtime/bridgefu-cert-reload image/runtime/bridgefu-run \
-		release/reap_qualification.sh
+		release/reap_qualification.sh release/prune_ami_cache.sh
 	actionlint
 
 package:

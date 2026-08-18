@@ -169,7 +169,7 @@ class CandidateReleasePreflightTests(unittest.TestCase):
 
     def run_ami_prefix(self, verified: bool) -> tuple[subprocess.CompletedProcess, str]:
         _, step = named_step(self.steps, "Build and copy private candidate AMIs")
-        prefix = step["run"].split('artifact_id="', 1)[0]
+        prefix = step["run"].split('account_id="', 1)[0]
         prefix = prefix.replace(
             "${{ steps.inputs.outputs.bridgefu_commit }}", "a" * 40
         ).replace("${{ steps.inputs.outputs.bridgefu_lock }}", "b" * 64)
@@ -185,11 +185,19 @@ class CandidateReleasePreflightTests(unittest.TestCase):
                 root / "python",
                 "#!/usr/bin/env bash\n"
                 "set -euo pipefail\n"
-                'test "$*" = "release/ami_build_inputs.py --inputs '
+                'if [[ "$1" = release/ami_build_inputs.py ]]; then\n'
+                '  test "$*" = "release/ami_build_inputs.py --inputs '
                 'image/build-inputs.json --verify-source-ami"\n'
-                "printf '%s\\n' "
+                "  printf '%s\\n' "
                 f'\'{{"schema_version":1,"verified":{str(verified).lower()},'
-                '"redacted":true,"source_ami_id":"ami-098176c88d53db397"}\'\n',
+                '"redacted":true,"source_ami_id":"ami-098176c88d53db397"}\'\n'
+                "  exit 0\n"
+                "fi\n"
+                'test "$*" = "release/ami_cache.py digest --root . '
+                '--release-version 0.1.20"\n'
+                "printf '%s\\n' "
+                "'{\"ami_build_sha256\":\"dddddddddddddddddddddddddddddddd"
+                "dddddddddddddddddddddddddddddddd\"}'\n",
             )
             executable(
                 root / "packer",
@@ -280,12 +288,7 @@ class CandidateReleasePreflightTests(unittest.TestCase):
 
         success, arguments = self.run_ami_prefix(True)
         self.assertEqual(success.returncode, 0, success.stderr)
-        self.assertEqual(arguments.count("init image/bridgefu.pkr.hcl"), 1)
-        self.assertEqual(arguments.count("build "), 1)
-        self.assertIn(
-            "-var source_ami_id=ami-098176c88d53db397",
-            arguments,
-        )
+        self.assertEqual(arguments, "")
 
         rejected, arguments = self.run_ami_prefix(False)
         self.assertNotEqual(rejected.returncode, 0)

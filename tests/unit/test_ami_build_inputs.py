@@ -142,6 +142,9 @@ class AmiBuildInputTests(unittest.TestCase):
                     '-var builder_instance_type="$builder_instance_type"', workflow
                 )
                 self.assertIn('-var cargo_build_jobs="$cargo_build_jobs"', workflow)
+                self.assertIn("-var ami_build_sha256=", workflow)
+                self.assertNotIn("-var candidate_id=", workflow)
+                self.assertNotIn("-var distribution_repository_commit=", workflow)
         self.assertIn("python3 release/validate.py --packer-only", makefile)
         self.assertIn("amazon_plugin_zip_sha256", local_validator)
         self.assertIn("Packer Amazon plugin archive digest mismatch", local_validator)

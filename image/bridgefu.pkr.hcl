@@ -61,19 +61,11 @@ variable "release_version" {
   type = string
 }
 
-variable "candidate_id" {
+variable "ami_build_sha256" {
   type = string
   validation {
-    condition     = can(regex("^candidate-[A-Za-z0-9.-]{8,96}$", var.candidate_id))
-    error_message = "Candidate_id must be the immutable candidate execution ID."
-  }
-}
-
-variable "distribution_repository_commit" {
-  type = string
-  validation {
-    condition     = can(regex("^[0-9a-f]{40}$", var.distribution_repository_commit))
-    error_message = "Distribution_repository_commit must be a full Git commit SHA."
+    condition     = can(regex("^[0-9a-f]{64}$", var.ami_build_sha256))
+    error_message = "Ami_build_sha256 must be the exact AMI content digest."
   }
 }
 
@@ -83,7 +75,7 @@ source "amazon-ebs" "bridgefu_arm64" {
   # build instance does not determine the customer runtime instance type.
   instance_type = var.builder_instance_type
   ssh_username  = "ec2-user"
-  ami_name      = "bridgefu-vapi-awsconnect-${var.release_version}-${formatdate("YYYYMMDDhhmmss", timestamp())}"
+  ami_name      = "bridgefu-vapi-awsconnect-build-${substr(var.ami_build_sha256, 0, 16)}-${formatdate("YYYYMMDDhhmmss", timestamp())}"
 
   source_ami = var.source_ami_id
 
@@ -104,22 +96,22 @@ source "amazon-ebs" "bridgefu_arm64" {
   }
 
   tags = {
-    Name                     = "bridgefu-vapi-awsconnect-${var.release_version}"
+    Name                     = "bridgefu-vapi-awsconnect-build-${substr(var.ami_build_sha256, 0, 16)}"
     ManagedBy                = "bridgefu-vapi-awsconnect"
+    BridgefuAmiBuildCache    = "bridgefu-ami-cache-v1"
+    BridgefuAmiBuildSha256   = var.ami_build_sha256
     BridgefuCommit           = var.bridgefu_commit
-    BridgefuCandidateId      = var.candidate_id
-    BridgefuRepositoryCommit = var.distribution_repository_commit
-    BridgefuRelease          = var.release_version
+    BridgefuReleaseInput     = var.release_version
     BridgefuRvoipVersion     = "0.3.8"
   }
 
   snapshot_tags = {
-    ManagedBy                = "bridgefu-vapi-awsconnect"
-    BridgefuCommit           = var.bridgefu_commit
-    BridgefuCandidateId      = var.candidate_id
-    BridgefuRepositoryCommit = var.distribution_repository_commit
-    BridgefuRelease          = var.release_version
-    BridgefuRvoipVersion     = "0.3.8"
+    ManagedBy              = "bridgefu-vapi-awsconnect"
+    BridgefuAmiBuildCache  = "bridgefu-ami-cache-v1"
+    BridgefuAmiBuildSha256 = var.ami_build_sha256
+    BridgefuCommit         = var.bridgefu_commit
+    BridgefuReleaseInput   = var.release_version
+    BridgefuRvoipVersion   = "0.3.8"
   }
 }
 

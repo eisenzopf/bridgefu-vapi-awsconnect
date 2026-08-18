@@ -18,6 +18,7 @@ import zipfile
 from pathlib import Path
 
 from ami_build_inputs import load as load_ami_build_inputs
+from ami_cache import content_manifest
 
 EXPECTED_TEMPLATE_COUNT = 10
 VALIDATION_VERSION = "0.1.0-validation"
@@ -222,6 +223,9 @@ def validate_packer(root: Path) -> None:
         lock = json.loads(
             (root / "bridgefu.lock.json").read_text(encoding="utf-8")
         )
+        ami_build_sha256 = content_manifest(root, "0.1.0-dev")[
+            "ami_build_sha256"
+        ]
         run(
             [
                 packer,
@@ -239,9 +243,7 @@ def validate_packer(root: Path) -> None:
                 "-var",
                 f"bridgefu_cargo_lock_sha256={lock['cargo_lock_sha256']}",
                 "-var",
-                "candidate_id=candidate-0.1.0-dev-local-validation",
-                "-var",
-                f"distribution_repository_commit={ZERO_COMMIT}",
+                f"ami_build_sha256={ami_build_sha256}",
                 "-var",
                 "release_version=0.1.0-dev",
                 os.fspath(root / "image" / "bridgefu.pkr.hcl"),

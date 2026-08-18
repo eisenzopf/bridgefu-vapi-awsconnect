@@ -42,6 +42,7 @@ class AwsAccountBoundaryTests(unittest.TestCase):
         self.assertEqual(
             set(jobs),
             {
+                "prune-expired-private-ami-cache",
                 "delete-cancelled-qualification-stacks",
                 "delete-failed-private-candidate",
                 "rollback-interrupted-publication",
