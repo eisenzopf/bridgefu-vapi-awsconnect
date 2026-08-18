@@ -1,9 +1,10 @@
 """Secret-free runtime overlay for the retained Bridgefu Web SDK smoke.
 
-The controller renders this complete configuration locally and validates it
-with the exact pinned Bridgefu binary before it can upload or install it.  SIP
-authentication remains an environment reference; no password is serialized in
-the configuration, SSM command, browser attachment, or retained evidence.
+The controller renders this complete configuration locally.  The exact
+candidate Bridgefu binary installed in the AMI validates it on the instance
+before the service configuration can be changed.  SIP authentication remains
+an environment reference; no password is serialized in the configuration,
+SSM command, browser attachment, or retained evidence.
 """
 
 from __future__ import annotations
@@ -30,7 +31,6 @@ AWS_STUN_HOST_TEMPLATE = "stun.kinesisvideo.{region}.amazonaws.com"
 WEB_ROUTE_ID = "vapi-direct-assistant"
 CONNECT_ROUTE_ID = "amazon-connect"
 VAPI_PASSWORD_ENV = "BRIDGEFU_QUALIFICATION_VAPI_SIP_PASSWORD"  # noqa: S105
-LOCAL_VALIDATION_SECRET = "bridgefu-local-validation-placeholder"  # noqa: S105
 INSTALL_RESULT_KEYS = {
     "schema_version",
     "producer",
@@ -62,19 +62,6 @@ VAPI_TLS_RESULT_KEYS = {
 
 class WebRuntimeContractError(ValueError):
     """The qualification runtime overlay crossed a closed boundary."""
-
-
-def validation_environment(base: Mapping[str, str]) -> dict[str, str]:
-    """Supply non-secret placeholders only for local semantic validation."""
-    result = dict(base)
-    result.update(
-        {
-            "BRIDGEFU_API_BEARER_TOKEN": LOCAL_VALIDATION_SECRET,
-            "BRIDGEFU_CONTROL_HMAC_KEY": LOCAL_VALIDATION_SECRET,
-            VAPI_PASSWORD_ENV: LOCAL_VALIDATION_SECRET,
-        }
-    )
-    return result
 
 
 def vapi_tls_reachability_script() -> str:

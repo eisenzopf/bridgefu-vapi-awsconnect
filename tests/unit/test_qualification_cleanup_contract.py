@@ -26,6 +26,61 @@ class ProbeRunner:
 
 
 class QualificationCleanupContractTests(unittest.TestCase):
+    def test_deleted_stack_history_is_absent_but_live_states_remain_present(self):
+        stack_id = (
+            "arn:aws:cloudformation:us-west-2:123456789012:"
+            "stack/bridgefu-bfq-test1234/stack-1234"
+        )
+
+        class Aws:
+            def __init__(self, status):
+                self.status = status
+
+            def exists(self, arguments):
+                self.arguments = arguments
+                return True
+
+            def json(self, arguments, timeout=120):
+                self.arguments = arguments
+                self.timeout = timeout
+                return {
+                    "Stacks": [
+                        {
+                            "StackId": stack_id,
+                            "StackName": "bridgefu-bfq-test1234",
+                            "StackStatus": self.status,
+                        }
+                    ]
+                }
+
+        controller = CONTROLLER.Controller.__new__(CONTROLLER.Controller)
+        controller.aws = Aws("DELETE_COMPLETE")
+        self.assertFalse(controller.cloudformation_stack_is_live(stack_id))
+        self.assertEqual(
+            controller.aws.arguments,
+            [
+                "cloudformation",
+                "describe-stacks",
+                "--stack-name",
+                stack_id,
+            ],
+        )
+
+        for status in (
+            "REVIEW_IN_PROGRESS",
+            "CREATE_COMPLETE",
+            "DELETE_IN_PROGRESS",
+            "DELETE_FAILED",
+        ):
+            with self.subTest(status=status):
+                controller.aws = Aws(status)
+                self.assertTrue(controller.cloudformation_stack_is_live(stack_id))
+
+        controller.aws = mock.Mock()
+        controller.aws.exists.return_value = False
+        self.assertFalse(controller.cloudformation_stack_is_live(stack_id))
+        controller.aws.json.assert_not_called()
+
     def test_unexecuted_nested_review_uses_exact_delete_change_set(self):
         root_change_set = (
             "arn:aws:cloudformation:us-west-2:123456789012:"

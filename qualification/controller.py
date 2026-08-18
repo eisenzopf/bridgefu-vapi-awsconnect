@@ -4192,6 +4192,43 @@ class Controller:
         self.stack_id = stack_id
         return stack_id
 
+    def cloudformation_stack_is_live(self, identifier: str) -> bool:
+        """Treat only an exact DELETE_COMPLETE history record as absent.
+
+        CloudFormation keeps deleted stacks addressable by their full StackId.
+        A generic existence probe therefore reports a successfully deleted
+        stack as present for up to 90 days.  Preserve the full-identity binding,
+        but normalize only that terminal tombstone; every other state remains
+        live and blocks cleanup evidence.
+        """
+        arguments = [
+            "cloudformation",
+            "describe-stacks",
+            "--stack-name",
+            identifier,
+        ]
+        if not self.aws.exists(arguments):
+            return False
+        response = self.aws.json(arguments, timeout=120)
+        stacks = response.get("Stacks") if isinstance(response, Mapping) else None
+        stack = (
+            stacks[0]
+            if isinstance(stacks, list)
+            and len(stacks) == 1
+            and isinstance(stacks[0], Mapping)
+            else None
+        )
+        if stack is None:
+            raise QualificationError("CloudFormation stack state is invalid")
+        if identifier.startswith("arn:"):
+            identity_matches = stack.get("StackId") == identifier
+        else:
+            identity_matches = stack.get("StackName") == identifier
+        status = stack.get("StackStatus")
+        if not identity_matches or not isinstance(status, str):
+            raise QualificationError("CloudFormation stack identity changed")
+        return status != "DELETE_COMPLETE"
+
     def wait_for_root_change_set(self, change_set_arn: str, stack_id: str) -> None:
         """Poll the exact full ARN until the nested CREATE review is complete."""
         deadline = time.monotonic() + 900
@@ -5966,23 +6003,6 @@ class Controller:
         config_path = self.work / "bridgefu-web-runtime.json"
         config_path.write_bytes(encoded)
         config_path.chmod(0o600)
-        self.runner.run(
-            [
-                "cargo",
-                "run",
-                "--locked",
-                "--quiet",
-                "--bin",
-                "bridgefu",
-                "--",
-                "--config",
-                os.fspath(config_path),
-                "validate",
-            ],
-            cwd=self.args.bridgefu_checkout,
-            env=bridgefu_web_runtime.validation_environment(os.environ),
-            timeout=1800,
-        )
         bucket = self.outputs["ArtifactBucket"]
         object_key = f"qualification/{self.args.execution_id}/web-runtime/bridgefu.json"
         self.web_runtime_object_key = object_key
@@ -7725,9 +7745,7 @@ class Controller:
             name: set() for name in release_safeguards.ZERO_RESOURCE_CATEGORIES
         }
         for stack_id in self.owned_resource_inventory.get("stack_ids", []):
-            if self.aws.exists(
-                ["cloudformation", "describe-stacks", "--stack-name", stack_id]
-            ):
+            if self.cloudformation_stack_is_live(stack_id):
                 resources["cloudformation_stacks"].add(stack_id)
 
         instance_ids = self._owned_ids("AWS::EC2::Instance")
@@ -8214,9 +8232,20 @@ class Controller:
                     "qualification stack or change-set hierarchy deletion failed"
                 )
         absence_identifier = stack_id or self.stack_name
-        stack_absent = not self.aws.exists(
-            ["cloudformation", "describe-stacks", "--stack-name", absence_identifier]
-        )
+        if ownership_recovery_required:
+            # Do not expand the AWS surface after an ownership proof failed.
+            # Cleanup is already blocked; a generic presence result remains
+            # conservatively live until recovery can re-establish identity.
+            stack_absent = not self.aws.exists(
+                [
+                    "cloudformation",
+                    "describe-stacks",
+                    "--stack-name",
+                    absence_identifier,
+                ]
+            )
+        else:
+            stack_absent = not self.cloudformation_stack_is_live(absence_identifier)
         acm_validation_absent = self.acm_validation_journal is None
         if self.acm_validation_journal is not None:
             if not stack_absent:
