@@ -252,6 +252,19 @@ Resources:
                   - ssm:GetCommandInvocation
                   - ssm:SendCommand
                 Resource: '*'
+              - Sid: ManageOnlyOwnedQualificationWebMediaIngress
+                Effect: Allow
+                Action:
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupIngress
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:ec2:*:${AWS::AccountId}:security-group/*
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/Project: bridgefu-vapi-awsconnect
+                    aws:ResourceTag/ManagedBy: bridgefu-cloudformation
+                  StringLike:
+                    aws:ResourceTag/BridgefuExecutionId: bfq-*
               - Sid: ProvePreMutationCapacity
                 Effect: Allow
                 Action: servicequotas:GetServiceQuota
@@ -341,4 +354,4 @@ Outputs:
   QualificationCloudFormationServiceRoleArn:
     Value: !GetAtt QualificationCloudFormationServiceRole.Arn
   QualificationPolicyContractVersion:
-    Value: 2026-08-17-bound-qualification-control-plane-v4
+    Value: 2026-08-18-web-media-ingress-v5

@@ -289,7 +289,7 @@ def verify(args: argparse.Namespace, cli: AwsCli) -> dict[str, Any]:
     if publisher_outputs.get("PublisherPolicyContractVersion") != (
         "2026-08-18-review-normalization-and-cleanup-v7"
     ) or qualification_outputs.get("QualificationPolicyContractVersion") != (
-        "2026-08-17-bound-qualification-control-plane-v4"
+        "2026-08-18-web-media-ingress-v5"
     ):
         raise ControlPlaneError("deployed policy contract version changed")
 

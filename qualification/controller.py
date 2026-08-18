@@ -1263,6 +1263,11 @@ def sanitize_diagnostic(value: Any, maximum: int = DIAGNOSTIC_LIMIT) -> str:
         r"\1[REDACTED]",
         cleaned,
     )
+    cleaned = re.sub(
+        r"(?i)(encoded authorization failure message:)\s*[A-Za-z0-9_-]+",
+        r"\1 [REDACTED]",
+        cleaned,
+    )
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if not cleaned:
         return "unavailable"
