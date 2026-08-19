@@ -250,6 +250,26 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
             "value.agent_probe_active !== true",
         ):
             self.assertIn(binding, validator)
+
+    def test_agent_dtmf_evidence_uses_actual_capture_not_source_marker_phase(
+        self,
+    ) -> None:
+        agent = (
+            QUALIFICATION / "browser" / "agent-workspace-playwright.mjs"
+        ).read_text(encoding="utf-8")
+        schedule = agent.split("function agentDtmfSchedule(", 1)[1].split(
+            "function installProbe", 1
+        )[0]
+        self.assertIn("captureStartedAtMs, observedAtMs", schedule)
+        self.assertIn("for (let cycle = 0;", schedule)
+        self.assertNotIn("acceptedAtMs", schedule)
+        self.assertNotIn("sourceMarkerObservedAtMs", schedule)
+        final_evidence = agent.split(
+            "const agentDtmfSentAtMs = agentDtmfSchedule(", 1
+        )[1].split(");", 1)[0]
+        self.assertIn("mediaProbe.captureResolvedAtMs", final_evidence)
+        self.assertIn("observedAtMs", final_evidence)
+        self.assertNotIn("sourceMarkerObservedAtMs", final_evidence)
     def test_both_sources_share_the_transfer_prompt_and_data_plane_gate(self) -> None:
         text = (QUALIFICATION / "controller.py").read_text(encoding="utf-8")
         web = text.split("    def _web_smoke(", 1)[1].split(
