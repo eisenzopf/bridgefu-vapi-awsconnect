@@ -1341,31 +1341,6 @@ async function observe(options) {
         );
       }
     }
-    const agentDtmfSentAtMs = [];
-    if (session.scenario_id === "bridgefu-web-sdk-handoff") {
-      // Agent Workspace does not attach the nested number-pad frame until its
-      // keypad control is opened. This keypad-first sequence is the proven
-      // Agent Workspace path; Streams remains a bounded API fallback.
-      const keypadOpened = await clickButtonWithin(
-        page,
-        [/Number pad/i, /Keypad/i, /Dial pad/i, /Dialpad/i],
-        5_000,
-      );
-      const keypadDigitSent = keypadOpened
-        ? (await clickNestedNumberPadDigit(page, "6", 5_000))
-          || (await clickButtonWithin(page, [/^6$/], 1_000))
-        : false;
-      const streamsResult = keypadDigitSent
-        ? "not-attempted"
-        : await sendDigitsViaConnectStreams(page, "6");
-      if (!keypadDigitSent && streamsResult !== "sent") {
-        fail(
-          "Agent Workspace could not send the reverse DTMF probe "
-            + `keypad_open=${yesNo(keypadOpened)} streams=${streamsResult}`,
-        );
-      }
-      agentDtmfSentAtMs.push(Date.now());
-    }
     try {
       await waitUntil(
         async () => {
@@ -1409,6 +1384,33 @@ async function observe(options) {
           `active_frames=${probe.remoteAudioActiveFrames} ` +
           `max_rms=${probe.remoteAudioMaxRms.toFixed(6)}`,
       );
+    }
+    const agentDtmfSentAtMs = [];
+    if (session.scenario_id === "bridgefu-web-sdk-handoff") {
+      // Prove the transferred media path before operating Agent Workspace's
+      // keypad. Opening the lazily attached keypad earlier can perturb the
+      // same browser surface while the source-to-agent media probe is still
+      // converging. Once media is established, open the keypad, click its
+      // nested digit, and retain Streams only as a bounded fallback.
+      const keypadOpened = await clickButtonWithin(
+        page,
+        [/Number pad/i, /Keypad/i, /Dial pad/i, /Dialpad/i],
+        5_000,
+      );
+      const keypadDigitSent = keypadOpened
+        ? (await clickNestedNumberPadDigit(page, "6", 5_000))
+          || (await clickButtonWithin(page, [/^6$/], 1_000))
+        : false;
+      const streamsResult = keypadDigitSent
+        ? "not-attempted"
+        : await sendDigitsViaConnectStreams(page, "6");
+      if (!keypadDigitSent && streamsResult !== "sent") {
+        fail(
+          "Agent Workspace could not send the reverse DTMF probe "
+            + `keypad_open=${yesNo(keypadOpened)} streams=${streamsResult}`,
+        );
+      }
+      agentDtmfSentAtMs.push(Date.now());
     }
     const mediaProbe = await probeSnapshot(page);
     if (!(await capturePrivateScreenshot(page, screenshotPath))) {

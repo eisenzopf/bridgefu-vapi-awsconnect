@@ -470,3 +470,30 @@ category (`unavailable`, connection state, rejection, timeout, throw, or sent)
 instead of discarding every failure reason. The media gate remains presence-only:
 one five-second marker, one one-second source DTMF interval, RTP in both
 directions, and no audio-quality claim.
+
+## 2026-08-18 v0.1.25 Oregon media-ordering regression
+
+The keypad correction passed protected review, exact-main CI, accelerated AMI
+creation, immutable staging, and both-region remote template validation. Oregon
+deployed the exact customer template to `CREATE_COMPLETE`; the instance emitted
+its expected runtime success signal and every nested stack completed. The Web
+call reached Amazon Connect with a remote audio track, bidirectional RTP, active
+audio, and one 997 Hz marker episode. The source-to-agent DTMF observation did
+not converge, so Virginia and sealing were correctly blocked. Cleanup succeeded
+and three stable observations spanning more than 60 seconds reported every
+owned resource class absent.
+
+The regression was introduced by the keypad correction itself. Candidate
+`0.1.24` had already proved the required ordering: wait for incoming media, the
+source marker, and source-to-agent DTMF before operating the agent keypad. The
+correction restored the older keypad-open sequence but also moved that keypad
+operation before the current media-establishment wait. That contradicted the
+proven candidate behavior and the explicit media-first qualification contract.
+
+The combined correction preserves the `0.1.24` ordering and the keypad fix:
+first require the transferred media path and source probes to converge; then
+open the lazily attached Agent Workspace keypad, click digit `6`, and use
+Connect Streams only as a bounded fallback. The Web source remains responsible
+for observing the reverse DTMF before hangup. A source-level regression now
+requires the media convergence gate to precede keypad operation and requires
+keypad operation to precede the final media snapshot.

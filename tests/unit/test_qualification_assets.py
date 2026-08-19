@@ -754,11 +754,13 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn('settle("timeout")', agent)
         self.assertIn('settle("threw")', agent)
         self.assertIn("keypad_open=${yesNo(keypadOpened)}", agent)
-        keypad_open = agent.index("const keypadOpened = await clickButtonWithin")
-        reverse_media_wait = agent.index(
+        media_convergence = agent.index(
             '"Agent Workspace media browser observations did not converge"'
         )
-        self.assertLess(keypad_open, reverse_media_wait)
+        keypad_open = agent.index("const keypadOpened = await clickButtonWithin")
+        media_snapshot = agent.index("const mediaProbe = await probeSnapshot(page)")
+        self.assertLess(media_convergence, keypad_open)
+        self.assertLess(keypad_open, media_snapshot)
         self.assertIn("const PROBE_PULSES_PER_CYCLE = 1;", agent)
         self.assertIn("const PROBE_PULSE_MS = 5_000;", agent)
         self.assertIn("const REQUIRED_MARKER_EPISODES = 1;", agent)
