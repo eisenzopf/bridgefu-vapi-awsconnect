@@ -708,3 +708,39 @@ requires exactly one record for each of the six region/file combinations in
 both staged-object and candidate-state ledgers. The failed candidate remains
 unqualified and unpublished; trusted recovery must finish before a new version
 is dispatched.
+
+## 2026-08-19 v0.1.32 Oregon Web post-trigger evidence race
+
+The receipt-recording correction passed protected review, exact-main CI, the
+accelerated private AMI build, immutable artifact staging, and all remote
+template validations. Oregon deployed the exact customer stack successfully.
+Qualification then failed in the Bridgefu Web SDK source with `Bridgefu browser
+final media evidence is incomplete`; Virginia correctly did not start.
+
+This was a browser-harness ordering defect, not evidence that the product call
+or media path failed. Before source hangup, the independently bound Amazon
+Connect agent observer had already required and recorded the source marker and
+source-to-agent DTMF on the real Connect leg. The source browser had also
+observed reverse agent marker audio and agent-to-source DTMF. However, the
+source's final ledger separately retained only marker and DTMF schedule entries
+at least 500 ms after the controller's handoff-trigger timestamp. A legitimate
+source marker/DTMF interval could reach the agent immediately before that
+timestamp; both peers could then converge and hang up before the source's next
+10-second schedule cycle. The final post-trigger arrays were therefore empty
+even though the independent peer-media proof had passed.
+
+The local correction takes outbound RTP packet/byte baselines immediately
+before the handoff trigger, then keeps the Web call active until the deterministic
+source schedule contains at least one post-trigger marker and one post-trigger
+DTMF interval and outbound RTP has advanced beyond both baselines. Only then may
+reverse-media convergence, the agent's bound peer-ready receipt, and hangup
+complete. This preserves the stricter post-trigger evidence contract; it does
+not add another media-quality test. The final safe diagnostic now reports only
+closed marker/frame/DTMF counts, and an executable Node regression proves the
+call cannot advance before the schedule or without actual RTP progress.
+
+The failed candidate was not sealed or published. Trusted recovery completed
+successfully, the Oregon stack and temporary resources were deleted, and the
+three-observation zero-state proof reported all 26 resource classes absent. A
+new candidate remains forbidden until the complete local gate, protected
+review, and exact-main CI pass for this correction.
