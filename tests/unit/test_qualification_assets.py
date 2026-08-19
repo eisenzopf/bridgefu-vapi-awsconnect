@@ -742,25 +742,18 @@ class QualificationAssetTests(unittest.TestCase):
         ).read_text()
         self.assertNotIn("CHECKS = {", controller)
         self.assertIn("dtmf_source_to_agent_observed", agent)
-        self.assertIn('sendDigitsViaConnectStreams(page, "6")', agent)
-        self.assertIn('clickNestedNumberPadDigit(page, "6", 5_000)', agent)
-        self.assertIn(
-            "[/Number pad/i, /Keypad/i, /Dial pad/i, /Dialpad/i]",
-            agent,
-        )
-        self.assertIn("const streamsResult = keypadDigitSent", agent)
-        self.assertIn('settle("sent")', agent)
-        self.assertIn('settle("rejected")', agent)
-        self.assertIn('settle("timeout")', agent)
-        self.assertIn('settle("threw")', agent)
-        self.assertIn("keypad_open=${yesNo(keypadOpened)}", agent)
+        self.assertNotIn("sendDigitsViaConnectStreams", agent)
+        self.assertNotIn("clickNestedNumberPadDigit", agent)
+        self.assertNotIn("keypadOpened", agent)
+        self.assertIn("const agentDtmfSentAtMs = agentDtmfSchedule(", agent)
+        self.assertIn("without coupling qualification to Agent Workspace keypad UI", agent)
         media_convergence = agent.index(
             '"Agent Workspace media browser observations did not converge"'
         )
-        keypad_open = agent.index("const keypadOpened = await clickButtonWithin")
         media_snapshot = agent.index("const mediaProbe = await probeSnapshot(page)")
-        self.assertLess(media_convergence, keypad_open)
-        self.assertLess(keypad_open, media_snapshot)
+        dtmf_schedule = agent.index("const agentDtmfSentAtMs = agentDtmfSchedule(")
+        self.assertLess(media_convergence, media_snapshot)
+        self.assertLess(media_snapshot, dtmf_schedule)
         self.assertIn("const PROBE_PULSES_PER_CYCLE = 1;", agent)
         self.assertIn("const PROBE_PULSE_MS = 5_000;", agent)
         self.assertIn("const REQUIRED_MARKER_EPISODES = 1;", agent)

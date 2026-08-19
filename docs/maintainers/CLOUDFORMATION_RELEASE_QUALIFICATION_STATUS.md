@@ -497,3 +497,43 @@ Connect Streams only as a bounded fallback. The Web source remains responsible
 for observing the reverse DTMF before hangup. A source-level regression now
 requires the media convergence gate to precede keypad operation and requires
 keypad operation to precede the final media snapshot.
+
+## 2026-08-19 v0.1.26 Oregon reverse-DTMF UI overreach
+
+The media-ordering correction passed protected-main CI, accelerated private AMI
+creation, exact immutable staging, and both-region remote template validation.
+Oregon deployed the complete customer template to `CREATE_COMPLETE`, bound the
+running `c7g.2xlarge` instance to the exact candidate AMI, and passed the direct
+mandatory-SRTP preflight. The Bridgefu Web SDK scenario then reached Vapi,
+Bridgefu, and Amazon Connect. Agent Workspace was authenticated and Available;
+the transferred call had a remote audio track, bidirectional RTP, active audio,
+the deterministic marker, and source-to-agent DTMF. The SIP-source scenario did
+not start because scenarios remain intentionally serialized around one agent,
+database reset, telemetry window, and transient Vapi resources.
+
+The Web scenario failed only on the additional Agent Workspace keypad action:
+the keypad-open control succeeded, the lazily attached digit control was not
+found in that immediate DOM snapshot, and the one-shot Streams fallback did not
+see a contact. That action was not needed to prove the release requirement. The
+agent's deterministic fake microphone already emits one one-second in-band DTMF
+`6` interval after media establishment, and the independent Bridgefu Web SDK
+browser analyser already requires the corresponding 770/1477 Hz pair after it
+traverses the complete reverse media path. Requiring a separate Agent Workspace
+keypad click therefore tested transient AWS UI automation rather than SIP/media
+interoperability or audio presence.
+
+The local correction removes the keypad/Streams UI gate. It derives the bounded
+agent DTMF send timestamp from the deterministic microphone schedule and keeps
+the independent source-side two-frequency observation mandatory. The existing
+single five-second marker, RTP counters in both directions, active-audio checks,
+source-to-agent DTMF, screen pop, hangup, and cleanup gates are unchanged. This
+remains an audio-presence and DTMF-traversal test; it does not claim to qualify
+Amazon Connect's keypad UI or measure call quality.
+
+The failed candidate was not sealed or published. CloudFormation teardown
+completed, temporary Vapi resources were absent, the exact versioned
+qualification prefix was empty, and three exhaustive zero-resource observations
+spanning more than 60 seconds found all 26 resource classes empty. The trusted
+reaper then completed successfully. The next permitted actions are the complete
+local gate, protected review/merge, and one new Oregon-first candidate. Virginia
+and publication remain blocked until Oregon passes both serialized scenarios.
