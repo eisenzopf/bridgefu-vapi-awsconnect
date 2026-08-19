@@ -464,141 +464,6 @@ async function clickButton(page, patterns) {
   return false;
 }
 
-async function clickButtonWithin(page, patterns, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  do {
-    if (await clickButton(page, patterns)) return true;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-  } while (Date.now() < deadline);
-  return false;
-}
-
-async function clickNestedNumberPadDigit(page, digit, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  for (const frame of page.frames()) {
-    for (const selector of [
-      'iframe[title="Contact Control Panel Number Pad"]',
-      'iframe[title*="Number Pad"]',
-    ]) {
-      let childFrame = null;
-      let frameHandle = null;
-      try {
-        frameHandle = await frame.locator(selector).first().elementHandle();
-        childFrame = await frameHandle?.contentFrame();
-      } catch {
-        // The number-pad iframe may still be attaching.
-      }
-      if (childFrame) {
-        for (const control of [
-          childFrame.getByRole("button", { name: new RegExp(`^${digit}$`) }).first(),
-          childFrame.getByText(digit, { exact: true }).first(),
-        ]) {
-          const remaining = deadline - Date.now();
-          if (remaining <= 0) return false;
-          try {
-            await control.click({ timeout: Math.min(remaining, 750) });
-            return true;
-          } catch {
-            // Try the next keypad accessibility variant.
-          }
-        }
-      }
-      await frameHandle?.dispose();
-      const numberPad = frame.frameLocator(selector);
-      for (const control of [
-        numberPad.getByRole("button", { name: new RegExp(`^${digit}$`) }).first(),
-        numberPad.getByText(digit, { exact: true }).first(),
-      ]) {
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) return false;
-        try {
-          await control.click({ timeout: Math.min(remaining, 750) });
-          return true;
-        } catch {
-          // Continue across outer frames and keypad accessibility variants.
-        }
-      }
-    }
-  }
-  return false;
-}
-
-async function sendDigitsViaConnectStreams(page, digits) {
-  let observed = "streams-unavailable";
-  for (const frame of page.frames()) {
-    try {
-      const result = await frame.evaluate(async (value) => {
-        const streams = globalThis.connect;
-        if (typeof streams?.Agent !== "function") return "streams-unavailable";
-        let agent;
-        try {
-          agent = new streams.Agent();
-        } catch {
-          return "agent-unavailable";
-        }
-        const contacts =
-          typeof agent.getContacts === "function" ? agent.getContacts() : [];
-        if (!Array.isArray(contacts) || contacts.length === 0) {
-          return "contact-unavailable";
-        }
-        let contactResult = "connection-unavailable";
-        for (const contact of contacts) {
-          const connection =
-            contact.getActiveInitialConnection?.()
-            ?? contact.getInitialConnection?.();
-          if (!connection) continue;
-          if (typeof connection.sendDigits !== "function") {
-            contactResult = "method-unavailable";
-            continue;
-          }
-          if (typeof connection.isActive === "function" && !connection.isActive()) {
-            contactResult = "connection-inactive";
-            continue;
-          }
-          if (
-            typeof connection.isConnected === "function"
-            && !connection.isConnected()
-          ) {
-            contactResult = "connection-not-connected";
-            continue;
-          }
-          return await new Promise((resolvePromise) => {
-            let finished = false;
-            const settle = (result) => {
-              if (finished) return;
-              finished = true;
-              resolvePromise(result);
-            };
-            const timer = setTimeout(() => settle("timeout"), 3000);
-            const callbacks = {
-              success: () => {
-                clearTimeout(timer);
-                settle("sent");
-              },
-              failure: () => {
-                clearTimeout(timer);
-                settle("rejected");
-              },
-            };
-            try {
-              connection.sendDigits(value, callbacks);
-            } catch {
-              clearTimeout(timer);
-              settle("threw");
-            }
-          });
-        }
-        return contactResult;
-      }, digits);
-      if (result === "sent") return result;
-      if (result !== "streams-unavailable") observed = result;
-    } catch {
-      observed = "frame-unavailable";
-    }
-  }
-  return observed;
-}
-
 async function buttonVisible(page, patterns) {
   for (const frame of page.frames()) {
     for (const pattern of patterns) {
@@ -1385,33 +1250,6 @@ async function observe(options) {
           `max_rms=${probe.remoteAudioMaxRms.toFixed(6)}`,
       );
     }
-    const agentDtmfSentAtMs = [];
-    if (session.scenario_id === "bridgefu-web-sdk-handoff") {
-      // Prove the transferred media path before operating Agent Workspace's
-      // keypad. Opening the lazily attached keypad earlier can perturb the
-      // same browser surface while the source-to-agent media probe is still
-      // converging. Once media is established, open the keypad, click its
-      // nested digit, and retain Streams only as a bounded fallback.
-      const keypadOpened = await clickButtonWithin(
-        page,
-        [/Number pad/i, /Keypad/i, /Dial pad/i, /Dialpad/i],
-        5_000,
-      );
-      const keypadDigitSent = keypadOpened
-        ? (await clickNestedNumberPadDigit(page, "6", 5_000))
-          || (await clickButtonWithin(page, [/^6$/], 1_000))
-        : false;
-      const streamsResult = keypadDigitSent
-        ? "not-attempted"
-        : await sendDigitsViaConnectStreams(page, "6");
-      if (!keypadDigitSent && streamsResult !== "sent") {
-        fail(
-          "Agent Workspace could not send the reverse DTMF probe "
-            + `keypad_open=${yesNo(keypadOpened)} streams=${streamsResult}`,
-        );
-      }
-      agentDtmfSentAtMs.push(Date.now());
-    }
     const mediaProbe = await probeSnapshot(page);
     if (!(await capturePrivateScreenshot(page, screenshotPath))) {
       fail("Agent Workspace screenshot capture failed");
@@ -1445,15 +1283,15 @@ async function observe(options) {
       mediaProbe.sourceMarkerObservedAtMs[0],
       observedAtMs,
     );
-    if (session.scenario_id !== "bridgefu-web-sdk-handoff") {
-      agentDtmfSentAtMs.push(
-        ...agentDtmfSchedule(
-          mediaProbe.captureRequestedAtMs,
-          mediaProbe.sourceMarkerObservedAtMs[0],
-          observedAtMs,
-        ),
-      );
-    }
+    // The deterministic fake microphone emits one in-band DTMF 6 after media
+    // establishment. The independent Bridgefu browser analyser must observe
+    // the corresponding 770/1477 Hz pair. This proves reverse media and DTMF
+    // traversal without coupling qualification to Agent Workspace keypad UI.
+    const agentDtmfSentAtMs = agentDtmfSchedule(
+      mediaProbe.captureRequestedAtMs,
+      mediaProbe.sourceMarkerObservedAtMs[0],
+      observedAtMs,
+    );
     if (
       mediaProbe.sourceMarkerObservedAtMs.length < REQUIRED_MARKER_EPISODES ||
       mediaProbe.sourceMarkerFrames < REQUIRED_MARKER_ANALYSER_FRAMES ||
