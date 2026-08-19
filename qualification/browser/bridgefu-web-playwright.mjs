@@ -89,6 +89,7 @@ const DTMF_START_MS = 6_000;
 // observe both DTMF frequencies after the complete transcoding path. This is
 // still a binary presence probe, not a second sustained audio test.
 const DTMF_DURATION_MS = 1_000;
+const PEER_MEDIA_READY_PRODUCER = "bridgefu-agent-peer-media-ready@1";
 // The fake microphone starts before the peer connection is established. Require
 // media to establish before the proven five-second first speech boundary.
 // Repeat the same bounded request across the Vapi SIP bridge-establishment
@@ -312,6 +313,36 @@ function validateRouteInput(path) {
   const credentialExpiry = Date.parse(attachment.signaling_credential.expires_at);
   if (!Number.isFinite(expiresAt) || expiresAt !== credentialExpiry || expiresAt <= Date.now()) {
     fail("private route attachment expiry is invalid");
+  }
+  return value;
+}
+
+function validatePeerMediaReady(path, session) {
+  const value = privateJson(path);
+  const keys = new Set([
+    "schema_version",
+    "producer",
+    "execution_id",
+    "scenario_id",
+    "source_call_fingerprint",
+    "source_marker_observed",
+    "source_dtmf_observed",
+    "agent_probe_active",
+    "redacted",
+  ]);
+  if (
+    !exactKeys(value, keys) ||
+    value.schema_version !== 1 ||
+    value.producer !== PEER_MEDIA_READY_PRODUCER ||
+    value.execution_id !== session.execution_id ||
+    value.scenario_id !== session.scenario_id ||
+    value.source_call_fingerprint !== session.source_call_fingerprint ||
+    value.source_marker_observed !== true ||
+    value.source_dtmf_observed !== true ||
+    value.agent_probe_active !== true ||
+    value.redacted !== true
+  ) {
+    fail("Agent Workspace peer-media readiness is invalid");
   }
   return value;
 }
@@ -1202,6 +1233,7 @@ async function observe(options) {
   const readyPath = resolve(required(options, "--ready"));
   const triggerPath = resolve(required(options, "--trigger"));
   const observationPath = resolve(required(options, "--observation"));
+  const peerMediaReadyPath = resolve(required(options, "--peer-media-ready"));
   const siteBundleSha256 = validateSha256(
     required(options, "--site-bundle-sha256"),
     "site bundle",
@@ -1221,7 +1253,7 @@ async function observe(options) {
   const hangupOrigin = required(options, "--hangup-origin");
   if (!["source", "agent"].includes(hangupOrigin)) fail("hangup origin is invalid");
   const timeoutMs = timeoutMilliseconds(options);
-  for (const output of [readyPath, triggerPath, observationPath]) {
+  for (const output of [readyPath, triggerPath, observationPath, peerMediaReadyPath]) {
     if (existsSync(output)) fail("qualification output path already exists");
   }
   const nonce = randomBytes(32).toString("base64url");
@@ -1378,6 +1410,8 @@ async function observe(options) {
         + `${Number(probe?.agentDtmfHighMaxPurity ?? 0).toFixed(3)}`,
       );
     }
+    await waitForPrivateFile(peerMediaReadyPath, Math.min(timeoutMs, 120_000));
+    validatePeerMediaReady(peerMediaReadyPath, session);
     let localEndCompleted = false;
     let remoteEndObserved = false;
     if (hangupOrigin === "source") {

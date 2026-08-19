@@ -4780,36 +4780,42 @@ class Controller:
         )
 
     def start_agent(
-        self, session: Path, storage: Path, scenario: str
+        self,
+        session: Path,
+        storage: Path,
+        scenario: str,
+        *,
+        media_ready: Path | None = None,
     ) -> tuple[subprocess.Popen[str], Path, Path, Path]:
         ready = self.work / f"{scenario}-agent-ready.json"
         observation = self.work / f"{scenario}-agent.json"
         screenshot = self.args.output / f"{scenario}-screen.png"
-        process = self.runner.popen(
-            [
-                "node",
-                os.fspath(QUALIFICATION / "browser" / "agent-workspace-playwright.mjs"),
-                "observe",
-                "--session",
-                os.fspath(session),
-                "--execution-id",
-                self.args.execution_id,
-                "--scenario-id",
-                scenario,
-                "--storage-state",
-                os.fspath(storage),
-                "--connect-url",
-                self.outputs["ConnectLoginUrl"],
-                "--screenshot",
-                os.fspath(screenshot),
-                "--ready",
-                os.fspath(ready),
-                "--observation",
-                os.fspath(observation),
-                "--timeout-seconds",
-                "240",
-            ]
-        )
+        arguments = [
+            "node",
+            os.fspath(QUALIFICATION / "browser" / "agent-workspace-playwright.mjs"),
+            "observe",
+            "--session",
+            os.fspath(session),
+            "--execution-id",
+            self.args.execution_id,
+            "--scenario-id",
+            scenario,
+            "--storage-state",
+            os.fspath(storage),
+            "--connect-url",
+            self.outputs["ConnectLoginUrl"],
+            "--screenshot",
+            os.fspath(screenshot),
+            "--ready",
+            os.fspath(ready),
+            "--observation",
+            os.fspath(observation),
+            "--timeout-seconds",
+            "240",
+        ]
+        if media_ready is not None:
+            arguments.extend(["--media-ready", os.fspath(media_ready)])
+        process = self.runner.popen(arguments)
         self.processes.append(process)
         return process, observation, screenshot, ready
 
@@ -6355,8 +6361,12 @@ class Controller:
         try:
             ensure_connect_agent_available(self.aws, self.outputs)
             session_path = self.work / f"{scenario}-session.json"
+            agent_media_ready = self.work / f"{scenario}-agent-media-ready.json"
             agent_process, agent_observation, _, agent_ready = self.start_agent(
-                session_path, storage, scenario
+                session_path,
+                storage,
+                scenario,
+                media_ready=agent_media_ready,
             )
             self.wait_for_agent_readiness(agent_process, agent_ready, scenario)
 
@@ -6433,6 +6443,8 @@ class Controller:
                     os.fspath(trigger),
                     "--observation",
                     os.fspath(source_observation),
+                    "--peer-media-ready",
+                    os.fspath(agent_media_ready),
                     "--site-bundle-sha256",
                     site_digest,
                     "--hangup-origin",

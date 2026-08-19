@@ -537,3 +537,42 @@ spanning more than 60 seconds found all 26 resource classes empty. The trusted
 reaper then completed successfully. The next permitted actions are the complete
 local gate, protected review/merge, and one new Oregon-first candidate. Virginia
 and publication remain blocked until Oregon passes both serialized scenarios.
+
+## 2026-08-19 v0.1.27 Oregon cross-browser hangup race
+
+The reverse-DTMF UI correction passed the full local gate, protected review,
+exact-main CI, version-bound private AMI build, immutable staging, and all 20
+two-region remote template validations. Oregon deployed the customer template
+to `CREATE_COMPLETE`, proved the exact candidate AMI on a running
+`c7g.2xlarge`, and passed the mandatory direct SIPS/TLS/SDES-SRTP preflight.
+The Bridgefu Web SDK call reached Vapi, Bridgefu, and Amazon Connect. The agent
+observer proved a real remote track, bidirectional RTP, active audio, and one
+source marker episode; the Connect contact completed normally.
+
+The Web scenario failed before the SIP-source scenario because the agent did
+not observe the source's separate one-second in-band DTMF interval. This was a
+cross-browser completion race, not missing media or a detector threshold miss.
+The source browser and agent browser each waited for their own incoming marker
+and DTMF, but the source browser originated hangup immediately after its reverse
+direction passed. Their repeating fake-microphone schedules have independent
+phases, so the source could hang up after the agent marker/DTMF arrived but
+before the source microphone reached its next DTMF interval. The agent recorded
+53 source-marker samples and zero DTMF-positive samples, which matches that
+ordering.
+
+The local correction adds a private, execution-bound peer-media readiness
+handshake. After the agent has observed the source marker and DTMF and captured
+the screen-pop evidence, it writes a mode-0600 closed-vocabulary readiness file.
+The source must validate the exact execution, scenario, and source-call
+fingerprint in that file before it may hang up. This retains the single
+five-second marker and one-second DTMF presence probe; it does not add a second
+five-second test or a call-quality assertion. Focused controller and browser
+regressions require this ordering and reject a missing, foreign, or premature
+handshake.
+
+The failed candidate was not sealed or published. The wrapper and customer
+stacks deleted completely, temporary Vapi resources were absent, and three
+stable zero-resource observations found all 26 resource classes empty. The next
+permitted action is the complete local gate for the handshake correction,
+followed by protected review and a fresh Oregon-first candidate. Virginia and
+publication remain blocked until Oregon passes both serialized scenarios.

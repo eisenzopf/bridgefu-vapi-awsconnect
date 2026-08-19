@@ -191,6 +191,65 @@ class ScenarioSecurityAndReadinessTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertNotIn("handoff_token", web.split("private_json(session_path", 1)[1])
 
+    def test_web_source_waits_for_agent_media_evidence_before_hangup(self) -> None:
+        controller = (QUALIFICATION / "controller.py").read_text(encoding="utf-8")
+        web_controller = controller.split("    def _web_smoke(", 1)[1].split(
+            "    def cleanup_sip_transients(", 1
+        )[0]
+        self.assertIn(
+            'agent_media_ready = self.work / f"{scenario}-agent-media-ready.json"',
+            web_controller,
+        )
+        self.assertIn("media_ready=agent_media_ready", web_controller)
+        self.assertIn('"--peer-media-ready"', web_controller)
+        self.assertIn("os.fspath(agent_media_ready)", web_controller)
+
+        agent = (
+            QUALIFICATION / "browser" / "agent-workspace-playwright.mjs"
+        ).read_text(encoding="utf-8")
+        agent_observe = agent.split("async function observe(options)", 1)[1].split(
+            "async function main()", 1
+        )[0]
+        self.assertLess(
+            agent_observe.index("probe.dtmfSourceToAgentObserved"),
+            agent_observe.index("exclusiveJson(mediaReadyPath"),
+        )
+        self.assertLess(
+            agent_observe.index("capturePrivateScreenshot(page, screenshotPath)"),
+            agent_observe.index("exclusiveJson(mediaReadyPath"),
+        )
+        self.assertLess(
+            agent_observe.index("exclusiveJson(mediaReadyPath"),
+            agent_observe.index("Agent Workspace did not observe the source hangup"),
+        )
+
+        source = (QUALIFICATION / "browser" / "bridgefu-web-playwright.mjs").read_text(
+            encoding="utf-8"
+        )
+        source_observe = source.split("async function observe(options)", 1)[1].split(
+            "async function main()", 1
+        )[0]
+        self.assertLess(
+            source_observe.index("probe.dtmfAgentToSourceObserved"),
+            source_observe.index("validatePeerMediaReady(peerMediaReadyPath, session)"),
+        )
+        self.assertLess(
+            source_observe.index("validatePeerMediaReady(peerMediaReadyPath, session)"),
+            source_observe.index("endFromSource"),
+        )
+        validator = source.split("function validatePeerMediaReady(", 1)[1].split(
+            "function validateSiteUrl", 1
+        )[0]
+        self.assertIn("!exactKeys(value, keys)", validator)
+        for binding in (
+            "value.execution_id !== session.execution_id",
+            "value.scenario_id !== session.scenario_id",
+            "value.source_call_fingerprint !== session.source_call_fingerprint",
+            "value.source_marker_observed !== true",
+            "value.source_dtmf_observed !== true",
+            "value.agent_probe_active !== true",
+        ):
+            self.assertIn(binding, validator)
     def test_both_sources_share_the_transfer_prompt_and_data_plane_gate(self) -> None:
         text = (QUALIFICATION / "controller.py").read_text(encoding="utf-8")
         web = text.split("    def _web_smoke(", 1)[1].split(
