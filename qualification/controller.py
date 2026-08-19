@@ -212,6 +212,9 @@ MAX_DEMO_SITE_BYTES = 32 * 1024 * 1024
 ACM_OWNERSHIP_PRODUCER = "bridgefu-acm-validation-ownership@1"
 MAX_NESTED_STACKS = 16
 MAX_ACM_VALIDATION_RECORDS = 8
+VAPI_QUALIFICATION_READ_RETRIES = 6
+VAPI_QUALIFICATION_MAX_RETRY_AFTER_SECONDS = 30.0
+VAPI_PROVISIONING_RESILIENCE_SETTLE_SECONDS = 10.0
 
 
 class QualificationError(RuntimeError):
@@ -3954,6 +3957,15 @@ class Controller:
             asset_root=ROOT / "vapi",
         )
 
+    @staticmethod
+    def qualification_vapi_client(api_key: str) -> VapiHttpClient:
+        """Use a bounded live-test read policy that survives Vapi rate windows."""
+        return VapiHttpClient(
+            api_key,
+            read_retries=VAPI_QUALIFICATION_READ_RETRIES,
+            max_retry_after_seconds=VAPI_QUALIFICATION_MAX_RETRY_AFTER_SECONDS,
+        )
+
     def vapi_provisioning_resilience(self) -> None:
         """Prove delete/recreate and lost-POST reconciliation against live Vapi."""
         if (
@@ -3969,7 +3981,7 @@ class Controller:
             )
         config = self.provisioning_config()
         api_key = extract_vapi_key(self.aws.secret(self.args.vapi_secret_arn))
-        client = VapiHttpClient(api_key)
+        client = self.qualification_vapi_client(api_key)
         current_physical_id = (
             "bridgefu-vapi-v2:"
             f"{self.outputs['VapiAssistantId']}:"
@@ -3979,6 +3991,7 @@ class Controller:
         try:
             self.vapi_provisioning_cleanup_required = True
             provision_delete(client, config, current_physical_id)
+            time.sleep(VAPI_PROVISIONING_RESILIENCE_SETTLE_SECONDS)
             ambiguous_client = LostAssistantCreateResponseClient(client)
             first = provision_create(ambiguous_client, config)
             self.outputs["VapiAssistantId"] = first.assistant_id
@@ -4001,6 +4014,7 @@ class Controller:
                 )
             ):
                 raise VapiProvisioningError("vapi_resilience_delete_failed")
+            time.sleep(VAPI_PROVISIONING_RESILIENCE_SETTLE_SECONDS)
 
             second = provision_create(client, config)
             self.outputs["VapiAssistantId"] = second.assistant_id
@@ -4030,7 +4044,7 @@ class Controller:
         try:
             config = self.provisioning_config()
             api_key = extract_vapi_key(self.aws.secret(self.args.vapi_secret_arn))
-            client = VapiHttpClient(api_key)
+            client = self.qualification_vapi_client(api_key)
             current = provision_create(client, config)
             self.outputs["VapiAssistantId"] = current.assistant_id
             self.outputs["VapiPrepareToolId"] = current.prepare_tool_id

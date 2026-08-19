@@ -641,3 +641,39 @@ stable zero-resource observations reported all 26 resource classes absent.
 Virginia did not start. The next permitted action is the complete local gate,
 protected review/merge, and one fresh Oregon-first candidate. Virginia, sealing,
 and publication remain blocked until Oregon passes both serialized scenarios.
+
+## 2026-08-19 v0.1.30 Oregon Vapi rate-window failure
+
+The single-signal SIP correction passed the complete local gate, protected
+review, exact-main CI, accelerated private AMI build, immutable staging, and
+all two-region remote template validations. Oregon deployed successfully and
+the controller advanced through the direct secure preflight, Bridgefu Web SDK
+smoke, and rvoip SIP-source smoke. Because the controller invokes the Vapi
+provisioning-resilience gate only after both serialized smoke methods return,
+this run is the first live confirmation that both corrected source paths
+completed on the same immutable candidate.
+
+The candidate failed afterward in the deliberate Vapi delete/reconcile/create/
+delete/recreate resilience test. The second recreation completed, but its next
+credential ownership read received HTTP 429 on all four attempts. Cleanup then
+encountered the same organization-wide rate window. The safe diagnostics show
+three retries followed by rejection for each exhausted read; no ambiguous write
+was blindly repeated and no response body or credential was retained.
+
+The precise client-policy defect was a five-second cap on `Retry-After` and only
+three read retries. That bound is adequate for isolated CloudFormation
+provisioning but not for the qualification sequence after two full calls and
+multiple intentional resource lifecycle cycles. The local correction keeps the
+production Lambda defaults unchanged, gives only live qualification six read
+retries with a maximum 30-second `Retry-After`, and inserts two bounded
+10-second cooling intervals between destructive lifecycle cycles. POST, PATCH,
+and DELETE ambiguity handling and exact ownership reconciliation remain
+fail-closed. Regression coverage reproduces the prior four consecutive 429s and
+requires the fifth read to succeed without exposing the response body.
+
+The failed candidate was not sealed or published, and Virginia did not start.
+Trusted recovery is currently responsible for the failed candidate and Oregon
+environment; a replacement candidate is forbidden until that recovery
+completes and independent zero-resource verification passes. The next permitted
+actions are the complete local gate, protected review/merge, and a fresh
+Oregon-first candidate using a new version.

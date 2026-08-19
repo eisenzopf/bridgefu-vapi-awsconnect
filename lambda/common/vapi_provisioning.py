@@ -23,9 +23,11 @@ PENDING_PHYSICAL_ID = "bridgefu-vapi-pending"
 ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 VALUE_PATTERN = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
 MAX_REQUEST_TIMEOUT_SECONDS = 15.0
-MAX_READ_RETRIES = 3
+DEFAULT_READ_RETRIES = 3
+MAX_READ_RETRIES = 6
 MAX_RECONCILIATION_READS = 3
-MAX_RETRY_AFTER_SECONDS = 5.0
+DEFAULT_MAX_RETRY_AFTER_SECONDS = 5.0
+MAX_RETRY_AFTER_SECONDS = 30.0
 RECONCILIATION_DELAYS_SECONDS = (0.25, 0.5, 1.0)
 VAPI_API_BASE_URLS = frozenset({"https://api.vapi.ai"})
 RETRIABLE_HTTP_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
@@ -133,7 +135,8 @@ class VapiHttpClient:
         base_url: str = "https://api.vapi.ai",
         *,
         request_timeout=None,
-        read_retries: int = MAX_READ_RETRIES,
+        read_retries: int = DEFAULT_READ_RETRIES,
+        max_retry_after_seconds: float = DEFAULT_MAX_RETRY_AFTER_SECONDS,
         sleep=time.sleep,
     ) -> None:
         if not isinstance(api_key, str) or len(api_key) < 24:
@@ -162,22 +165,31 @@ class VapiHttpClient:
             or not 0 <= read_retries <= MAX_READ_RETRIES
         ):
             raise VapiProvisioningError("vapi_retry_budget_invalid")
+        if (
+            isinstance(max_retry_after_seconds, bool)
+            or not isinstance(max_retry_after_seconds, (int, float))
+            or not math.isfinite(float(max_retry_after_seconds))
+            or not 0 < float(max_retry_after_seconds) <= MAX_RETRY_AFTER_SECONDS
+        ):
+            raise VapiProvisioningError("vapi_retry_after_bound_invalid")
         self._request_timeout = request_timeout
         self._read_retries = read_retries
+        self._max_retry_after_seconds = float(max_retry_after_seconds)
         self._sleep = sleep
 
     @staticmethod
     def _resource_from_path(path: str) -> str:
         return path.split("?", 1)[0].strip("/").split("/", 1)[0]
 
-    @staticmethod
-    def _retry_after_seconds(error: urllib.error.HTTPError, attempt: int) -> float:
+    def _retry_after_seconds(
+        self, error: urllib.error.HTTPError, attempt: int
+    ) -> float:
         raw = error.headers.get("Retry-After") if error.headers is not None else None
         try:
             value = float(raw) if raw is not None else 2 ** max(0, attempt - 1)
         except (TypeError, ValueError):
             value = 2 ** max(0, attempt - 1)
-        return min(MAX_RETRY_AFTER_SECONDS, max(0.0, value))
+        return min(self._max_retry_after_seconds, max(0.0, value))
 
     def _timeout_seconds(self) -> float:
         value = (
@@ -288,7 +300,7 @@ class VapiHttpClient:
                         attempt=attempt,
                         result="retrying",
                     )
-                    self._sleep(min(MAX_RETRY_AFTER_SECONDS, 2 ** (attempt - 1)))
+                    self._sleep(min(self._max_retry_after_seconds, 2 ** (attempt - 1)))
                     continue
                 if method != "GET":
                     _emit_request_diagnostic(
