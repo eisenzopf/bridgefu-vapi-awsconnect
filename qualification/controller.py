@@ -3113,14 +3113,52 @@ def derive_scenario_checks(
         and isinstance(screen_fields, list)
         and set(screen_fields) == expected_fields
     )
-    source_to_agent = (
-        int(source_media.get("source_to_agent_marker_frames_sent", 0)) >= 5
-        # Presence, not fidelity: five 20 ms analyser samples plus the
-        # independently retained marker edge, RTP, active audio, and DTMF
-        # observations prove that source audio traversed the call.
-        and int(agent_media.get("source_to_agent_marker_frames", 0)) >= 5
-        and len(agent_media.get("source_marker_observed_at_ms", [])) >= 1
+    # Presence, not fidelity: the Web source keeps its proven 997 Hz marker.
+    # The SIP source uses one five-second PCM DTMF-5 probe and additionally
+    # retains inbound RTP and active-audio counters. Its two frequencies are
+    # observed by the browser analyser rather than inferred from SIP
+    # telephone-event signaling.
+    participant_audio_presence = (
+        int(agent_media.get("source_audio_presence_frames", 0)) >= 3
+        and len(agent_media.get("source_audio_presence_observed_at_ms", [])) >= 1
     )
+    if scenario == WEB_SCENARIO:
+        source_audio_sent = (
+            int(source_media.get("source_to_agent_marker_frames_sent", 0)) >= 5
+            and agent_media.get("source_audio_presence_basis") == "marker"
+            and int(agent_media.get("source_to_agent_marker_frames", 0)) >= 5
+            and len(agent_media.get("source_marker_observed_at_ms", [])) >= 1
+        )
+    else:
+        participant_audio_presence = (
+            participant_audio_presence
+            and int(agent_media.get("inbound_audio_packets", 0)) >= 1
+            and int(agent_media.get("inbound_audio_bytes", 0)) >= 1
+            and int(agent_media.get("remote_audio_active_frames", 0)) >= 3
+        )
+        audio_presence_sent_at = source_media.get("audio_presence_sent_at_ms")
+        dtmf_sent_at = source_media.get("dtmf_source_to_agent_sent_at_ms")
+        audio_presence_observed_at = agent_media.get(
+            "source_audio_presence_observed_at_ms"
+        )
+        audio_presence_frames = int(source_media.get("audio_presence_frames_sent", 0))
+        source_audio_sent = (
+            source_media.get("audio_presence_probe") == "in-band-dtmf-5"
+            and isinstance(audio_presence_sent_at, list)
+            and isinstance(audio_presence_observed_at, list)
+            and audio_presence_sent_at == dtmf_sent_at
+            and len(audio_presence_sent_at) >= 1
+            and any(
+                observed >= sent
+                for observed in audio_presence_observed_at
+                for sent in audio_presence_sent_at
+            )
+            and audio_presence_frames >= 250
+            and audio_presence_frames
+            == int(source_media.get("dtmf_source_to_agent_frames_sent", 0))
+            and agent_media.get("source_audio_presence_basis") == "in-band-dtmf"
+        )
+    source_to_agent = participant_audio_presence and source_audio_sent
     source_receive_frames = 50 if scenario == WEB_SCENARIO else 5
     agent_to_source = (
         int(agent_media.get("agent_to_source_marker_frames_sent", 0)) >= 5
@@ -4571,8 +4609,7 @@ class Controller:
             )
         except deployment_review.DeploymentReviewError as error:
             raise QualificationError(
-                "CloudFormation deployment review failed "
-                f"reason={error.safe_reason}"
+                f"CloudFormation deployment review failed reason={error.safe_reason}"
             ) from error
         self.deployment_review_evidence = dict(reviewed.proof)
         self.reviewed_change_set_arns = reviewed.change_set_arns

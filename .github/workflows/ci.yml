@@ -81,7 +81,11 @@ jobs:
             ${{ steps.qualification-rust.outputs.commit }}-
             ${{ hashFiles('qualification/sip-client/Cargo.lock', 'qualification/direct-secure-probe/Cargo.lock') }}
       - name: Test crates.io rvoip SIP smoke client
-        run: cargo test --locked --manifest-path qualification/sip-client/Cargo.toml
+        run: |
+          cargo fmt --manifest-path qualification/sip-client/Cargo.toml -- --check
+          cargo test --locked --manifest-path qualification/sip-client/Cargo.toml
+          cargo clippy --locked --all-targets \
+            --manifest-path qualification/sip-client/Cargo.toml -- -D warnings
       - name: Test the exact crates.io rvoip direct secure probe
         run: |
           cargo fmt --manifest-path qualification/direct-secure-probe/Cargo.toml -- --check

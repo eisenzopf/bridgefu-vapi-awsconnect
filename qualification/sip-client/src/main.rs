@@ -26,14 +26,17 @@ const PRODUCER: &str = "bridgefu-vapi-sip-smoke@1";
 const SAMPLE_RATE: u32 = 8_000;
 const FRAME_SAMPLES: usize = 160;
 const FRAME_DURATION: Duration = Duration::from_millis(20);
-const SOURCE_MARKER_HZ: f32 = 997.0;
+const NON_AGENT_GUARD_HZ: f64 = 997.0;
 const SOURCE_DTMF_LOW_HZ: f32 = 770.0;
 const SOURCE_DTMF_HIGH_HZ: f32 = 1_336.0;
 const AGENT_MARKER_HZ: f64 = 880.0;
 const REQUIRED_AGENT_MARKER_EPISODES: usize = 1;
 const REQUIRED_AGENT_MARKER_FRAMES: usize = 5;
 const INITIAL_SILENCE_FRAMES: usize = 250;
-const SOURCE_MARKER_FRAMES: usize = 250;
+// One five-second in-band DTMF probe proves both audio presence and DTMF
+// traversal. A second single-frequency marker is intentionally not required:
+// Vapi/Connect speech processing may suppress it even while real audio and
+// in-band DTMF traverse the call.
 const SOURCE_DTMF_FRAMES: usize = 250;
 const MAX_PROMPT_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -98,8 +101,6 @@ struct ToneEdges {
 #[derive(Clone, Default)]
 struct SendStats {
     prompt_frames: usize,
-    marker_timestamps: Vec<u64>,
-    marker_frames: usize,
     dtmf_timestamps: Vec<u64>,
     dtmf_frames: usize,
 }
@@ -131,8 +132,9 @@ struct SignalingObservation {
 struct MediaObservation {
     codec: &'static str,
     prompt_frames_sent: usize,
-    source_marker_sent_at_ms: Vec<u64>,
-    source_to_agent_marker_frames_sent: usize,
+    audio_presence_probe: &'static str,
+    audio_presence_sent_at_ms: Vec<u64>,
+    audio_presence_frames_sent: usize,
     dtmf_source_to_agent_sent_at_ms: Vec<u64>,
     dtmf_source_to_agent_frames_sent: usize,
     agent_marker_observed_at_ms: Vec<u64>,
@@ -349,11 +351,7 @@ impl ToneEdges {
             self.active_frames += 1;
         }
         let agent = tone_power(&frame.samples, frame.sample_rate, AGENT_MARKER_HZ);
-        let source = tone_power(
-            &frame.samples,
-            frame.sample_rate,
-            f64::from(SOURCE_MARKER_HZ),
-        );
+        let source = tone_power(&frame.samples, frame.sample_rate, NON_AGENT_GUARD_HZ);
         let present =
             frame.channels == 1 && frame_rms >= 0.01 && agent >= 0.001 && agent >= source * 8.0;
         if present {
@@ -371,17 +369,6 @@ impl ToneEdges {
         }
         self.active = present;
     }
-}
-
-fn tone_frame(phase: &mut f32) -> Vec<i16> {
-    let step = 2.0 * std::f32::consts::PI * SOURCE_MARKER_HZ / SAMPLE_RATE as f32;
-    (0..FRAME_SAMPLES)
-        .map(|_| {
-            let sample = phase.sin() * 0.25 * f32::from(i16::MAX);
-            *phase = (*phase + step) % (2.0 * std::f32::consts::PI);
-            sample as i16
-        })
-        .collect()
 }
 
 fn dtmf_frame(low_phase: &mut f32, high_phase: &mut f32) -> Vec<i16> {
@@ -428,19 +415,9 @@ async fn send_media(
         prompt_frames += 1;
     }
     stats.lock().await.prompt_frames = prompt_frames;
-    let mut phase = 0.0;
     let mut dtmf_low_phase = 0.0;
     let mut dtmf_high_phase = 0.0;
     for _ in 0..90 {
-        let marker_timestamp = now_ms();
-        for _ in 0..SOURCE_MARKER_FRAMES {
-            send_frame(&sender, tone_frame(&mut phase), &mut timestamp).await?;
-        }
-        {
-            let mut current = stats.lock().await;
-            current.marker_timestamps.push(marker_timestamp);
-            current.marker_frames += SOURCE_MARKER_FRAMES;
-        }
         let dtmf_timestamp = now_ms();
         for _ in 0..SOURCE_DTMF_FRAMES {
             send_frame(
@@ -464,13 +441,9 @@ async fn send_media(
 
 fn source_probe_sent_after(stats: &SendStats, established_at_ms: u64) -> bool {
     stats
-        .marker_timestamps
+        .dtmf_timestamps
         .iter()
         .any(|timestamp| *timestamp > established_at_ms)
-        && stats
-            .dtmf_timestamps
-            .iter()
-            .any(|timestamp| *timestamp > established_at_ms)
 }
 
 fn observe_wire(trace: &SipTrace, evidence: &mut WireEvidence) {
@@ -795,7 +768,6 @@ async fn run(args: Args) -> anyhow::Result<()> {
     }
     let send_stats = send_stats.lock().await.clone();
     if send_stats.prompt_frames == 0
-        || send_stats.marker_frames < SOURCE_MARKER_FRAMES
         || send_stats.dtmf_frames < SOURCE_DTMF_FRAMES
         || send_stats.dtmf_timestamps.is_empty()
     {
@@ -833,8 +805,9 @@ async fn run(args: Args) -> anyhow::Result<()> {
             media: MediaObservation {
                 codec: "pcmu-or-pcma",
                 prompt_frames_sent: send_stats.prompt_frames,
-                source_marker_sent_at_ms: send_stats.marker_timestamps,
-                source_to_agent_marker_frames_sent: send_stats.marker_frames,
+                audio_presence_probe: "in-band-dtmf-5",
+                audio_presence_sent_at_ms: send_stats.dtmf_timestamps.clone(),
+                audio_presence_frames_sent: send_stats.dtmf_frames,
                 dtmf_source_to_agent_sent_at_ms: send_stats.dtmf_timestamps,
                 dtmf_source_to_agent_frames_sent: send_stats.dtmf_frames,
                 agent_marker_observed_at_ms: agent_markers.timestamps,
@@ -868,9 +841,15 @@ mod tests {
     }
 
     #[test]
-    fn marker_detector_rejects_the_source_frequency() {
-        let mut phase = 0.0;
-        let frame = AudioFrame::new(tone_frame(&mut phase), SAMPLE_RATE, 1, 0);
+    fn marker_detector_rejects_the_source_dtmf_probe() {
+        let mut low_phase = 0.0;
+        let mut high_phase = 0.0;
+        let frame = AudioFrame::new(
+            dtmf_frame(&mut low_phase, &mut high_phase),
+            SAMPLE_RATE,
+            1,
+            0,
+        );
         let mut detector = ToneEdges::default();
         detector.observe(&frame);
         assert!(detector.timestamps.is_empty());
@@ -886,17 +865,18 @@ mod tests {
         let samples = dtmf_frame(&mut low_phase, &mut high_phase);
         assert!(tone_power(&samples, SAMPLE_RATE, f64::from(SOURCE_DTMF_LOW_HZ)) > 0.001);
         assert!(tone_power(&samples, SAMPLE_RATE, f64::from(SOURCE_DTMF_HIGH_HZ)) > 0.001);
+        assert_eq!(
+            SOURCE_DTMF_FRAMES as u128 * FRAME_DURATION.as_millis(),
+            5_000
+        );
     }
 
     #[test]
     fn source_probe_must_follow_agent_media_establishment() {
         let mut stats = SendStats {
-            marker_timestamps: vec![100],
             dtmf_timestamps: vec![200],
             ..SendStats::default()
         };
-        assert!(!source_probe_sent_after(&stats, 250));
-        stats.marker_timestamps.push(300);
         assert!(!source_probe_sent_after(&stats, 250));
         stats.dtmf_timestamps.push(400);
         assert!(source_probe_sent_after(&stats, 250));

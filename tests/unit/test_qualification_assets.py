@@ -401,13 +401,9 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("release/verify_release_buckets.py", candidate)
         verifier = (ROOT / "release" / "verify_release_control_plane.py").read_text()
         self.assertIn("PublisherPolicyContractVersion", verifier)
-        self.assertIn(
-            "2026-08-18-review-normalization-and-cleanup-v7", verifier
-        )
+        self.assertIn("2026-08-18-review-normalization-and-cleanup-v7", verifier)
         self.assertIn("QualificationPolicyContractVersion", verifier)
-        self.assertIn(
-            "2026-08-18-complete-qualification-api-intents-v6", verifier
-        )
+        self.assertIn("2026-08-18-complete-qualification-api-intents-v6", verifier)
         self.assertIn('"cloudformation",\n        "get-template"', verifier)
         self.assertIn('"detect-stack-resource-drift"', verifier)
         verifier_tree = ast.parse(verifier)
@@ -455,21 +451,17 @@ class QualificationAssetTests(unittest.TestCase):
 
     def test_web_media_ingress_is_limited_to_owned_qualification_groups(self):
         role = (ROOT / "publisher" / "qualification-role.yaml").read_text()
-        statement = role.split(
-            "- Sid: ManageOnlyOwnedQualificationWebMediaIngress", 1
-        )[1].split("\n              - Sid:", 1)[0]
+        statement = role.split("- Sid: ManageOnlyOwnedQualificationWebMediaIngress", 1)[
+            1
+        ].split("\n              - Sid:", 1)[0]
         self.assertIn("- ec2:AuthorizeSecurityGroupIngress", statement)
         self.assertIn("- ec2:RevokeSecurityGroupIngress", statement)
         self.assertIn(
             "arn:${AWS::Partition}:ec2:*:${AWS::AccountId}:security-group/*",
             statement,
         )
-        self.assertIn(
-            "aws:ResourceTag/Project: bridgefu-vapi-awsconnect", statement
-        )
-        self.assertIn(
-            "aws:ResourceTag/ManagedBy: bridgefu-cloudformation", statement
-        )
+        self.assertIn("aws:ResourceTag/Project: bridgefu-vapi-awsconnect", statement)
+        self.assertIn("aws:ResourceTag/ManagedBy: bridgefu-cloudformation", statement)
         self.assertIn("aws:ResourceTag/BridgefuExecutionId: bfq-*", statement)
         self.assertNotIn("Resource: '*'", statement)
 
@@ -746,7 +738,9 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertNotIn("clickNestedNumberPadDigit", agent)
         self.assertNotIn("keypadOpened", agent)
         self.assertIn("const agentDtmfSentAtMs = agentDtmfSchedule(", agent)
-        self.assertIn("without coupling qualification to Agent Workspace keypad UI", agent)
+        self.assertIn(
+            "without coupling qualification to Agent Workspace keypad UI", agent
+        )
         media_convergence = agent.index(
             '"Agent Workspace media browser observations did not converge"'
         )
@@ -768,6 +762,11 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("agentDtmfHighMaxPower", web)
         self.assertIn("const DTMF_DURATION_MS = 1_000;", web)
         self.assertIn("const requiredDtmfAnalyserFrames = 3;", agent)
+        self.assertIn("const REQUIRED_DTMF_ANALYSER_FRAMES = 3;", agent)
+        self.assertIn("function sourceAudioPresence(probe, scenarioId)", agent)
+        self.assertIn('basis: "in-band-dtmf"', agent)
+        self.assertIn("probe.audioPacketsReceived > 0", agent)
+        self.assertIn("probe.remoteAudioActiveFrames", agent)
         self.assertIn("low > 0.00005", agent)
         self.assertIn("high > 0.00005", agent)
         self.assertIn("lowPurity > 0.12", agent)
@@ -784,6 +783,9 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("const agentMarkerHz = 880;", install_probe)
         self.assertNotIn("AGENT_MARKER_HZ", install_probe)
         self.assertIn("dtmf_source_to_agent_frames_sent", sip)
+        self.assertIn('audio_presence_probe: "in-band-dtmf-5"', sip)
+        self.assertIn("const SOURCE_DTMF_FRAMES: usize = 250;", sip)
+        self.assertNotIn("const SOURCE_MARKER_FRAMES", sip)
         self.assertIn('"dtmf_source_to_agent": {"const": true}', evidence_schema)
 
     def test_web_smoke_reports_only_closed_startup_failure_categories(self):

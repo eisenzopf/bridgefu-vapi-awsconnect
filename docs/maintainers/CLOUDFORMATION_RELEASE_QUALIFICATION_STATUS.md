@@ -6,7 +6,7 @@ stack names, call identifiers, Vapi object identifiers, signed URLs, or retained
 diagnostic payloads. Exact operational evidence belongs in the private,
 execution-scoped evidence store and signed candidate receipt.
 
-Last updated: 2026-08-18 (America/Los_Angeles)
+Last updated: 2026-08-19 (America/Los_Angeles)
 
 ## Status rules
 
@@ -25,48 +25,36 @@ Last updated: 2026-08-18 (America/Los_Angeles)
 
 ## Current summary
 
-No candidate has created a `v0.1.22` Git tag, GitHub Release, public AMI, or
-customer-visible `latest` pointer. The latest private attempt reused the
-verified Bridgefu v0.9.0/rvoip 0.3.8 AMI cache, produced fresh private AMIs in
-both regions, staged the immutable objects, passed all 20 remote template
-validations, deployed the exact Oregon hierarchy, and passed the mandatory
-direct SIPS/TLS/SDES-SRTP preflight plus Vapi authenticated SIP readiness.
+No candidate has created a new Git tag, GitHub Release, public AMI, or
+customer-visible `latest` pointer. Candidate `0.1.29` passed protected-main CI,
+the accelerated private AMI build/copy, deterministic immutable staging, all 20
+two-region remote template validations, the exact Oregon customer-stack deploy,
+runtime/AMI binding, authenticated Vapi SIP readiness, and the mandatory direct
+SIPS/TLS/SDES-SRTP preflight.
 
-The Web scenario then failed before Chromium or the real Vapi call because the
-qualification runner could not call `ssm:StartSession` for its two bounded port
-forwarding tunnels. A complete source-to-policy API intent audit found the full
-missing boundary in one pass: `ssm:StartSession`, `ssm:ResumeSession`,
-`ssm:TerminateSession`, `ssmmessages:OpenDataChannel`, and the later one-use
-context operations `dynamodb:PutItem`/`dynamodb:DeleteItem`. The proposed v6
-role scopes StartSession to execution-tagged Bridgefu instances and the one AWS
-port-forwarding document; scopes session lifecycle to the caller's own session;
-uses `Resource: "*"` only for OpenDataChannel because AWS does not support a
-resource ARN for that action; and constrains DynamoDB writes to `bf1_*` keys in
-`bridgefu-bfq-*` tables. AWS Access Analyzer reports no findings, and IAM Policy
-Simulator proves the positive and foreign-key negative cases.
+The Bridgefu Web SDK scenario passed through Vapi, Bridgefu, and Amazon Connect.
+After its exact cleanup and fresh database reset, the SIP-source scenario also
+reached Vapi, transferred through Bridgefu, and reached the available Connect
+agent. It retained inbound RTP, sustained active audio, and 187 independently
+classified in-band DTMF analyser frames, but failed solely because the redundant
+997 Hz single-frequency marker was not detected. Virginia did not start and the
+candidate was not sealed or published.
 
-Teardown removed the complete stack and all immediate resource classes, but its
-stable zero proof then rejected `AWS::Route53::RecordSet` as an unverified
-inventory type. The controller already checks the two exact public names and
-the private hosted-zone deletion; the allowlist omitted the record-set type.
-The proposed correction accepts only those two execution-derived names and
-fails closed on any foreign name. Replaying the exact deleted-stack inventory
-through the corrected verifier returns zero live resource classes. Automated
-recovery subsequently completed successfully and removed the failed candidate
-artifacts.
+The Oregon stack, temporary Vapi resources, and qualification objects were
+deleted. Three stable zero-resource observations spanning more than 60 seconds
+reported all 26 resource classes absent. The local correction replaces the SIP
+source's two sequential five-second signals with one five-second in-band PCM
+DTMF probe after reverse media establishment. Audio presence requires that
+probe's two browser-observed frequencies plus inbound RTP bytes and active-audio
+frames. The Web marker contract and direct SRTP preflight remain unchanged.
 
-Both retained Oregon smoke paths previously passed on the same
-Bridgefu/rvoip 0.3.8 runtime:
-
-```text
-rvoip SIP client → Vapi → Bridgefu → Amazon Connect
-Bridgefu Web SDK → Vapi → Bridgefu → Amazon Connect
-```
-
-Those retained passes remain diagnostic evidence, not a substitute for fresh,
-immutable, two-region qualification. The API-intent and zero-proof fixes are on
-a review branch and have not yet passed protected-main CI or a fresh Oregon
-qualification. Virginia, sealing, and publication remain blocked behind Oregon.
+The correction is on `codex/fix-sip-audio-presence-probe`. The complete local
+preflight passes: 458 Python tests; all SIP, SDP, and direct-secure Rust tests;
+Clippy/format checks; browser syntax and pinned SDK tests; Ruff, ShellCheck, and
+actionlint; deterministic packaging; CloudFormation validation; and immutable
+Packer validation. Protected review, exact-main CI, and a fresh Oregon candidate
+are still required.
+Virginia, sealing, and publication remain blocked behind a complete Oregon pass.
 
 ## Exact source under evaluation
 
@@ -84,9 +72,9 @@ qualification. Virginia, sealing, and publication remain blocked behind Oregon.
 
 - Repository: `bridgefu-vapi-awsconnect`
 - Current protected-main release-control commit:
-  `fa82e01d774c8b9e1e1539285b313c9cb5e0b2b9`
+  `73397423add39a3eb849590a1939202832138754`
 - Target branch: `origin/main`
-- Next eligible version: `0.1.22`, only after every pre-candidate gate below
+- Next eligible version: `0.1.30`, only after every pre-candidate gate below
   passes and the exact audited commit is merged to `origin/main`.
 
 ## Gate status
@@ -95,13 +83,13 @@ qualification. Virginia, sealing, and publication remain blocked behind Oregon.
 | --- | --- | --- |
 | Recipe-first reconciliation | PASSED | Applicable safeguards are preserved and obsolete branch scope is explicitly rejected |
 | Secret and repository hygiene | PASSED | History, working-tree, and exact staged-source scans pass with only reviewed synthetic test fixtures |
-| Local contract and static gates | PASSED | Complete fail-closed preflight passed on the final combined worktree |
-| Exact merged-main CI | PASSED | All four required checks passed on current protected-main commit `fa82e01d774c8b9e1e1539285b313c9cb5e0b2b9` |
+| Local contract and static gates | PASSED | Complete fail-closed preflight passed on the SIP audio-presence correction worktree |
+| Exact merged-main CI | BLOCKED | The SIP correction must pass protected review and all required checks on the resulting exact main commit |
 | Retained diagnostic cleanup | PASSED | The exact Oregon `TestDelete` root is absent and its Vapi, ACM, S3, and direct resource checks pass |
 | Persistent IAM control plane | PASSED | Reviewed, no-replacement role-stack changes deployed and reverified |
 | Exact remote template validation | PASSED | All ten exact rendered templates passed AWS validation in both supported regions (20/20) |
 | Private candidate AMI build | PASSED | Exact private cache reuse, fresh two-region copies, immutable staging, and 20/20 remote template validation passed |
-| Fresh Oregon qualification | FAILED | Merge/deploy the complete API-intent v6 role and exact Route53 record-set zero proof, then pass direct preflight and both Vapi smoke paths before teardown |
+| Fresh Oregon qualification | FAILED | Candidate `0.1.29` passed direct SRTP and Web SDK; SIP media reached Connect but the redundant 997 Hz proxy failed. A fresh candidate must pass both paths and teardown with the corrected one-probe contract |
 | Fresh Virginia qualification | NOT STARTED | Same immutable bits and checks pass only after Oregon |
 | Candidate sealing | NOT STARTED | Signed dual-region evidence and zero-resource receipts |
 | Customer publication | NOT STARTED | Public AMIs/snapshots, immutable objects, and `latest` updated last |
@@ -299,16 +287,16 @@ AWS authority.
 
 ## Remaining path to the customer template
 
-1. Merge the generated Agent Workspace view-contract correction through
+1. Complete the local gate for the SIP audio-presence correction, merge it through
    protected `main` and require exact-main CI.
 2. Verify recovery removed the failed private candidate, then start one new
-   private candidate from that exact protected-main commit using future tag
-   version input `0.1.22`. This is not a Git tag or GitHub Release.
+   private candidate from that exact protected-main commit using future release
+   version input `0.1.30`. This is not yet a Git tag or GitHub Release.
 3. Qualify Oregon, destroy it, and prove stable zero resources.
 4. Qualify Virginia with the same immutable bits, destroy it, and prove stable
    zero resources.
 5. Seal and review the signed receipt.
-6. Only after both regions pass, create Git tag `v0.1.22` on the exact qualified
+6. Only after both regions pass, create Git tag `v0.1.30` on the exact qualified
    commit and approve publication. The newest existing Git tag remains
    `v0.1.13`; the repository currently has no GitHub Release objects.
 7. Publish public AMI/snapshot permissions and immutable release objects, then
@@ -331,7 +319,7 @@ AWS authority.
 - Recovery completed and independent checks found no resources from those failed
   candidates. Exact proof remains in private evidence, not this public ledger.
 
-## Current live gate and next permitted action
+## Historical control-plane and screen-pop gates
 
 Protected main contains the complete qualification API-intent contract. The
 persistent qualification role was updated through a reviewed non-replacing
@@ -381,12 +369,8 @@ heading, context-true/context-false, and each ordered field on failure, without
 logging field values. Focused Python, Node syntax, Ruff, and diff checks pass;
 the complete gate and protected-main merge remain pending.
 
-The next permitted actions are the full local pre-deployment gate, protected
-main review/merge, recovery verification, and one new Oregon-first private
-candidate using future tag version `0.1.22`. Virginia remains blocked until
-Oregon passes. No Git tag, customer-visible object, or publication is permitted
-until both regions pass, zero-resource proof is sealed, and the signed receipt
-is reviewed.
+At that point the next permitted action was the local pre-deployment gate and a
+new Oregon-first candidate. The later dated sections below supersede that state.
 
 ## 2026-08-18 dual-region candidate result and audio-presence correction
 
@@ -612,3 +596,48 @@ The failed candidate was not sealed or published. Both stacks deleted
 completely and three exhaustive zero-resource observations spanning more than
 60 seconds found all 26 resource classes empty. Virginia and publication remain
 blocked until a fresh Oregon candidate passes both serialized scenarios.
+
+## 2026-08-19 v0.1.29 Oregon SIP audio-presence proxy failure
+
+The timestamp-bookkeeping correction passed the full local gate, protected
+review, exact-main CI, accelerated private AMI creation, immutable staging, and
+all 20 two-region remote template validations. Oregon deployed the customer
+template to `CREATE_COMPLETE`, bound the running `c7g.2xlarge` instance to the
+exact candidate AMI, and passed the direct mandatory SIPS/TLS/SDES-SRTP
+preflight. The Bridgefu Web SDK scenario then passed through Vapi, Bridgefu,
+and Amazon Connect with its screen pop, bidirectional media, DTMF, hangup,
+runtime restoration, and active-call telemetry gates. The database was reset
+before the independently provisioned SIP-source scenario began.
+
+The SIP source also reached Vapi, transferred through Bridgefu, and reached the
+available Amazon Connect agent. The agent browser retained one remote audio
+track, 660 inbound RTP packets / 79,303 bytes, 557 active-audio analyser frames,
+and 187 positive in-band DTMF-5 frames. Both DTMF frequencies passed the bounded
+power and purity classifier. The scenario nevertheless failed because a second,
+single-frequency 997 Hz marker had zero positive frames.
+
+This was a qualification-proxy failure, not missing media. The SIP client was
+unchanged apart from its rvoip version label since the last retained SIP pass;
+the standalone marker had previously passed only as a timing-sensitive proxy.
+Vapi/Connect speech processing may suppress a stationary non-speech tone while
+preserving real audio and in-band DTMF. Requiring that tone after independently
+observing the generated PCM DTMF, inbound RTP bytes, and sustained active audio
+made the gate stricter without proving another release property.
+
+The local correction uses one five-second in-band PCM DTMF-5 probe after reverse
+agent media is established. The SIP source cannot finish until one complete
+probe begins after its first received agent marker. The Agent Workspace browser
+must independently observe both DTMF frequencies for consecutive analyser
+frames and must retain inbound RTP packets, inbound RTP bytes, a remote audio
+track, and active-audio frames. That same bounded signal proves source-to-agent
+audio presence and DTMF traversal; it does not claim audio fidelity or reuse an
+out-of-band SIP telephone-event indication. The Web SDK scenario retains its
+already-proven 997 Hz marker contract, and the mandatory direct SRTP preflight
+is unchanged.
+
+The failed candidate was not sealed or published. The complete customer stack,
+temporary Vapi resources, and qualification objects were removed, and all three
+stable zero-resource observations reported all 26 resource classes absent.
+Virginia did not start. The next permitted action is the complete local gate,
+protected review/merge, and one fresh Oregon-first candidate. Virginia, sealing,
+and publication remain blocked until Oregon passes both serialized scenarios.

@@ -27,12 +27,13 @@
     "media": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["codec", "prompt_frames_sent", "source_marker_sent_at_ms", "source_to_agent_marker_frames_sent", "dtmf_source_to_agent_sent_at_ms", "dtmf_source_to_agent_frames_sent", "agent_marker_observed_at_ms", "agent_to_source_marker_frames"],
+      "required": ["codec", "prompt_frames_sent", "audio_presence_probe", "audio_presence_sent_at_ms", "audio_presence_frames_sent", "dtmf_source_to_agent_sent_at_ms", "dtmf_source_to_agent_frames_sent", "agent_marker_observed_at_ms", "agent_to_source_marker_frames"],
       "properties": {
         "codec": {"const": "pcmu-or-pcma"},
         "prompt_frames_sent": {"type": "integer", "minimum": 1},
-        "source_marker_sent_at_ms": {"type": "array", "minItems": 1, "maxItems": 90, "items": {"type": "integer", "minimum": 1}},
-        "source_to_agent_marker_frames_sent": {"type": "integer", "minimum": 5},
+        "audio_presence_probe": {"const": "in-band-dtmf-5"},
+        "audio_presence_sent_at_ms": {"type": "array", "minItems": 1, "maxItems": 90, "items": {"type": "integer", "minimum": 1}},
+        "audio_presence_frames_sent": {"type": "integer", "minimum": 250},
         "dtmf_source_to_agent_sent_at_ms": {"type": "array", "minItems": 1, "maxItems": 90, "items": {"type": "integer", "minimum": 1}},
         "dtmf_source_to_agent_frames_sent": {"type": "integer", "minimum": 15},
         "agent_marker_observed_at_ms": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"type": "integer", "minimum": 1}},
