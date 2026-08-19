@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 import urllib.parse
 from pathlib import Path
@@ -25,6 +26,74 @@ class ReleaseContractTests(unittest.TestCase):
     def supported_regions(self) -> set[str]:
         catalog = json.loads((ROOT / "release" / "regions.json").read_text())
         return {item["code"] for item in catalog["regions"]}
+
+    def test_candidate_sealer_records_all_six_regional_evidence_objects(self):
+        candidate = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
+        block = re.search(
+            r"(?ms)^          upload_and_record\(\) \{\n.*?"
+            r"^          \}\n"
+            r"^          for qualification_region in us-west-2 us-east-1; do\n"
+            r".*?^          done\n",
+            candidate,
+        )
+        self.assertIsNotNone(block)
+        if block is None:
+            self.fail("candidate qualification artifact upload block is missing")
+        shell = textwrap.dedent(block.group(0))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for region in ("us-west-2", "us-east-1"):
+                region_root = root / "target" / "qualification" / region
+                region_root.mkdir(parents=True)
+                for name in (
+                    "evidence.json",
+                    "zero-state.json",
+                    "zero-resource-proof.json",
+                ):
+                    (region_root / name).write_text(f"{region}:{name}\n")
+            candidate_root = root / "target" / "candidate"
+            candidate_root.mkdir(parents=True)
+            (candidate_root / "staged-objects.json").write_text(
+                json.dumps({"schema": 1, "objects": []})
+            )
+            (candidate_root / "state.json").write_text(
+                json.dumps({"release_objects": []})
+            )
+            script = f"""
+                set -euo pipefail
+                VERSION=1.2.3
+                CANDIDATE_ID=candidate-test
+                east_bucket=test-east-bucket
+                persist_candidate_state() {{ :; }}
+                aws() {{ printf '%s\\n' version-id; }}
+                {shell}
+            """
+            subprocess.run(  # noqa: S603
+                ["/bin/bash", "-c", textwrap.dedent(script)],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            staged = json.loads(
+                (candidate_root / "staged-objects.json").read_text()
+            )["objects"]
+            state = json.loads((candidate_root / "state.json").read_text())[
+                "release_objects"
+            ]
+        expected = {
+            f"releases/1.2.3/qualification/{region}/{name}"
+            for region in ("us-west-2", "us-east-1")
+            for name in (
+                "evidence.json",
+                "zero-state.json",
+                "zero-resource-proof.json",
+            )
+        }
+        for records in (staged, state):
+            self.assertEqual(len(records), 6)
+            self.assertEqual({record["key"] for record in records}, expected)
+            self.assertTrue(all(record["region"] == "us-east-1" for record in records))
 
     def test_public_template_prompts_only_for_customer_configuration(self):
         text = (ROOT / "cloudformation" / "template.yaml").read_text()

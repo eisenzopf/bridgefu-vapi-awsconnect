@@ -677,3 +677,34 @@ environment; a replacement candidate is forbidden until that recovery
 completes and independent zero-resource verification passes. The next permitted
 actions are the complete local gate, protected review/merge, and a fresh
 Oregon-first candidate using a new version.
+
+## 2026-08-19 v0.1.31 dual-region pass and receipt-recording failure
+
+The Vapi rate-window correction passed exact-main CI and the complete fresh
+qualification in both Oregon and Virginia. In each region the direct mandatory
+SIPS/TLS/SDES-SRTP preflight passed, followed by both serialized customer call
+paths. The Bridgefu Web SDK path negotiated RTP/SAVP with SDES-SRTP; the rvoip
+SIP-source path used Vapi's allowed RTP/AVP destination offer over independently
+proven TLS. Both reached Amazon Connect with the required context, screen pop,
+bidirectional audio, DTMF, and hangup evidence. Both regions also passed the
+Vapi create/delete/reconcile/recreate resilience gate, database resets, runtime
+restoration, restart-free active-call telemetry, and three exhaustive
+zero-resource observations. Peak Bridgefu active-call utilization remained
+below 3% CPU and 2.5% memory on the required eight-vCPU `c7g.2xlarge`.
+
+The candidate then failed before signing in the receipt sealer. This was not a
+product, regional, or smoke failure. The Bash `upload_and_record` helper assigned
+its first argument to the global variable `region`, which was also the enclosing
+Oregon/Virginia loop variable. After uploading Oregon `evidence.json`, the helper
+changed that loop variable to `us-east-1`; the next two Oregon files were
+therefore recorded under Virginia, and the Virginia zero files were duplicated.
+The independent receipt verifier correctly rejected the missing/ambiguous
+qualification-object bindings.
+
+The correction makes every helper variable local and uses a distinct
+`qualification_region` loop variable. An executable regression extracts the
+actual workflow helper and loop, runs them against a fake S3 command, and
+requires exactly one record for each of the six region/file combinations in
+both staged-object and candidate-state ledgers. The failed candidate remains
+unqualified and unpublished; trusted recovery must finish before a new version
+is dispatched.

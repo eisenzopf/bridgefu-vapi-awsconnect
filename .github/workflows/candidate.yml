@@ -1268,9 +1268,11 @@ jobs:
               --body target/candidate/state.json --region us-east-1 >/dev/null
           }
           record_candidate_object() {
-            key="$1"
-            version_id="$2"
-            source="$3"
+            local key="$1"
+            local version_id="$2"
+            local source="$3"
+            local sha256
+            local size
             sha256="$(sha256sum "$source" | awk '{print $1}')"
             size="$(wc -c < "$source" | tr -d ' ')"
             jq --arg region us-east-1 --arg bucket "$east_bucket" --arg key "$key" \
@@ -1284,19 +1286,22 @@ jobs:
             persist_candidate_state
           }
           upload_and_record() {
-            region="$1"
-            bucket="$2"
-            source="$3"
-            relative="$4"
-            key="releases/$VERSION/$relative"
+            local upload_region="$1"
+            local bucket="$2"
+            local source="$3"
+            local relative="$4"
+            local key="releases/$VERSION/$relative"
+            local sha256
+            local size
+            local version_id
             sha256="$(sha256sum "$source" | awk '{print $1}')"
             size="$(wc -c < "$source" | tr -d ' ')"
-            version_id="$(aws s3api put-object --region "$region" \
+            version_id="$(aws s3api put-object --region "$upload_region" \
               --bucket "$bucket" --key "$key" --body "$source" \
               --metadata "sha256=$sha256,candidate-id=$CANDIDATE_ID" \
               --query VersionId --output text)"
             test "$version_id" != None
-            jq --arg region "$region" --arg bucket "$bucket" --arg key "$key" \
+            jq --arg region "$upload_region" --arg bucket "$bucket" --arg key "$key" \
               --arg version_id "$version_id" --arg sha256 "$sha256" \
               --argjson size_bytes "$size" \
               '.objects += [{region: $region, bucket: $bucket, key: $key,
@@ -1305,7 +1310,7 @@ jobs:
               > target/candidate/staged-objects.next.json
             mv target/candidate/staged-objects.next.json \
               target/candidate/staged-objects.json
-            jq --arg region "$region" --arg bucket "$bucket" --arg key "$key" \
+            jq --arg region "$upload_region" --arg bucket "$bucket" --arg key "$key" \
               --arg version_id "$version_id" --arg sha256 "$sha256" \
               --argjson size_bytes "$size" \
               '.release_objects += [{region: $region, bucket: $bucket, key: $key,
@@ -1315,16 +1320,16 @@ jobs:
             mv target/candidate/state.next.json target/candidate/state.json
             persist_candidate_state
           }
-          for region in us-west-2 us-east-1; do
+          for qualification_region in us-west-2 us-east-1; do
             upload_and_record us-east-1 "$east_bucket" \
-              "target/qualification/$region/evidence.json" \
-              "qualification/$region/evidence.json"
+              "target/qualification/$qualification_region/evidence.json" \
+              "qualification/$qualification_region/evidence.json"
             upload_and_record us-east-1 "$east_bucket" \
-              "target/qualification/$region/zero-state.json" \
-              "qualification/$region/zero-state.json"
+              "target/qualification/$qualification_region/zero-state.json" \
+              "qualification/$qualification_region/zero-state.json"
             upload_and_record us-east-1 "$east_bucket" \
-              "target/qualification/$region/zero-resource-proof.json" \
-              "qualification/$region/zero-resource-proof.json"
+              "target/qualification/$qualification_region/zero-resource-proof.json" \
+              "qualification/$qualification_region/zero-resource-proof.json"
           done
           manifest=target/candidate/release/manifest.json
           openssl dgst -sha256 -binary "$manifest" > target/manifest.digest
