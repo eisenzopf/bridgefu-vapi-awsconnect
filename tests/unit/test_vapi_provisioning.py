@@ -136,7 +136,11 @@ class VapiProvisioningTests(unittest.TestCase):
         ):
             VapiHttpClient("v" * 32, request_timeout=lambda: 16)._timeout_seconds()
         with self.assertRaisesRegex(VapiProvisioningError, "vapi_retry_budget_invalid"):
-            VapiHttpClient("v" * 32, read_retries=4)
+            VapiHttpClient("v" * 32, read_retries=7)
+        with self.assertRaisesRegex(
+            VapiProvisioningError, "vapi_retry_after_bound_invalid"
+        ):
+            VapiHttpClient("v" * 32, max_retry_after_seconds=31)
         with self.assertRaisesRegex(VapiProvisioningError, "vapi_base_url_invalid"):
             VapiHttpClient("v" * 32, "https://api.eu.vapi.ai")
         with self.assertRaisesRegex(VapiProvisioningError, "vapi_base_url_invalid"):
@@ -165,6 +169,44 @@ class VapiProvisioningTests(unittest.TestCase):
             self.assertEqual(client.list("assistant"), [])
         client._sleep.assert_called_once_with(5.0)
         self.assertIn('"http_status":429', output.getvalue())
+        self.assertNotIn("body-must-not-be-logged", output.getvalue())
+
+    def test_qualification_retry_policy_survives_four_consecutive_429s(self):
+        sleep = mock.Mock()
+        client = VapiHttpClient(
+            "v" * 32,
+            read_retries=6,
+            max_retry_after_seconds=30,
+            request_timeout=lambda: 3.0,
+            sleep=sleep,
+        )
+        throttled = urllib.error.HTTPError(
+            "https://api.vapi.ai/credential?limit=1000",
+            429,
+            "body-must-not-be-logged",
+            {"Retry-After": "30"},
+            None,
+        )
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = b"[]"
+        client._opener = mock.Mock()
+        client._opener.open.side_effect = [
+            throttled,
+            throttled,
+            throttled,
+            throttled,
+            response,
+        ]
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(client.list("credential"), [])
+
+        self.assertEqual(client._opener.open.call_count, 5)
+        self.assertEqual(sleep.call_args_list, [mock.call(30.0)] * 4)
+        self.assertEqual(output.getvalue().count('"result":"retrying"'), 4)
         self.assertNotIn("body-must-not-be-logged", output.getvalue())
 
     def test_http_client_non_retriable_status_is_exact_and_body_is_redacted(self):

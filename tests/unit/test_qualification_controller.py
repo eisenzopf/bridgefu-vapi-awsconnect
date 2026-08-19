@@ -148,14 +148,31 @@ class QualificationControllerTests(unittest.TestCase):
 
         with (
             mock.patch.object(controller, "provisioning_config", return_value=config),
-            mock.patch.object(CONTROLLER, "VapiHttpClient", return_value=client),
+            mock.patch.object(
+                CONTROLLER, "VapiHttpClient", return_value=client
+            ) as vapi_client,
             mock.patch.object(
                 CONTROLLER, "provision_create", side_effect=create_side_effect
             ) as create,
             mock.patch.object(CONTROLLER, "provision_delete") as delete,
+            mock.patch.object(CONTROLLER.time, "sleep") as sleep,
         ):
             controller.vapi_provisioning_resilience()
 
+        vapi_client.assert_called_once_with(
+            "vapi-private-key-value-1234567890",
+            read_retries=CONTROLLER.VAPI_QUALIFICATION_READ_RETRIES,
+            max_retry_after_seconds=(
+                CONTROLLER.VAPI_QUALIFICATION_MAX_RETRY_AFTER_SECONDS
+            ),
+        )
+        self.assertEqual(
+            sleep.call_args_list,
+            [
+                mock.call(CONTROLLER.VAPI_PROVISIONING_RESILIENCE_SETTLE_SECONDS),
+                mock.call(CONTROLLER.VAPI_PROVISIONING_RESILIENCE_SETTLE_SECONDS),
+            ],
+        )
         self.assertEqual(create.call_count, 4)
         self.assertEqual(delete.call_count, 2)
         self.assertEqual(
