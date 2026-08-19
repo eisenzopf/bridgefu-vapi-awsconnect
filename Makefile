@@ -27,7 +27,9 @@ test:
 	python3 -m unittest discover -s tests/unit -v
 
 qualification-test:
+	cargo fmt --manifest-path qualification/sip-client/Cargo.toml -- --check
 	cargo test --locked --manifest-path qualification/sip-client/Cargo.toml
+	cargo clippy --locked --all-targets --manifest-path qualification/sip-client/Cargo.toml -- -D warnings
 	cargo fmt --manifest-path qualification/sdp-observer/Cargo.toml -- --check
 	cargo test --locked --manifest-path qualification/sdp-observer/Cargo.toml
 	cargo clippy --locked --all-targets --manifest-path qualification/sdp-observer/Cargo.toml -- -D warnings

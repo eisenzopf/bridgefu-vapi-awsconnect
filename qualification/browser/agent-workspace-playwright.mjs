@@ -95,6 +95,7 @@ const REQUIRED_MARKER_EPISODES = 1;
 // call, while independently retained RTP, active-audio, and DTMF evidence
 // protects the assertion from a single-sample false positive.
 const REQUIRED_MARKER_ANALYSER_FRAMES = 5;
+const REQUIRED_DTMF_ANALYSER_FRAMES = 3;
 const PROBE_DTMF_SIX_START_MS = 6_000;
 const PROBE_DTMF_SIX_DURATION_MS = 1_000;
 
@@ -633,6 +634,7 @@ async function probeSnapshot(page) {
           sourceMarkerObservedAtMs: [...state.sourceMarkerObservedAtMs],
           sourceMarkerFrames: state.sourceMarkerFrames,
           dtmfSourceToAgentObserved: state.dtmfSourceToAgentObserved,
+          dtmfObservedAtMs: [...state.dtmfObservedAtMs],
           dtmfPositiveFrames: state.dtmfPositiveFrames,
           dtmfLowMaxPower: state.dtmfLowMaxPower,
           dtmfHighMaxPower: state.dtmfHighMaxPower,
@@ -670,6 +672,10 @@ async function probeSnapshot(page) {
     dtmfSourceToAgentObserved: snapshots.some(
       (item) => item.dtmfSourceToAgentObserved,
     ),
+    dtmfObservedAtMs: snapshots
+      .flatMap((item) => item.dtmfObservedAtMs)
+      .sort((left, right) => left - right)
+      .slice(0, 16),
     dtmfPositiveFrames: snapshots.reduce(
       (total, item) => total + item.dtmfPositiveFrames,
       0,
@@ -711,6 +717,42 @@ async function probeSnapshot(page) {
       .filter(Number.isInteger)
       .sort((left, right) => right - left)[0] ?? null,
   };
+}
+
+function sourceAudioPresence(probe, scenarioId) {
+  const markerObserved =
+    probe.sourceMarkerObservedAtMs.length >= REQUIRED_MARKER_EPISODES &&
+    probe.sourceMarkerFrames >= REQUIRED_MARKER_ANALYSER_FRAMES;
+  const inBandDtmfObserved =
+    probe.dtmfSourceToAgentObserved &&
+    probe.dtmfPositiveFrames >= REQUIRED_DTMF_ANALYSER_FRAMES &&
+    probe.dtmfObservedAtMs.length >= 1;
+  if (scenarioId === "bridgefu-web-sdk-handoff") {
+    return markerObserved
+      ? {
+          basis: "marker",
+          frames: probe.sourceMarkerFrames,
+          observedAtMs: probe.sourceMarkerObservedAtMs,
+        }
+      : null;
+  }
+  const sipMediaObserved =
+    probe.remoteAudioTracks > 0 &&
+    probe.audioPacketsReceived > 0 &&
+    probe.audioBytesReceived > 0 &&
+    probe.remoteAudioActiveFrames >= REQUIRED_DTMF_ANALYSER_FRAMES;
+  if (
+    scenarioId === "vapi-sip-transfer" &&
+    inBandDtmfObserved &&
+    sipMediaObserved
+  ) {
+    return {
+      basis: "in-band-dtmf",
+      frames: probe.dtmfPositiveFrames,
+      observedAtMs: probe.dtmfObservedAtMs,
+    };
+  }
+  return null;
 }
 
 function agentMarkerSchedule(captureStartedAtMs, acceptedAtMs, observedAtMs) {
@@ -757,6 +799,7 @@ function installProbe() {
     sourceMarkerLastEdgeMs: 0,
     dtmfSourceToAgentObserved: false,
     dtmfConsecutiveFrames: 0,
+    dtmfObservedAtMs: [],
     dtmfPositiveFrames: 0,
     dtmfLowMaxPower: 0,
     dtmfHighMaxPower: 0,
@@ -852,6 +895,9 @@ function installProbe() {
       state.dtmfConsecutiveFrames = dtmf ? state.dtmfConsecutiveFrames + 1 : 0;
       if (state.dtmfConsecutiveFrames >= requiredDtmfAnalyserFrames) {
         state.dtmfSourceToAgentObserved = true;
+        if (state.dtmfObservedAtMs.length === 0) {
+          state.dtmfObservedAtMs.push(Date.now());
+        }
       }
     }, 20);
   };
@@ -1218,10 +1264,10 @@ async function observe(options) {
       await waitUntil(
         async () => {
           const probe = await probeSnapshot(page);
-          const sourceMediaReadyAtMs = probe.sourceMarkerObservedAtMs[0];
+          const sourceAudio = sourceAudioPresence(probe, session.scenario_id);
+          const sourceMediaReadyAtMs = sourceAudio?.observedAtMs[0];
           return (
-            probe.sourceMarkerObservedAtMs.length >= REQUIRED_MARKER_EPISODES &&
-            probe.sourceMarkerFrames >= REQUIRED_MARKER_ANALYSER_FRAMES &&
+            sourceAudio !== null &&
             probe.dtmfSourceToAgentObserved &&
             probe.captureRequestedAtMs &&
             Number.isInteger(sourceMediaReadyAtMs) &&
@@ -1259,6 +1305,7 @@ async function observe(options) {
       );
     }
     const mediaProbe = await probeSnapshot(page);
+    const sourceAudio = sourceAudioPresence(mediaProbe, session.scenario_id);
     if (!(await capturePrivateScreenshot(page, screenshotPath))) {
       fail("Agent Workspace screenshot capture failed");
     }
@@ -1270,7 +1317,7 @@ async function observe(options) {
         execution_id: session.execution_id,
         scenario_id: session.scenario_id,
         source_call_fingerprint: session.source_call_fingerprint,
-        source_marker_observed: true,
+        source_marker_observed: sourceAudio?.basis === "marker",
         source_dtmf_observed: true,
         agent_probe_active: true,
         redacted: true,
@@ -1299,9 +1346,10 @@ async function observe(options) {
     if (await endControlVisible(page)) fail("Agent Workspace contact cleanup was not stable");
 
     const observedAtMs = Date.now();
+    if (sourceAudio === null) fail("Agent Workspace source audio evidence is incomplete");
     const agentMarkerSentAtMs = agentMarkerSchedule(
       mediaProbe.captureRequestedAtMs,
-      mediaProbe.sourceMarkerObservedAtMs[0],
+      sourceAudio.observedAtMs[0],
       observedAtMs,
     );
     // The deterministic fake microphone emits one in-band DTMF 6 after media
@@ -1313,8 +1361,7 @@ async function observe(options) {
       observedAtMs,
     );
     if (
-      mediaProbe.sourceMarkerObservedAtMs.length < REQUIRED_MARKER_EPISODES ||
-      mediaProbe.sourceMarkerFrames < REQUIRED_MARKER_ANALYSER_FRAMES ||
+      sourceAudio === null ||
       !mediaProbe.dtmfSourceToAgentObserved ||
       agentMarkerSentAtMs.length < REQUIRED_MARKER_EPISODES ||
       (session.scenario_id === "bridgefu-web-sdk-handoff" && agentDtmfSentAtMs.length < 1) ||
@@ -1350,6 +1397,12 @@ async function observe(options) {
       observed_at: new Date(observedAtMs).toISOString(),
       ...screenObservation,
       media: {
+        source_audio_presence_basis: sourceAudio.basis,
+        source_audio_presence_frames: sourceAudio.frames,
+        source_audio_presence_observed_at_ms: sourceAudio.observedAtMs.slice(0, 16),
+        inbound_audio_packets: mediaProbe.audioPacketsReceived,
+        inbound_audio_bytes: mediaProbe.audioBytesReceived,
+        remote_audio_active_frames: mediaProbe.remoteAudioActiveFrames,
         source_to_agent_marker_frames: mediaProbe.sourceMarkerFrames,
         source_marker_observed_at_ms: mediaProbe.sourceMarkerObservedAtMs.slice(0, 16),
         dtmf_source_to_agent_observed: mediaProbe.dtmfSourceToAgentObserved,

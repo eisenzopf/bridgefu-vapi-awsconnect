@@ -43,13 +43,11 @@ class QualificationControllerTests(unittest.TestCase):
     def test_sanitize_diagnostic_redacts_encoded_aws_authorization_message(self):
         encoded = "PO8KhF73vYE1RQtSaq64QMz9UeIf6q2dSEbC9UUk59O60D8Vo4qFC5kLNv5LiE"
         value = CONTROLLER.sanitize_diagnostic(
-            "UnauthorizedOperation. Encoded authorization failure message: "
-            + encoded
+            "UnauthorizedOperation. Encoded authorization failure message: " + encoded
         )
         self.assertEqual(
             value,
-            "UnauthorizedOperation. Encoded authorization failure message: "
-            "[REDACTED]",
+            "UnauthorizedOperation. Encoded authorization failure message: [REDACTED]",
         )
         self.assertNotIn(encoded, value)
 
@@ -2517,6 +2515,12 @@ class QualificationControllerTests(unittest.TestCase):
         agent = {
             "screen_pop": {"visible": True, "visible_fields": fields},
             "media": {
+                "source_audio_presence_basis": "marker",
+                "source_audio_presence_frames": 5,
+                "source_audio_presence_observed_at_ms": [1],
+                "inbound_audio_packets": 10,
+                "inbound_audio_bytes": 1600,
+                "remote_audio_active_frames": 5,
                 "source_to_agent_marker_frames": 5,
                 "source_marker_observed_at_ms": [1],
                 "agent_to_source_marker_frames_sent": 25,
@@ -2601,6 +2605,12 @@ class QualificationControllerTests(unittest.TestCase):
                 "screenshot_sha256": "c" * 64,
             },
             "media": {
+                "source_audio_presence_basis": "marker",
+                "source_audio_presence_frames": 5,
+                "source_audio_presence_observed_at_ms": [1],
+                "inbound_audio_packets": 10,
+                "inbound_audio_bytes": 1600,
+                "remote_audio_active_frames": 5,
                 "source_to_agent_marker_frames": 5,
                 "source_marker_observed_at_ms": [1],
                 "dtmf_source_to_agent_observed": True,
@@ -2636,6 +2646,25 @@ class QualificationControllerTests(unittest.TestCase):
                 CONTROLLER.validate_schema(
                     changed, "participant-observation-v1.schema.json"
                 )
+
+        sip_participant = json.loads(json.dumps(participant))
+        sip_participant["scenario_id"] = "vapi-sip-transfer"
+        sip_participant["media"].update(
+            {
+                "source_audio_presence_basis": "in-band-dtmf",
+                "source_audio_presence_frames": 187,
+                "source_audio_presence_observed_at_ms": [2],
+                "inbound_audio_packets": 660,
+                "inbound_audio_bytes": 79_303,
+                "remote_audio_active_frames": 557,
+                "source_to_agent_marker_frames": 0,
+                "source_marker_observed_at_ms": [],
+                "dtmf_agent_to_source_sent_at_ms": [],
+            }
+        )
+        CONTROLLER.validate_schema(
+            sip_participant, "participant-observation-v1.schema.json"
+        )
 
         web = {
             "schema_version": 1,
@@ -2711,10 +2740,11 @@ class QualificationControllerTests(unittest.TestCase):
             "media": {
                 "codec": "pcmu-or-pcma",
                 "prompt_frames_sent": 1,
-                "source_marker_sent_at_ms": [1],
-                "source_to_agent_marker_frames_sent": 5,
+                "audio_presence_probe": "in-band-dtmf-5",
+                "audio_presence_sent_at_ms": [2],
+                "audio_presence_frames_sent": 250,
                 "dtmf_source_to_agent_sent_at_ms": [2],
-                "dtmf_source_to_agent_frames_sent": 15,
+                "dtmf_source_to_agent_frames_sent": 250,
                 "agent_marker_observed_at_ms": [1],
                 "agent_to_source_marker_frames": 5,
             },
@@ -2730,6 +2760,109 @@ class QualificationControllerTests(unittest.TestCase):
             del changed["media"][field]
             with self.assertRaises(CONTROLLER.QualificationError):
                 CONTROLLER.validate_schema(changed, "source-observation-v1.schema.json")
+
+    def test_sip_audio_presence_uses_one_in_band_dtmf_probe(self):
+        fields = list(CONTROLLER.synthetic_context("vapi-sip-transfer"))
+        source = {
+            "signaling": {"invite_sent": True, "answered": True},
+            "media": {
+                "audio_presence_probe": "in-band-dtmf-5",
+                "audio_presence_sent_at_ms": [200],
+                "audio_presence_frames_sent": 250,
+                "dtmf_source_to_agent_sent_at_ms": [200],
+                "dtmf_source_to_agent_frames_sent": 250,
+                "agent_marker_observed_at_ms": [100],
+                "agent_to_source_marker_frames": 5,
+            },
+            "hangup": {"local_bye_completed": True, "cleanup_observed": True},
+        }
+        agent = {
+            "screen_pop": {"visible": True, "visible_fields": fields},
+            "media": {
+                "source_audio_presence_basis": "in-band-dtmf",
+                "source_audio_presence_frames": 187,
+                "source_audio_presence_observed_at_ms": [300],
+                "inbound_audio_packets": 660,
+                "inbound_audio_bytes": 79_303,
+                "remote_audio_active_frames": 557,
+                "source_to_agent_marker_frames": 0,
+                "source_marker_observed_at_ms": [],
+                "agent_to_source_marker_frames_sent": 5,
+                "dtmf_source_to_agent_observed": True,
+                "dtmf_agent_to_source_sent_at_ms": [],
+            },
+        }
+        checks = CONTROLLER.derive_scenario_checks(
+            "vapi-sip-transfer",
+            source,
+            agent,
+            {
+                "status": "ended",
+                "endedReason": "assistant-forwarded-call",
+                "name": "prepare_handoff",
+                "toolName": "transferCall",
+            },
+            {"correlation_id": "bf1_x", "handoff_status": "CONSUMED"},
+            {
+                "bridgefu_received_correlation_header": True,
+                "connect_lookup_available": True,
+                "vapi_destination_uri_scheme_allowed": True,
+                "vapi_destination_tls_transport": True,
+                "vapi_destination_media_profile_allowed": True,
+                "vapi_destination_media_posture_consistent": True,
+                "vapi_destination_answered": True,
+            },
+        )
+        self.assertTrue(all(checks.values()))
+        self.assertTrue(checks["audio_source_to_agent"])
+        self.assertTrue(checks["dtmf_source_to_agent"])
+        agent["media"]["source_audio_presence_observed_at_ms"] = [199]
+        checks = CONTROLLER.derive_scenario_checks(
+            "vapi-sip-transfer",
+            source,
+            agent,
+            {
+                "status": "ended",
+                "endedReason": "assistant-forwarded-call",
+                "name": "prepare_handoff",
+                "toolName": "transferCall",
+            },
+            {"correlation_id": "bf1_x", "handoff_status": "CONSUMED"},
+            {
+                "bridgefu_received_correlation_header": True,
+                "connect_lookup_available": True,
+                "vapi_destination_uri_scheme_allowed": True,
+                "vapi_destination_tls_transport": True,
+                "vapi_destination_media_profile_allowed": True,
+                "vapi_destination_media_posture_consistent": True,
+                "vapi_destination_answered": True,
+            },
+        )
+        self.assertFalse(checks["audio_source_to_agent"])
+        agent["media"]["source_audio_presence_observed_at_ms"] = [300]
+        agent["media"]["inbound_audio_packets"] = 0
+        checks = CONTROLLER.derive_scenario_checks(
+            "vapi-sip-transfer",
+            source,
+            agent,
+            {
+                "status": "ended",
+                "endedReason": "assistant-forwarded-call",
+                "name": "prepare_handoff",
+                "toolName": "transferCall",
+            },
+            {"correlation_id": "bf1_x", "handoff_status": "CONSUMED"},
+            {
+                "bridgefu_received_correlation_header": True,
+                "connect_lookup_available": True,
+                "vapi_destination_uri_scheme_allowed": True,
+                "vapi_destination_tls_transport": True,
+                "vapi_destination_media_profile_allowed": True,
+                "vapi_destination_media_posture_consistent": True,
+                "vapi_destination_answered": True,
+            },
+        )
+        self.assertFalse(checks["audio_source_to_agent"])
 
         base_checks = {
             "vapi_call_connected": True,
