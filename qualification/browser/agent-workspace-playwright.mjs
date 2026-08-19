@@ -28,6 +28,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PRODUCER = "bridgefu-agent-workspace-playwright@1";
+const MEDIA_READY_PRODUCER = "bridgefu-agent-peer-media-ready@1";
 const DIRECT_SECURE_PRODUCER = "bridgefu-agent-direct-secure-observer@1";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "../..");
@@ -1099,12 +1100,23 @@ async function observe(options) {
   const screenshotPath = resolve(required(options, "--screenshot"));
   const readyPath = resolve(required(options, "--ready"));
   const observationPath = resolve(required(options, "--observation"));
+  const mediaReadyOption = options.get("--media-ready");
+  const mediaReadyPath =
+    typeof mediaReadyOption === "string" ? resolve(mediaReadyOption) : null;
   const connectUrl = validateConnectUrl(required(options, "--connect-url"));
   const timeoutMs = timeoutMilliseconds(options, 180);
   const expectMissingContext = options.has("--expect-missing-context");
   privateRegularFile(storageState);
-  if (existsSync(screenshotPath) || existsSync(readyPath) || existsSync(observationPath)) {
+  if (
+    existsSync(screenshotPath) ||
+    existsSync(readyPath) ||
+    existsSync(observationPath) ||
+    (mediaReadyPath !== null && existsSync(mediaReadyPath))
+  ) {
     fail("Agent Workspace evidence output already exists");
+  }
+  if ((scenarioId === "bridgefu-web-sdk-handoff") !== (mediaReadyPath !== null)) {
+    fail("Agent Workspace peer-media handshake contract changed");
   }
   mkdirSync(dirname(observationPath), { recursive: true, mode: 0o700 });
   chmodSync(dirname(observationPath), 0o700);
@@ -1255,6 +1267,19 @@ async function observe(options) {
       fail("Agent Workspace screenshot capture failed");
     }
     const screenshotSha256 = sha256File(screenshotPath);
+    if (mediaReadyPath !== null) {
+      exclusiveJson(mediaReadyPath, {
+        schema_version: 1,
+        producer: MEDIA_READY_PRODUCER,
+        execution_id: session.execution_id,
+        scenario_id: session.scenario_id,
+        source_call_fingerprint: session.source_call_fingerprint,
+        source_marker_observed: true,
+        source_dtmf_observed: true,
+        agent_probe_active: true,
+        redacted: true,
+      });
+    }
     let localEndCompleted = false;
     let remoteEndObserved = false;
     if (session.hangup_origin === "agent") {
@@ -1391,6 +1416,7 @@ async function main() {
           "--screenshot",
           "--ready",
           "--observation",
+          "--media-ready",
           "--timeout-seconds",
           "--headed",
           "--expect-missing-context",
