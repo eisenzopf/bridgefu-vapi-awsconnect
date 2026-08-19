@@ -4,6 +4,7 @@ import ast
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -787,6 +788,77 @@ class QualificationAssetTests(unittest.TestCase):
         self.assertIn("const SOURCE_DTMF_FRAMES: usize = 250;", sip)
         self.assertNotIn("const SOURCE_MARKER_FRAMES", sip)
         self.assertIn('"dtmf_source_to_agent": {"const": true}', evidence_schema)
+
+    def test_web_source_waits_for_post_trigger_media_before_hangup(self):
+        node = shutil.which("node")
+        self.assertIsNotNone(node)
+        if node is None:
+            self.fail("node is required for browser schedule tests")
+        web = (QUALIFICATION / "browser" / "bridgefu-web-playwright.mjs").read_text()
+        observe = web.split("async function observe(options)", 1)[1].split(
+            "async function main()", 1
+        )[0]
+        schedule_wait = observe.index(
+            '"Bridgefu browser post-handoff media schedule did not complete"'
+        )
+        self.assertLess(observe.index("sendDtmf", observe.index("triggerAtMs")), schedule_wait)
+        self.assertLess(
+            schedule_wait,
+            observe.index('"Bridgefu browser media observations did not converge"'),
+        )
+        self.assertLess(schedule_wait, observe.index("endFromSource"))
+        constants = "\n".join(
+            re.search(rf"^const {name} = .*?;$", web, re.M).group(0)
+            for name in (
+                "PROBE_INITIAL_SILENCE_MS",
+                "PROBE_CYCLE_MS",
+                "PROBE_PULSES_PER_CYCLE",
+                "REQUIRED_MARKER_EPISODES",
+                "DTMF_START_MS",
+            )
+        )
+        functions = web.split("function sourceMarkerSchedule", 1)[1].split(
+            "async function applicationSnapshot", 1
+        )[0]
+        script = f"""
+            {constants}
+            function sourceMarkerSchedule{functions}
+            const progressed = {{
+              captureRequestedAtMs: 0,
+              audioPacketsSent: 101,
+              audioBytesSent: 1001,
+            }};
+            const unchanged = {{
+              captureRequestedAtMs: 0,
+              audioPacketsSent: 100,
+              audioBytesSent: 1000,
+            }};
+            process.stdout.write(JSON.stringify({{
+              beforeSchedule: postTriggerMediaScheduleComplete(
+                progressed, 35000, 40000, 100, 1000),
+              withoutRtpProgress: postTriggerMediaScheduleComplete(
+                unchanged, 35000, 45000, 100, 1000),
+              complete: postTriggerMediaScheduleComplete(
+                progressed, 35000, 45000, 100, 1000),
+            }}));
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            test_script = Path(directory) / "post-trigger-media.mjs"
+            test_script.write_text(script)
+            result = subprocess.run(  # noqa: S603
+                [node, test_script],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "beforeSchedule": False,
+                "withoutRtpProgress": False,
+                "complete": True,
+            },
+        )
 
     def test_web_smoke_reports_only_closed_startup_failure_categories(self):
         demo = (QUALIFICATION / "demo-site" / "app.js").read_text()

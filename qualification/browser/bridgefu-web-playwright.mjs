@@ -971,6 +971,30 @@ function sourceDtmfSchedule(captureStartedAtMs, triggerAtMs, observedAtMs) {
   return result;
 }
 
+function postTriggerMediaScheduleComplete(
+  probe,
+  triggerAtMs,
+  observedAtMs,
+  baselinePacketsSent,
+  baselineBytesSent,
+) {
+  return (
+    Number.isInteger(probe?.captureRequestedAtMs) &&
+    sourceMarkerSchedule(
+      probe.captureRequestedAtMs,
+      triggerAtMs,
+      observedAtMs,
+    ).length >= REQUIRED_MARKER_EPISODES &&
+    sourceDtmfSchedule(
+      probe.captureRequestedAtMs,
+      triggerAtMs,
+      observedAtMs,
+    ).length >= 1 &&
+    probe.audioPacketsSent > baselinePacketsSent &&
+    probe.audioBytesSent > baselineBytesSent
+  );
+}
+
 async function applicationSnapshot(page, nonce) {
   const value = await page.evaluate(
     (qualificationNonce) => {
@@ -1359,6 +1383,9 @@ async function observe(options) {
     await waitForPrivateFile(sessionPath, timeoutMs);
     const session = validateSession(sessionPath, callId, hangupOrigin);
     await waitForPrivateFile(triggerPath, timeoutMs);
+    const preTriggerProbe = await probeSnapshot(page);
+    const preTriggerPacketsSent = preTriggerProbe?.audioPacketsSent ?? 0;
+    const preTriggerBytesSent = preTriggerProbe?.audioBytesSent ?? 0;
     const triggerAtMs = Date.now();
     const triggered = await page.evaluate(
       (qualificationNonce) =>
@@ -1372,6 +1399,20 @@ async function observe(options) {
       nonce,
     );
     if (!dtmfSent) fail("Bridgefu browser DTMF was not accepted");
+    await waitUntil(
+      async () => {
+        const probe = await probeSnapshot(page);
+        return postTriggerMediaScheduleComplete(
+          probe,
+          triggerAtMs,
+          Date.now(),
+          preTriggerPacketsSent,
+          preTriggerBytesSent,
+        );
+      },
+      Math.min(timeoutMs, 30_000),
+      "Bridgefu browser post-handoff media schedule did not complete",
+    );
     try {
       await waitUntil(
         async () => {
@@ -1451,7 +1492,14 @@ async function observe(options) {
       probe.agentMarkerFrames < REQUIRED_MARKER_ANALYSER_FRAMES ||
       !probe.dtmfAgentToSourceObserved
     ) {
-      fail("Bridgefu browser final media evidence is incomplete");
+      fail(
+        "Bridgefu browser final media evidence is incomplete "
+        + `source_markers=${sourceMarkers.length} `
+        + `source_dtmf=${sourceDtmfSentAtMs.length} `
+        + `agent_markers=${probe.agentMarkerObservedAtMs.length} `
+        + `agent_frames=${probe.agentMarkerFrames} `
+        + `agent_dtmf=${probe.dtmfAgentToSourceObserved ? 1 : 0}`,
+      );
     }
     exclusiveJson(observationPath, {
       schema_version: 1,
