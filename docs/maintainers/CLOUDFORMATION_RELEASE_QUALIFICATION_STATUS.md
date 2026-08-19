@@ -576,3 +576,39 @@ stable zero-resource observations found all 26 resource classes empty. The next
 permitted action is the complete local gate for the handshake correction,
 followed by protected review and a fresh Oregon-first candidate. Virginia and
 publication remain blocked until Oregon passes both serialized scenarios.
+
+## 2026-08-19 v0.1.28 Oregon DTMF timestamp-bookkeeping defect
+
+The peer-media handshake correction passed the full local gate, protected
+review, exact-main CI, accelerated private AMI build, immutable staging, and all
+20 two-region remote template validations. Oregon deployed to
+`CREATE_COMPLETE`, the running `c7g.2xlarge` was bound to the exact candidate
+AMI, and the direct mandatory-SRTP preflight passed every SIPS/TLS,
+RTP/SAVP/SDES-SRTP, media, DTMF, ACK, and cleanup assertion.
+
+The Bridgefu Web SDK call reached and completed through Amazon Connect. The new
+handshake did its job: the agent's media convergence passed, including the
+source marker and source-to-agent DTMF, and the Web source did not hang up until
+the agent wrote its bound media-ready receipt. The scenario then failed only in
+the agent observer's final bookkeeping with `Agent Workspace final media
+evidence is incomplete`.
+
+The final timestamp calculation incorrectly selected only agent DTMF intervals
+that began after the independently observed source marker plus 500 ms. The two
+microphone schedules are intentionally asynchronous, so the source browser can
+correctly observe the agent's DTMF before the agent observes the source marker.
+That filter could therefore erase a real transmitted interval after both
+browsers had already proved it. It was not a media or detector failure.
+
+The local correction derives the deterministic agent DTMF send timestamps from
+the agent microphone's actual `getUserMedia` capture-resolution time. That is
+the real media-establishment boundary. The independent Bridgefu Web browser
+must still observe the corresponding two-frequency tone, the peer-media
+handshake remains mandatory, and the one-second DTMF presence probe is
+unchanged. A regression rejects any return to source-marker-relative DTMF
+bookkeeping.
+
+The failed candidate was not sealed or published. Both stacks deleted
+completely and three exhaustive zero-resource observations spanning more than
+60 seconds found all 26 resource classes empty. Virginia and publication remain
+blocked until a fresh Oregon candidate passes both serialized scenarios.

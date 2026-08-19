@@ -731,15 +731,11 @@ function agentMarkerSchedule(captureStartedAtMs, acceptedAtMs, observedAtMs) {
   return result;
 }
 
-function agentDtmfSchedule(captureStartedAtMs, acceptedAtMs, observedAtMs) {
+function agentDtmfSchedule(captureStartedAtMs, observedAtMs) {
   const firstDtmf =
     captureStartedAtMs + PROBE_INITIAL_SILENCE_MS + PROBE_DTMF_SIX_START_MS;
-  const firstCycle = Math.max(
-    0,
-    Math.ceil((acceptedAtMs + 500 - firstDtmf) / PROBE_CYCLE_MS),
-  );
   const result = [];
-  for (let cycle = firstCycle; result.length < 16; cycle += 1) {
+  for (let cycle = 0; result.length < 16; cycle += 1) {
     const timestamp = firstDtmf + cycle * PROBE_CYCLE_MS;
     if (timestamp > observedAtMs) return result;
     result.push(timestamp);
@@ -1313,8 +1309,7 @@ async function observe(options) {
     // the corresponding 770/1477 Hz pair. This proves reverse media and DTMF
     // traversal without coupling qualification to Agent Workspace keypad UI.
     const agentDtmfSentAtMs = agentDtmfSchedule(
-      mediaProbe.captureRequestedAtMs,
-      mediaProbe.sourceMarkerObservedAtMs[0],
+      mediaProbe.captureResolvedAtMs,
       observedAtMs,
     );
     if (
