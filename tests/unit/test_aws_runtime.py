@@ -12,7 +12,8 @@ COMMON = Path(__file__).resolve().parents[2] / "lambda" / "common"
 sys.path.insert(0, str(COMMON))
 
 import aws_runtime  # noqa: E402
-from bridgefu_handoff import HandoffError, VapiIdentity  # noqa: E402
+from bridgefu_handoff import HandoffError, VapiIdentity, connect_lookup  # noqa: E402
+from screen_pop import ScreenPopField, schema_hash  # noqa: E402
 
 
 class ConditionalFailure(Exception):
@@ -48,6 +49,11 @@ class FakeDynamo:
                     "vapi_call_fingerprint": values[":identity"],
                 }
             )
+            if (
+                "vapi_call_reference = :vapi_call_reference"
+                in kwargs["UpdateExpression"]
+            ):
+                self.item["vapi_call_reference"] = values[":vapi_call_reference"]
             return {"Attributes": dict(self.item)}
         self.item["handoff_status"] = values[":reserved"]
         self.item["updated_at"] = values[":updated"]
@@ -208,7 +214,11 @@ class AwsRuntimeTests(unittest.TestCase):
             "direct_token_id = :token", client.last_update["ConditionExpression"]
         )
         self.assertNotIn("org_001", str(client.last_update))
-        self.assertNotIn("vapi_call_001", str(client.last_update))
+        self.assertEqual(
+            client.last_update["ExpressionAttributeValues"][":vapi_call_reference"],
+            {"S": "vapi_call_001"},
+        )
+        self.assertNotIn("vapi_call_001", str(result))
         store.mark_direct_started("bf1_" + "a" * 43, 1_800_000_001)
         self.assertEqual(
             aws_runtime._decode_item(client.item)["handoff_status"], "RESERVED"
@@ -234,6 +244,59 @@ class AwsRuntimeTests(unittest.TestCase):
         self.assertEqual(
             aws_runtime._decode_item(client.item)["handoff_status"], "RESERVED"
         )
+
+    def test_direct_handoff_exposes_session_digits_and_vapi_call_id_to_connect(self):
+        correlation_id = "bf1_" + "a" * 43
+        fields = (
+            ScreenPopField(
+                "customer_session_id", "Session ID", "Caller session digits"
+            ),
+        )
+        client = FakeDynamo()
+        client.item = aws_runtime._encode_item(
+            {
+                "schema_version": 2,
+                "correlation_id": correlation_id,
+                "screen_pop_schema_hash": schema_hash(fields),
+                "direct_token_id": "token_001",
+                "bridgefu_call_id": "bridgefu_call_001",
+                "direct_leg_id": "leg_001",
+                "direct_route_id": "amazon-connect",
+                "direct_idempotency_key": "replace_001",
+                "handoff_status": "MAPPED",
+                "expires_at": 1_900_000_000,
+            }
+        )
+        store = aws_runtime.DynamoHandoffStore("handoff-table", client=client)
+        for now in (1_800_000_000, 1_800_000_002):
+            with self.subTest(now=now):
+                store.prepare_direct(
+                    correlation_id,
+                    "token_001",
+                    VapiIdentity("org_001", "vapi_call_001"),
+                    {"customer_session_id": "001234"},
+                    now,
+                )
+                store.mark_direct_started(correlation_id, now + 1)
+                result = connect_lookup(
+                    {
+                        "Details": {
+                            "ContactData": {
+                                "Attributes": {"correlation_id": correlation_id}
+                            }
+                        }
+                    },
+                    store,
+                    now=now + 1,
+                    configured_fields=fields,
+                )
+                self.assertEqual(result["context_available"], "true")
+                self.assertEqual(result["vapi_call_reference"], "vapi_call_001")
+                self.assertEqual(result["screen_pop_value_1"], "001234")
+                self.assertEqual(result["screen_pop_key_1"], "customer_session_id")
+                self.assertEqual(
+                    store.get(correlation_id)["correlation_id"], correlation_id
+                )
 
     def test_bridgefu_replace_uses_exact_server_route_and_bounded_response(self):
         client = aws_runtime.BridgefuRouteClient(

@@ -409,7 +409,8 @@ class DynamoHandoffStore:
                 UpdateExpression=(
                     "SET #status = :prepared, updated_at = :updated, "
                     "screen_pop_values = :values, content_hash = :content, "
-                    "vapi_call_fingerprint = :identity"
+                    "vapi_call_fingerprint = :identity, "
+                    "vapi_call_reference = :vapi_call_reference"
                 ),
                 ConditionExpression=(
                     "direct_token_id = :token AND expires_at > :updated AND "
@@ -428,6 +429,7 @@ class DynamoHandoffStore:
                     ":values": _encode_value(values),
                     ":content": {"S": content_hash},
                     ":identity": {"S": identity_hash},
+                    ":vapi_call_reference": {"S": identity.call_id},
                 },
                 ReturnValues="ALL_NEW",
             )

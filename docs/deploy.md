@@ -169,6 +169,9 @@ unavailable.
 
 ## Customize fields
 
+For application session identifiers and Vapi call IDs on the browser path,
+see [Session identifiers and Vapi call references in Connect](direct-browser-identifiers.md).
+
 `ScreenPopFieldsJson` accepts one to eight ordered fields. Text fields have a
 maximum length; choice fields have two to twenty allowed values.
 
