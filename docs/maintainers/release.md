@@ -55,6 +55,12 @@ checked-in **Reap incomplete release work** workflow. Never put release or Vapi
 credential values in this environment; the recovery role can read only the two
 exact regional Secrets Manager ARNs.
 
+Before starting a candidate, verify that `release-reaper.yml` is active. GitHub
+can disable scheduled workflows after repository inactivity. If needed, restore
+the workflow with `gh workflow enable release-reaper.yml` and verify its state
+before creating disposable resources; a configured recovery environment alone
+does not enable the workflow.
+
 Build in a dedicated publisher account with EBS encryption-by-default disabled.
 AWS does not allow an encrypted EBS snapshot to back a public AMI. The release
 workflow verifies that every regional snapshot is unencrypted and grants public

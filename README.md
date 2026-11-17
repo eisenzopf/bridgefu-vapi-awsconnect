@@ -40,8 +40,8 @@ AWS's Oregon region, avoiding an unnecessary cross-region leg.
 
 ## Release attestation
 
-Release **v0.1.34** was built from distribution commit
-[`30dcc7791af1b49f42da0b97be4dabb14fbd7582`](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/commit/30dcc7791af1b49f42da0b97be4dabb14fbd7582)
+Release **v0.1.35** was built from distribution commit
+[`8c27bb95994bdb15ba5b259a463415c4d606cbc5`](https://github.com/eisenzopf/bridgefu-vapi-awsconnect/commit/8c27bb95994bdb15ba5b259a463415c4d606cbc5)
 and Bridgefu commit
 [`e00db3289480f93c2783c57440a324e4438e29de`](https://github.com/eisenzopf/bridgefu/commit/e00db3289480f93c2783c57440a324e4438e29de).
 Fresh disposable qualification stacks passed in both `us-west-2` and
@@ -59,13 +59,13 @@ Each region passed:
 
 The immutable, signed evidence is public:
 
-- [Qualified-candidate receipt](https://bridgefu-vapi-awsconnect-225478700523-us-east-1.s3.us-east-1.amazonaws.com/releases/0.1.34/qualification/receipt.json)
-  and [KMS signature](https://bridgefu-vapi-awsconnect-225478700523-us-east-1.s3.us-east-1.amazonaws.com/releases/0.1.34/qualification/receipt.sig)
-- [Oregon evidence](https://bridgefu-vapi-awsconnect-225478700523-us-east-1.s3.us-east-1.amazonaws.com/releases/0.1.34/qualification/us-west-2/evidence.json)
-- [Virginia evidence](https://bridgefu-vapi-awsconnect-225478700523-us-east-1.s3.us-east-1.amazonaws.com/releases/0.1.34/qualification/us-east-1/evidence.json)
-- [Immutable customer CloudFormation template](https://bridgefu-vapi-awsconnect-225478700523-us-east-1.s3.us-east-1.amazonaws.com/releases/0.1.34/cloudformation/template.yaml)
+- [Qualified-candidate receipt](https://bridgefu-vapi-awsconnect-225478700523-us-east-1.s3.us-east-1.amazonaws.com/releases/0.1.35/qualification/receipt.json)
+  and [KMS signature](https://bridgefu-vapi-awsconnect-225478700523-us-east-1.s3.us-east-1.amazonaws.com/releases/0.1.35/qualification/receipt.sig)
+- [Oregon evidence](https://bridgefu-vapi-awsconnect-225478700523-us-east-1.s3.us-east-1.amazonaws.com/releases/0.1.35/qualification/us-west-2/evidence.json)
+- [Virginia evidence](https://bridgefu-vapi-awsconnect-225478700523-us-east-1.s3.us-east-1.amazonaws.com/releases/0.1.35/qualification/us-east-1/evidence.json)
+- [Immutable customer CloudFormation template](https://bridgefu-vapi-awsconnect-225478700523-us-east-1.s3.us-east-1.amazonaws.com/releases/0.1.35/cloudformation/template.yaml)
 
-This attestation applies only to the immutable v0.1.34 artifacts and commits
+This attestation applies only to the immutable v0.1.35 artifacts and commits
 listed above. Later documentation changes do not change or requalify that
 release.
 
