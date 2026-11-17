@@ -113,13 +113,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # The API status-filter index can lag the run record. Check status
+          # locally while keeping the API query bound to the exact commit.
           runs="$(gh api -X GET \
             "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
-            -f head_sha="$GITHUB_SHA" -f status=completed -f per_page=100)"
+            -f head_sha="$GITHUB_SHA" -f per_page=100)"
           jq -e --arg sha "$GITHUB_SHA" '
             [.workflow_runs[] | select(
               .head_sha == $sha and .head_branch == "main" and
-              .event == "push" and .conclusion == "success")] |
+              .event == "push" and .status == "completed" and
+              .conclusion == "success")] |
             length >= 1
           ' <<<"$runs" >/dev/null
       - uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1

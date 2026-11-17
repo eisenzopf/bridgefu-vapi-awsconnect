@@ -45,7 +45,7 @@ class CandidateReleasePreflightTests(unittest.TestCase):
         self.steps = self.value["jobs"]["build-private-candidate"]["steps"]
 
     def run_ci_attestation(
-        self, response: dict[str, Any]
+        self, response: dict[str, Any], *, stale_status_filter: bool = False
     ) -> subprocess.CompletedProcess:
         _, step = named_step(
             self.steps, "Require successful exact-main CI before AWS authentication"
@@ -58,7 +58,12 @@ class CandidateReleasePreflightTests(unittest.TestCase):
                 "#!/usr/bin/env bash\n"
                 "set -euo pipefail\n"
                 'printf "%s\\n" "$@" > "$GH_ARGUMENTS"\n'
-                'printf "%s" "$GH_RESPONSE"\n',
+                'if [[ "$GH_STALE_STATUS_FILTER" = true && '
+                '"$*" = *status=completed* ]]; then\n'
+                "  printf '{\"workflow_runs\":[]}'\n"
+                "else\n"
+                '  printf "%s" "$GH_RESPONSE"\n'
+                "fi\n",
             )
             environment = os.environ.copy()
             environment.update(
@@ -66,6 +71,7 @@ class CandidateReleasePreflightTests(unittest.TestCase):
                     "PATH": f"{root}:{environment['PATH']}",
                     "GH_ARGUMENTS": str(arguments),
                     "GH_RESPONSE": json.dumps(response),
+                    "GH_STALE_STATUS_FILTER": str(stale_status_filter).lower(),
                     "GH_TOKEN": "synthetic-token",
                     "GITHUB_REPOSITORY": "owner/repository",
                     "GITHUB_SHA": "a" * 40,
@@ -89,8 +95,6 @@ class CandidateReleasePreflightTests(unittest.TestCase):
                         "repos/owner/repository/actions/workflows/ci.yml/runs",
                         "-f",
                         f"head_sha={'a' * 40}",
-                        "-f",
-                        "status=completed",
                         "-f",
                         "per_page=100",
                     ],
@@ -124,6 +128,7 @@ class CandidateReleasePreflightTests(unittest.TestCase):
                     "head_sha": "a" * 40,
                     "head_branch": "main",
                     "event": "push",
+                    "status": "completed",
                     "conclusion": "success",
                 }
             ]
@@ -133,6 +138,8 @@ class CandidateReleasePreflightTests(unittest.TestCase):
             ("head_sha", "b" * 40),
             ("head_branch", "feature"),
             ("event", "pull_request"),
+            ("status", "in_progress"),
+            ("status", None),
             ("conclusion", "failure"),
         ):
             value = json.loads(json.dumps(passing))
@@ -142,6 +149,21 @@ class CandidateReleasePreflightTests(unittest.TestCase):
         self.assertNotEqual(
             self.run_ci_attestation({"workflow_runs": []}).returncode, 0
         )
+
+    def test_ci_attestation_accepts_success_when_api_status_filter_lags(self):
+        response = {
+            "workflow_runs": [
+                {
+                    "head_sha": "a" * 40,
+                    "head_branch": "main",
+                    "event": "push",
+                    "status": "completed",
+                    "conclusion": "success",
+                }
+            ]
+        }
+        result = self.run_ci_attestation(response, stale_status_filter=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_exact_aws_account_is_checked_before_candidate_mutation(self):
         account_index, account = named_step(
